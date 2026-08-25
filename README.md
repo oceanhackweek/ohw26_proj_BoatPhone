@@ -25,24 +25,29 @@ You can start with a simple structure and as you progress you can refine it to c
 
 | Name                | Role                |
 |---------------------|---------------------|
-| Participant 1       |  |
-| Participant 2       |  |
-| Participant 3       |  |
+| Neve Foreman        | TBD
+| Malachy McCaffrey   | TBD
+| Isaac Guld          | TBD
 
 
 
 ## Planning
 
-* Initial idea: "short description"
-* Ideation Slide: Add link
-* Slack channel: ohw26_proj_name
+* Initial idea: Cross-calibrating optical vessel detection against passive acoustics in Barkley Sound
+* Ideation Slide: https://docs.google.com/presentation/d/1_KLEDpLLvtKpH3awDlZRAiOKuHzbEti4CWmhEykuCG8/edit?slide=id.g3f85357d4e2_21_0#slide=id.g3f85357d4e2_21_0
+* Slack channel: ohw26_proj_BoatPhone
 * Final presentation: Add link
 
 ## Background
+Satellites see every boat but only for a fraction of a second per day; the hydrophone listens continuously but can't count. Use each to fix the other's blind spot.
 
 ## Goals
+* Create a model that uses hydrophone data and prior knowledge of vessels detected from optical satellite imagery to create continuous estimates of the number of boats, and potential distinguish between larger or smaller boats (those without AIS)
 
 ## Datasets
+* Hydrophone data
+* PlanetScope 3m optical imagery
+* AIS Data
 
 ## Workflow/Roadmap
 
