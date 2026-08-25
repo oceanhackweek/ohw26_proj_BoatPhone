@@ -1,4 +1,4 @@
-# ohwyy_proj_template
+# ohw26_proj_BoatPhone
 
 Template for starting Oceanhackweek project repos. 
 
