@@ -1,0 +1,27 @@
+This file is a source of truth for the BoatPhone project. It records the completed milestones, the project goals, and the next steps on the project. Specific plans should exist as their own files in plans folder. 
+
+Project Goals:
+
+1) Create a model that uses hydrophone data and prior knowledge of vessels detected from optical satellite imagery to create continuous estimates of the number of boats, 
+2) Distinguish between larger or smaller boats (those without AIS)
+
+
+
+Milestones:
+
+1) Obtain accoustic data from one or more hydrophones
+    - Check the range of the hydrophone (in poor conditions)
+2) Obtain co-located Planet Scope Satelite Data (visual spectrum), to the hyrdophone data
+3) Litterature review on how to find the boats
+4) Process the satelite using a ML algorithem to identify the boats
+5) Divide the acoustic data into taraining and validation sets
+6) Process the training accoustic data with visual boat confirmation dat a(using ML) to match the time period of the boats to identify the boat noise
+6) Use the validation data to identify more boats. 
+7) Link to AIS data?
+8) Test on a new location?
+9) Play with other data source?
+
+
+Next Steps:
+
+Divy out tasks and claim here
