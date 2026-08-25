@@ -12,6 +12,7 @@ Project Goals:
 
 Milestones:
 
+0) Find reference methods and open source tools. 
 1) Obtain accoustic data from one or more hydrophones
     - Check the range of the hydrophone (in poor conditions)
 2) Obtain co-located Planet Scope Satelite Data (visual spectrum), to the hyrdophone data
