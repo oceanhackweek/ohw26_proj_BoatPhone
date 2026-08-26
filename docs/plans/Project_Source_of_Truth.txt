@@ -1,5 +1,18 @@
 This file is a source of truth for the BoatPhone project. It records the completed milestones, the project goals, and the next steps on the project. Specific plans should exist as their own files in plans folder. 
 
+Wednesday, Aug 26, 2026:
+Neve:
+- work on developing the optical satellite boat detection code/method using the existing Yolo model (https://huggingface.co/mayrajeo/marine-vessel-yolo) and enhancing it with the NIR band from PlanetScope
+- work on figuring out how the online storage for big files works through OHW so we know how we can store the Planet imagery once it arrives
+
+Isaac:
+- 
+
+Malachy:
+- 
+
+
+
 Project Goals:
 
 1) Create a model that uses hydrophone data and prior knowledge of vessels detected from optical satellite imagery to create continuous estimates of the number of boats, 
