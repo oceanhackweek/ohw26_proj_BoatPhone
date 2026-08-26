@@ -7,7 +7,7 @@ Neve:
 - ensure that the license from using the Yolo model is all kosher
 
 Isaac:
-- 
+- work on downloading hydrophone data, and exploring hydrophone models
 
 Malachy:
 - prompting claude to optimize the filters to get 30 images that are high quality, little cloud, have boats, 1 scene (not double dipping), and prioritize scenes with just 1 boat if possible to minimize variables
