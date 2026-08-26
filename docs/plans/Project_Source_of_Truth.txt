@@ -4,12 +4,15 @@ Wednesday, Aug 26, 2026:
 Neve:
 - work on developing the optical satellite boat detection code/method using the existing Yolo model (https://huggingface.co/mayrajeo/marine-vessel-yolo) and enhancing it with the NIR band from PlanetScope
 - work on figuring out how the online storage for big files works through OHW so we know how we can store the Planet imagery once it arrives
+- ensure that the license from using the Yolo model is all kosher
 
 Isaac:
 - 
 
 Malachy:
-- 
+- prompting claude to optimize the filters to get 30 images that are high quality, little cloud, have boats, 1 scene (not double dipping), and prioritize scenes with just 1 boat if possible to minimize variables
+- incorporate/fix notebook that will be used to access the images through an API
+- put the images into the shared github folder to store them
 
 
 
