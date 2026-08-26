@@ -7,6 +7,7 @@ Project Goals:
     - The UN Food and Agriculture Organization (FAO) primarily classifies fishing vessel lengths overall (LOA) 
     - Three core size categories for statistical and safety frameworks: 0–12 meters, 12–24 meters, and above 24 meters.
 3) Identify the useful range of acoustic detection of ships
+4) We are specifically interested in small / recreational ships that do not have AIS
 4) Can we identify speed? Changes in pitch/frequency
 
 
