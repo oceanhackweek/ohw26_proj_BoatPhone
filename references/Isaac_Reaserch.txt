@@ -1,0 +1,17 @@
+From Lit review:
+
+# Cross-Modal Gaps in Acoustic Vessel Ranging for Non-AIS Ships
+A critical gap exists at the intersection of three independently mature technologies: optical satellite imagery for detecting non-AIS vessels, machine learning for acoustic distance estimation, and hydrophone-based passive monitoring. No published work integrates PlanetScope or similar optical imagery to generate ground-truth distance labels for training acoustic ML models targeting recreational or small vessels absent from AIS data (Nakayama, 2023; Wout, 2025; Ramirez-Torres, 2025)
+
+The most striking gap is the complete absence of cross-modal label fusion: no study uses optical satellite detections of non-AIS vessels to provide distance ground truth for acoustic ML training. Optical imagery from PlanetScope successfully detects small vessels absent from AIS data (Nakayama, 2023), and passive acoustic ML classifies vessel distance from hydrophone data (Wout, 2025; Ferguson, 2016), yet these pipelines remain disconnected. Acoustic ranging models rely exclusively on AIS for distance labels, inheriting a structural blind spot for recreational craft that do not broadcast AIS (Wout, 2025; Domingos, 2022; Renaud, 2026).
+
+This gap persists because optical and acoustic communities address the non-AIS vessel problem with separate sensor pipelines. Optical satellite studies detect non-AIS recreational vessels but stop at spatial mapping without linking to acoustic signatures (Mäyrä, 2025; Nakayama, 2023), while acoustic ML studies acknowledge that AIS-based labels miss dark vessels but lack an alternative ground-truth source (Wout, 2025). Bridging this divide would require temporally aligning satellite-detected non-AIS vessel positions with hydrophone recordings to generate distance labels for vessels invisible to AIS.
+
+### Acoustic ML Ranging and AIS Dependence
+A CNN trained on 116 days of hydrophone data aligned with AIS coordinates classifies vessel distance into 1-km bins, but inherits AIS blind spots for non-AIS vessels (Wout, 2025).
+
+A single-hydrophone CNN using cepstrum data estimates range of small boats but was validated only against vessels with known GPS tracks, not non-AIS recreational craft (Ferguson, 2016; Ferguson, 2016).
+
+A database-native workflow aligns terabyte-scale hydrophone archives with AIS position reports for ML-ready distance labels, but explicitly notes the resulting data is limited to AIS-broadcasting vessels (Renaud, 2026).
+
+Machine learning classifiers outperform matched-field processing for ship localization but depend on AIS-derived training labels, limiting generalization to dark vessels (Niu, 2017).
