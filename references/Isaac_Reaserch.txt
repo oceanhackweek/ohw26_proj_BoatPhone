@@ -1,17 +1,310 @@
-From Lit review:
+# Recent Advances in **Vessel Distance Estimation** from Hydrophone Data
 
-# Cross-Modal Gaps in Acoustic Vessel Ranging for Non-AIS Ships
-A critical gap exists at the intersection of three independently mature technologies: optical satellite imagery for detecting non-AIS vessels, machine learning for acoustic distance estimation, and hydrophone-based passive monitoring. No published work integrates PlanetScope or similar optical imagery to generate ground-truth distance labels for training acoustic ML models targeting recreational or small vessels absent from AIS data (Nakayama, 2023; Wout, 2025; Ramirez-Torres, 2025)
+Passive acoustic ranging of vessels from hydrophone data has advanced through waveguide invariant theory, matched-field processing, machine learning, and multi-sensor array methods. Recent work spans single-hydrophone approaches in shallow water to large coherent arrays operating over continental-shelf scales, with range errors reported from under 4% to roughly 12% depending on the technique and environment  (Jang et al., 2025; Zhang et al., 2023).
 
-The most striking gap is the complete absence of cross-modal label fusion: no study uses optical satellite detections of non-AIS vessels to provide distance ground truth for acoustic ML training. Optical imagery from PlanetScope successfully detects small vessels absent from AIS data (Nakayama, 2023), and passive acoustic ML classifies vessel distance from hydrophone data (Wout, 2025; Ferguson, 2016), yet these pipelines remain disconnected. Acoustic ranging models rely exclusively on AIS for distance labels, inheriting a structural blind spot for recreational craft that do not broadcast AIS (Wout, 2025; Domingos, 2022; Renaud, 2026).
+## Waveguide Invariant and Single-Hydrophone Methods
 
-This gap persists because optical and acoustic communities address the non-AIS vessel problem with separate sensor pipelines. Optical satellite studies detect non-AIS recreational vessels but stop at spatial mapping without linking to acoustic signatures (Mäyrä, 2025; Nakayama, 2023), while acoustic ML studies acknowledge that AIS-based labels miss dark vessels but lack an alternative ground-truth source (Wout, 2025). Bridging this divide would require temporally aligning satellite-detected non-AIS vessel positions with hydrophone recordings to generate distance labels for vessels invisible to AIS.
+Waveguide invariant (WI) theory exploits striation patterns in spectrograms caused by modal interference in shallow water, enabling range estimation from a single hydrophone without detailed environmental knowledge  (Jang et al., 2025; Jang & Meyer, 2024). A statistical model processing broadband ship noise achieved **range errors within ±4%** out to 62 km for commercial vessels in SBCEX17 data, outperforming slope-based and tonal-only methods  (Jang et al., 2025). A complementary approach processes tonal components when broadband signal-to-noise ratio is weak, and region-specific WI values estimated once from reference spectrograms can be reused for subsequent transits  (Jang et al., 2025; Jang & Meyer, 2024).
 
-### Acoustic ML Ranging and AIS Dependence
-A CNN trained on 116 days of hydrophone data aligned with AIS coordinates classifies vessel distance into 1-km bins, but inherits AIS blind spots for non-AIS vessels (Wout, 2025).
+A dual-hydrophone extension incorporates striation information from two horizontally separated receivers into a joint nonlinear least-squares framework, reducing the unbounded ambiguity inherent in single-hydrophone estimation to a finite set of geometrically ambiguous solutions  (Byun et al., 2026). This method was validated with experimental data from a surface ship recorded by two bottom-moored hydrophones separated by 5.6 km in approximately 100 m deep water  (Byun et al., 2026).
 
-A single-hydrophone CNN using cepstrum data estimates range of small boats but was validated only against vessels with known GPS tracks, not non-AIS recreational craft (Ferguson, 2016; Ferguson, 2016).
+## Matched-Field and Cepstrum-Based Approaches
 
-A database-native workflow aligns terabyte-scale hydrophone archives with AIS position reports for ML-ready distance labels, but explicitly notes the resulting data is limited to AIS-broadcasting vessels (Renaud, 2026).
+| Method | Sensor Configuration | Key Result | Environment |
+|--------|---------------------|------------|------------|
+| MFP with measured replica cepstra | Single hydrophone | Effective for multiple vessel transits | Shallow water  (Lo, 2021)|
+| DEMON + interference fringes + data fusion | 16-element vertical array | Improved accuracy via multi-element fusion | Deep sea (South China Sea)  (Liang et al., 2020)|
+| Vertical coherence inversion | Two vertically separated hydrophones | Range and bearing from broadband coherence | Shelf break near Alvin Canyon  (Shajahan et al., 2024)|
+| Cepstrum + cross-correlation CNN | Wide-aperture linear array | Superior to wavefront curvature in multipath | 20 m deep water  (Ferguson, 2021)|
 
-Machine learning classifiers outperform matched-field processing for ship localization but depend on AIS-derived training labels, limiting generalization to dark vessels (Niu, 2017).
+**Figure 1:** Comparison of matched-field, interference-based, and coherence-based passive ranging methods for vessel distance estimation.
+
+Matched-field processing using cepstrum replica fields generated from a reference transit provides instantaneous range estimates for subsequent vessels in the same area, tested across six small-ship transits and one rigid-hulled inflatable boat transit  (Lo, 2021). The DEMON-based method extracts low-frequency line spectrum components from broadband radiated noise, derives radial velocity from interference fringe oscillation periods, and fuses results across array elements to improve accuracy without requiring prior environmental parameters  (Liang et al., 2020).
+
+## Machine Learning and Deep Learning Methods
+
+A CNN trained on 116 days of passive acoustic data integrated with AIS coordinates classifies vessel distance into discrete bins, demonstrating feasibility for monitoring dark vessels that do not transmit AIS  (Wout et al., 2025). A multitask CNN combining cepstrogram and cross-correlogram feature maps predicts instantaneous range and bearing of a transiting motorboat, outperforming conventional wavefront-curvature methods in multipath environments  (Ferguson, 2021). A temporal convolutional network processes spectrograms from unsynchronized single-hydrophone sensors to simultaneously detect dispersive signals and estimate source–receiver ranges, enabling automatic multi-source localization without manual data association  (Goldwater et al., 2026).
+
+## Array-Based and TDOA Methods
+
+- **Coherent hydrophone array** with 160 elements detected and estimated bearing-time trajectories for six vessels at ranges out to 200 km using MMSC, CSC, and broadband PSD analysis after beamforming  (Zhu et al., 2020).
+- **TDOA with GCC-PHAT** on three acoustic buoys achieved real-time vessel detection and localization at ranges up to 1.3 km in shallow water, validated across 16 test events  (Karst et al., 2025).
+- **Vector hydrophone** bearings-only TMA combined with grazing-angle estimation yielded an **average distance error of 11.6%** for a surface ship in deep water  (Zhang et al., 2023).
+- **Low-cost beamforming** with two-to-four element arrays detected and tracked a small motorized boat at 1 km range using an FPGA-implemented frequency domain beamformer  (Kong et al., 2021).
+
+## Supplementary Ranging Techniques
+
+Received signal strength (RSS)-based ranging using multiple frequencies and a ray-tracing propagation model improved accuracy up to twofold over conventional methods in multipath environments  (Quan et al., 2020). Cross-correlation of ship radiated noise between two hydrophones extracts the time-domain Green's function, enabling real-time estimation of inter-hydrophone distance and cooperative source localization with average azimuth deviation under 1.2° at 4 km  (刘 et al., 2023). Three-dimensional propagation modeling of bulk carrier noise showed that 2D simulation inaccuracies can reach 7–10 dB at certain distances, underscoring the importance of 3D effects in shallow-water vessel sound propagation  (Petrov et al., 2024).
+
+The diversity of approaches reflects distinct trade-offs: single-hydrophone WI methods offer simplicity and long range but require shallow-water waveguide conditions  (Jang & Meyer, 2024), while machine-learning methods provide automated detection and classification but depend on extensive labeled training data  (Wout et al., 2025; Goldwater et al., 2026).
+ 
+_These search results were found and analyzed using Consensus, an AI-powered search engine for research. Try it at https://consensus.app. © 2026 Consensus NLP, Inc. Personal, non-commercial use only; redistribution requires copyright holders’ consent._
+ 
+## References
+ 
+Byun, G., Kim, M., & Byun, S.-H. (2026). Waveguide-invariant-based target motion estimation using dual hydrophones in shallow water. *Journal of Theoretical and Computational Acoustics*. https://doi.org/10.1142/s2591728526500167
+ 
+Ferguson, E. L. (2021). Multitask convolutional neural network for acoustic localization of a transiting broadband source using a hydrophone array.. *The Journal of the Acoustical Society of America, 150 1*, 248. https://doi.org/10.1121/10.0005516
+ 
+Goldwater, M., Bonnel, J., McNeese, A. R., Wilson, P. S., & Zitterbart, D. (2026). Automatic Detection and Localization of an Unknown Number of Acoustic Sources Using a Network of Unsynchronized Hydrophones in a Dispersive Waveguide. *IEEE Journal of Oceanic Engineering, 51*, 894-915. https://doi.org/10.1109/joe.2025.3647825
+ 
+Jang, J., Hodgkiss, W., & Meyer, F. (2025). Statistical model and estimation method for ranging a moving ship using a single acoustic receiver in shallow water.. *The Journal of the Acoustical Society of America, 158 3*, 2448-2463. https://doi.org/10.1121/10.0039377
+ 
+Jang, J., & Meyer, F. (2024). A New Statistical Model for Waveguide Invariant-Based Range Estimation in Shallow Water. *2024 58th Asilomar Conference on Signals, Systems, and Computers*, 69-73. https://doi.org/10.1109/ieeeconf60004.2024.10942837
+ 
+Karst, J., McGurrin, R., Gavin, K. E., Luttrell, J., Rippy, W., Coniglione, R., McKenna, J. R., & Riedel, R. (2025). Enhancing Maritime Domain Awareness Through AI-Enabled Acoustic Buoys for Real-Time Detection and Tracking of Fast-Moving Vessels. *Sensors (Basel, Switzerland), 25*. https://doi.org/10.3390/s25061930
+ 
+Kong, D. F. N., Shen, C., Tian, C., & Zhang, K. (2021). A New Low-Cost Acoustic Beamforming Architecture for Real-Time Marine Sensing: Evaluation and Design. *Journal of Marine Science and Engineering*. https://doi.org/10.3390/jmse9080868
+ 
+Liang, Y., Meng, Z., Yu, C., Zhang, Y., Zhou, X., & Wang, M. (2020). Research on Passive Ranging Technology of Moving Ship Based on Vertical Hydrophone Array. *Applied Sciences*. https://doi.org/10.3390/app10217396
+ 
+Lo, K. (2021). A matched-field processing approach to ranging surface vessels using a single hydrophone and measured replica fields.. *The Journal of the Acoustical Society of America, 149 3*, 1466. https://doi.org/10.1121/10.0003631
+ 
+Petrov, P. S., Tyshchenko, A., & MacGillivray, A. O. (2024). Three-dimensional modelling of underwater noise produced by a bulk carrier vessel and estimation of its environmental impacta).. *The Journal of the Acoustical Society of America, 155 6*, 3702-3714. https://doi.org/10.1121/10.0026238
+ 
+Quan, T., Yu, C., Yimwadsana, B., & Xiaomei, F. (2020). RSS-based underwater acoustic distance measurement with multiple frequencies. *Ocean Engineering*. https://doi.org/10.1016/j.oceaneng.2020.107772
+ 
+Shajahan, N., Barclay, D. R., & Lin, Y.-T. (2024). Exploiting environmental asymmetry for vessel localization from the vertical coherence of radiated noise.. *The Journal of the Acoustical Society of America, 156 1*, 560-572. https://doi.org/10.1121/10.0028003
+ 
+Wout, D., Klaas, D., Clea, P., Elena, S., & Elisabeth, D. (2025). Transfer Learning for Distance Classification of Marine Vessels Using Underwater Sound. *IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing, 18*, 19710-19726. https://doi.org/10.1109/jstars.2025.3593779
+ 
+Zhang, Q., Da, L., Wang, C., Yuan, M., Zhang, Y., & Zhuo, J. (2023). Passive ranging of a moving target in the direct-arrival zone in deep sea using a single vector hydrophone.. *The Journal of the Acoustical Society of America, 154 4*, 2426-2439. https://doi.org/10.1121/10.0021875
+ 
+Zhu, C., Seri, S. G., Mohebbi-Kalkhoran, H., & Ratilal, P. (2020). Long-Range Automatic Detection, Acoustic Signature Characterization and Bearing-Time Estimation of Multiple Ships with Coherent Hydrophone Array. *Remote. Sens., 12*, 3731. https://doi.org/10.3390/rs12223731
+ 
+刘, L. X., 夏, X. Z., 李, L. Q., & 丁, Y. D. 烨. (2023). Fast estimation of distance between two hydrophones using ocean ambient noise in multi-ship scenarios. *Chinese Physics B, 32*. https://doi.org/10.1088/1674-1056/acf91b
+ 
+
+
+# **Single-Hydrophone Passive Ranging** of Vessels: Recent Methods and Performance
+
+Single-hydrophone passive acoustic ranging estimates the distance to a vessel from one receiver, exploiting waveguide physics, multipath structure, or tonal interference rather than array-based beamforming  (Rideout & Nosal, 2025; Liang et al., 2022; Du et al., 2020). Recent work spans shallow-water waveguide-invariant methods, deep-water multipath approaches, matched-field and warping-transform techniques, and vector-sensor ranging, with range errors reported from under 4% to roughly 12% depending on the environment and method  (Jang et al., 2025; Zhang et al., 2023; Li et al., 2023).
+
+## Waveguide Invariant and Interference-Based Methods
+
+Waveguide-invariant (WI) theory exploits striation patterns in single-hydrophone spectrograms caused by modal interference in shallow water, enabling range estimation without detailed environmental knowledge  (Jang et al., 2025; Young et al., 2020). A statistical WI-based model processing broadband ship noise achieved **range errors within ±4%** out to 62 km for commercial vessels using SBCEX17 data, outperforming slope-based and tonal-only methods  (Jang et al., 2025). The method proved robust across different frequency bands, with strongest performance in the 40–60 Hz band, and WI values estimated from one ship could be reused for subsequent transits in the same region  (Jang et al., 2025).
+
+A maximum-likelihood WI estimator applied to SWellEx-96 cargo-ship tonals produced source–receiver range estimates in close agreement with KRAKEN normal-mode simulations, and an associated receiver-localization technique reduced AUV position error from 3 km to under 1 km  (Young et al., 2020). The approach requires only a single hydrophone, is fully passive, and allows AUVs to transit at varied depths near shipping lanes without acoustic transmissions  (Young et al., 2020). A tonal-based method combining modal interference and Doppler shift from two or more ship tonals estimated motion parameters with **errors below 10%** in both SWellEx-96 and speedboat experiments, operating effectively down to −18 dB SNR  (Sun et al., 2023).
+
+## Matched-Field, Warping, and Dispersion-Based Methods
+
+| Method | Environment | Range / Error | Key Advantage |
+|--------|-----------|---------------|---------------|
+| Cepstrum MFP with measured replicas | Shallow water | Six ship transits validated | No propagation model needed  (Lo, 2021)|
+| Phase-matched filter (MP-MIR) | Shallow water, 2.5–20 km | Robust to signal variation | Avoids manual modal filtering  (Liang et al., 2022)|
+| Warping-transform autocorrelation | Shallow water (North Yellow Sea) | **Mean error <10%** | No environmental priors needed  (Qi et al., 2015)|
+| Bayesian mode-order + dispersion | Shallow water, unknown environment | **Mean error <5%** | Tolerant to parameter mismatch  (Li et al., 2023)|
+| Hyperbola-warping transform | Shallow water | Detection range **+20%** | 10 dB noise immunity gain  (Li et al., 2024)|
+
+**Figure 1:** Comparison of single-hydrophone matched-field, warping, and dispersion-based passive ranging methods.
+
+Matched-field processing using cepstrum replica fields generated from a reference vessel transit provides instantaneous range estimates for subsequent ships in the same area, tested across six small-ship transits and one rigid-hulled inflatable boat  (Lo, 2021). A phase-matched filter (MP-MIR) synthesizes replica fields from horizontal wavenumbers alone, avoiding the manual modal filtering that limits prior mode-based algorithms, and was validated on 84 emissions at 2.5–20 km in the South China Sea  (Liang et al., 2022). A warping-transform approach extracts invariant frequency features from the autocorrelation of impulsive signals, achieving a mean relative range error below 10% verified against GPS in the North Yellow Sea  (Qi et al., 2015). A Bayesian method jointly identifies normal-mode order and estimates propagation range without prior environmental knowledge, yielding a mean relative error under 5% on both linear frequency modulation and explosion-source data  (Li et al., 2023).
+
+## Deep-Water Multipath and Synthetic Aperture Methods
+
+- **Multipath arrival-based ranging** at the ALOHA Cabled Observatory estimated horizontal range to 296 airgun shots in deep water, with the approach fully automated and robust to multiple sources and environmental uncertainty  (Rideout & Nosal, 2025).
+- An earlier single-hydrophone multipath technique compared time differences between interface-reflecting and direct arrivals against model-predicted candidates without requiring arrival-path labeling, demonstrated on fin whale calls in 4,782 m water  (Rideout & Nosal, 2018).
+- **Synthetic aperture beamforming** from a single hydrophone obtains the horizontal wavenumber spectrum of a moving source, recovering range from radial velocity and CPA estimation with only sound speed as a priori information, validated on SWellEx-96 data  (Du et al., 2020).
+- A field-differencing algorithm cross-correlates sound fields at different source–receiver ranges and incorporates Doppler shift from source motion, estimating track parameters at longer distances than the original field-differencing method  (Jang et al., 2025).
+
+## Vector Sensor and Field-Differencing Approaches
+
+- A **single vector hydrophone** on a shallow unmanned platform combined bearings-only TMA with grazing-angle estimation to determine real-time range of a surface ship in deep sea, achieving an **average distance error of 11.6%**  (Zhang et al., 2023).
+- A single acoustic vector sensor exploits the near-field dominance of particle-motion energy, using the kinetic-to-potential energy density ratio to estimate monopole range without arrays or environmental priors, achieving **RMSE below 10%** at 30 Hz  (Mahmoud et al., 2025).
+- Environmental conditions significantly affect single-hydrophone velocity estimation accuracy because propagating-mode characteristics in the waveguide influence the cross-correlated fields used for ranging  (Jang & Byun, 2024).
+- Performance degrades for hydrophones near the surface due to high ambient noise and for those near mode-null depths, as demonstrated across 16 elements of VLA2 in SBCEX17  (Jang et al., 2025).
+
+Single-hydrophone ranging trades the simplicity and low cost of one receiver against environmental sensitivity and, in some methods, the need for a reference transit or prior sound-speed knowledge  (Liang et al., 2022; Du et al., 2020). Deep-water multipath methods avoid waveguide dependence but require resolvable multipath arrivals  (Rideout & Nosal, 2025), while shallow-water WI and dispersion methods achieve lower errors but depend on modal structure that varies with bathymetry and receiver depth  (Young et al., 2020; Jang & Byun, 2024).
+ 
+_These search results were found and analyzed using Consensus, an AI-powered search engine for research. Try it at https://consensus.app. © 2026 Consensus NLP, Inc. Personal, non-commercial use only; redistribution requires copyright holders’ consent._
+ 
+## References
+ 
+Q., Y., Z., S., R., Y., W., D., L., J., F., & X.-Q. (2015). Passive source range estimation with a single receiver in shallow water. 1-14.
+ 
+Du, J.-Y., Liu, Z., & Lü, L. (2020). Range Localization of a Moving Source Based on Synthetic Aperture Beamforming Using a Single Hydrophone in Shallow Water. *Applied Sciences*. https://doi.org/10.3390/app10031005
+ 
+Jang, J., Hodgkiss, W., & Meyer, F. (2025). Statistical model and estimation method for ranging a moving ship using a single acoustic receiver in shallow water.. *The Journal of the Acoustical Society of America, 158 3*, 2448-2463. https://doi.org/10.1121/10.0039377
+ 
+Jang, J.-B., Byun, S.-H., & Byun, G. (2025). Ranging of Moving Sound Source Using Single Hydrophone in Shallow Waters. *2025 IEEE Underwater Technology (UT)*, 1-5. https://doi.org/10.1109/ut61067.2025.10947417
+ 
+Jang, J.-B., & Byun, S.-H. (2024). Performance analysis of passive acoustic ranging using a single hydrophone in shallow waters. *The Journal of the Acoustical Society of America*. https://doi.org/10.1121/10.0027762
+ 
+Li, X., Chen, H., Lu, H., Bi, X., & Mo, Y. (2023). A method of underwater sound source range estimation without prior knowledge based on single sensor in shallow water. https://doi.org/10.3389/fphy.2023.1109220
+ 
+Li, Y., Gao, B., Chen, Z., Yu, Y., Wang, Z., & Gao, D. (2024). Target Motion Parameters Estimation by Full-Plane Hyperbola-Warping Transform with a Single Hydrophone. *Remote. Sens., 16*, 3307. https://doi.org/10.3390/rs16173307
+ 
+Liang, N., Zhou, J., & Yang, Y. (2022). Single Hydrophone Passive Source Range Estimation Using Phase-Matched Filter. *Journal of Marine Science and Engineering*. https://doi.org/10.3390/jmse10070866
+ 
+Lo, K. (2021). A matched-field processing approach to ranging surface vessels using a single hydrophone and measured replica fields.. *The Journal of the Acoustical Society of America, 149 3*, 1466. https://doi.org/10.1121/10.0003631
+ 
+Mahmoud, S., Saleh, L., & Chouaib, I. (2025). Single-Sensor Passive Ranging of Underwater Monopoles Using Near-Field/Far-Field Energy Contrasts. *Archives of Acoustics*. https://doi.org/10.24425/aoa.2025.154829
+ 
+Rideout, B. P., & Nosal, E. (2025). Single hydrophone passive acoustic ranging in deep water.. *The Journal of the Acoustical Society of America, 158 6*, 4610-4621. https://doi.org/10.1121/10.0039930
+ 
+Rideout, B. P., & Nosal, E. (2018). Single-hydrophone automated passive acoustic ranging of fin whales at Station ALOHA. *The Journal of the Acoustical Society of America*. https://doi.org/10.1121/1.5068558
+ 
+Sun, K., Gao, D., Zhao, X., Guo, D., Song, W., & Li, Y. (2023). Estimation of Target Motion Parameters from the Tonal Signals with a Single Hydrophone. *Sensors (Basel, Switzerland), 23*. https://doi.org/10.3390/s23156881
+ 
+Young, A. H., Harms, H. A., Hickman, G., Rogers, J. S., & Krolik, J. (2020). Waveguide-Invariant-Based Ranging and Receiver Localization Using Tonal Sources of Opportunity. *IEEE Journal of Oceanic Engineering, 45*, 631-644. https://doi.org/10.1109/joe.2018.2883855
+ 
+Zhang, Q., Da, L., Wang, C., Yuan, M., Zhang, Y., & Zhuo, J. (2023). Passive ranging of a moving target in the direct-arrival zone in deep sea using a single vector hydrophone.. *The Journal of the Acoustical Society of America, 154 4*, 2426-2439. https://doi.org/10.1121/10.0021875
+ 
+
+# **Cross-Modal Gaps** in Acoustic Vessel Ranging for Non-AIS Ships
+
+A critical gap exists at the intersection of three independently mature technologies: optical satellite imagery for detecting non-AIS vessels, machine learning for acoustic distance estimation, and hydrophone-based passive monitoring. No published work integrates PlanetScope or similar optical imagery to generate ground-truth distance labels for training acoustic ML models targeting recreational or small vessels absent from AIS data  (Nakayama et al., 2023; Wout et al., 2025; Ramirez-Torres et al., 2025).
+
+## Evidence Coverage Across Vessel Distance Estimation
+
+| | Single Hydrophone | PlanetScope Imagery | Recreational Vessels | AIS-Independent Labels |
+|---|---|---|---|---|
+| Acoustic ML Ranging | GAP | GAP | GAP | GAP |
+| Optical Satellite Detection | GAP | GAP | GAP | GAP |
+| Non-AIS Small Vessel Monitoring | GAP | GAP | GAP | GAP |
+| Cross-Modal Label Fusion | GAP | GAP | GAP | GAP |
+
+The most striking gap is the complete absence of cross-modal label fusion: no study uses optical satellite detections of non-AIS vessels to provide distance ground truth for acoustic ML training. Optical imagery from PlanetScope successfully detects small vessels absent from AIS data  (Nakayama et al., 2023), and passive acoustic ML classifies vessel distance from hydrophone data  (Wout et al., 2025; Ferguson et al., 2016), yet these pipelines remain disconnected. Acoustic ranging models rely exclusively on AIS for distance labels, inheriting a structural blind spot for recreational craft that do not broadcast AIS  (Wout et al., 2025; Domingos et al., 2022; Renaud et al., 2026).
+
+This gap persists because optical and acoustic communities address the non-AIS vessel problem with separate sensor pipelines. Optical satellite studies detect non-AIS recreational vessels but stop at spatial mapping without linking to acoustic signatures  (Mäyrä et al., 2025; Nakayama et al., 2023), while acoustic ML studies acknowledge that AIS-based labels miss dark vessels but lack an alternative ground-truth source  (Wout et al., 2025). Bridging this divide would require temporally aligning satellite-detected non-AIS vessel positions with hydrophone recordings to generate distance labels for vessels invisible to AIS.
+
+## Acoustic ML Ranging and AIS Dependence
+
+- A CNN trained on **116 days of hydrophone data** aligned with AIS coordinates classifies vessel distance into 1-km bins, but inherits AIS blind spots for non-AIS vessels  (Wout et al., 2025).
+- A single-hydrophone CNN using **cepstrum data** estimates range of small boats but was validated only against vessels with known GPS tracks, not non-AIS recreational craft  (Ferguson et al., 2016).
+- A database-native workflow aligns **terabyte-scale hydrophone archives** with AIS position reports for ML-ready distance labels, but explicitly notes the resulting data is limited to AIS-broadcasting vessels  (Renaud et al., 2026).
+- Machine learning classifiers outperform matched-field processing for ship localization but depend on AIS-derived training labels, limiting generalization to dark vessels  (Niu et al., 2017).
+
+## Optical Satellite Detection of Non-AIS Vessels
+
+| Study | Imagery Source | Non-AIS Detection | Small Vessel Focus |
+|-------|---------------|-------------------|-------------------|
+| Nakayama et al. (2023) | **PlanetScope** (3 m) | Deep learning detects vessels absent from AIS | Yes, smaller vessels  (Nakayama et al., 2023)|
+| Mäyrä et al. (2025) | **Sentinel-2** | YOLO detects pleasure crafts (F1=0.863) | Recreational boats  (Mäyrä et al., 2025)|
+| O'Hara et al. (2022) | Shore-based optical | **72% of vessels** lacked AIS | Recreational, seasonal  (O'Hara et al., 2022)|
+| Serra-Sogas et al. (2021) | Aerial surveys | **70% non-AIS**, 53% recreational | Recreational vessels  (Serra-Sogas et al., 2021)|
+| Zhang et al. (2026) | **Sentinel-2** | Small vessel detection (F1=0.846) | Small coastal vessels  (Zhang et al., 2026)|
+
+**Figure 1:** Optical satellite and aerial studies detecting non-AIS recreational vessels that could serve as ground-truth sources for acoustic ML training.
+
+## Non-AIS Vessel Prevalence and Monitoring Challenges
+
+- Up to **72% of vessel passages** in some regions do not broadcast AIS, with recreational craft comprising the majority of non-AIS traffic  (O'Hara et al., 2022).
+- Aerial surveys confirm **70% non-AIS traffic**, with recreational vessels making up 53% of all sighted vessels  (Serra-Sogas et al., 2021).
+- Non-AIS traffic exhibits strong **seasonal and weekend patterns**, peaking in summer months when recreational boating is highest  (O'Hara et al., 2022).
+- Acoustic datasets suffer from **scarcity of labeled recordings**, and existing corpora lack range annotations for non-AIS vessels, hindering ML development  (Domingos et al., 2022; Renaud et al., 2026; Neilsen et al., 2021).
+
+## Cross-Modal Fusion Opportunities
+
+- **Distributed Acoustic Sensing** achieves 141 m distance estimation error using ML but relies on AIS-guided annotation, leaving non-AIS vessels unvalidated  (Ramirez-Torres et al., 2025).
+- Dark ship detection frameworks fuse **optical and SAR satellite imagery** with AIS to identify non-broadcasting vessels, but do not incorporate acoustic data  (Li et al., 2025).
+- Unsupervised clustering of ship spectrograms reveals a **speed-distance ambiguity** that limits range estimation without external ground truth, a problem optical imagery could resolve  (Neilsen et al., 2021).
+- Future maritime monitoring frameworks explicitly call for **multi-source data fusion** integrating drones, buoys, and satellites to build three-dimensional monitoring networks  (Li et al., 2025).
+
+The research community has the component technologies—optical satellite detection of small non-AIS vessels, single-hydrophone ML ranging, and scalable AIS-acoustic data alignment—but no study has closed the loop by using optical imagery to label acoustic recordings for vessels invisible to AIS. This cross-modal gap represents an unexplored pathway for training acoustic distance-estimation models on the recreational and small-vessel traffic that current AIS-dependent approaches fundamentally cannot reach.
+ 
+_These search results were found and analyzed using Consensus, an AI-powered search engine for research. Try it at https://consensus.app. © 2026 Consensus NLP, Inc. Personal, non-commercial use only; redistribution requires copyright holders’ consent._
+ 
+## References
+ 
+Domingos, L., Santos, P. E., Skelton, P. S. M., Brinkworth, R., & Sammut, K. (2022). An Investigation of Preprocessing Filters and Deep Learning Methods for Vessel Type Classification With Underwater Acoustic Data. *IEEE Access, 10*, 117582-117596. https://doi.org/10.1109/access.2022.3220265
+ 
+Domingos, L., Santos, P. E., Skelton, P. S. M., Brinkworth, R., & Sammut, K. (2022). A Survey of Underwater Acoustic Data Classification Methods Using Deep Learning for Shoreline Surveillance. *Sensors (Basel, Switzerland), 22*. https://doi.org/10.3390/s22062181
+ 
+Ferguson, E. L., Ramakrishnan, R., Williams, S. B., & Jin, C. (2016). Deep learning approach to passive monitoring of the underwater acoustic environment. *Journal of the Acoustical Society of America, 140*, 3351-3351. https://doi.org/10.1121/1.4970708
+ 
+Ferguson, E. L., Ramakrishnan, R., Williams, S. B., & Jin, C. (2016). Convolutional neural networks for passive monitoring of a shallow water environment using a single sensor. *2017 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)*, 2657-2661. https://doi.org/10.1109/icassp.2017.7952638
+ 
+Li, F., Yu, K., Yuan, C., Tian, Y., Yang, G., Yin, K., & Li, Y. (2025). Dark Ship Detection via Optical and SAR Collaboration: An Improved Multi-Feature Association Method Between Remote Sensing Images and AIS Data. *Remote Sensing*. https://doi.org/10.3390/rs17132201
+ 
+Mäyrä, J., Virtanen, E., Jokinen, A.-P., Koskikala, J., Väkevä, S., & Attila, J. (2025). Mapping recreational marine traffic from Sentinel-2 imagery using YOLO object detection models. *Remote Sensing of Environment*. https://doi.org/10.1016/j.rse.2025.114791
+ 
+Nakayama, S., Dong, W., Correro, R., Selig, E., Wabnitz, C., Hastie, T., Leape, J., Yeung, S., & Micheli, F. (2023). Comparing spatial patterns of marine vessels between vessel-tracking data and satellite imagery. https://doi.org/10.3389/fmars.2022.1076775
+ 
+Neilsen, T., Tsai, Z., Hodgkiss, W., & Knobles, D. (2021). Unsupervised learning for seabed type and source parameters from surface ship spectrograms. *Journal of the Acoustical Society of America, 149*. https://doi.org/10.1121/10.0004597
+ 
+Niu, H., Ozanich, E., & Gerstoft, P. (2017). Ship localization in Santa Barbara Channel using machine learning classifiers.. *The Journal of the Acoustical Society of America, 142 5*, EL455. https://doi.org/10.1121/1.5010064
+ 
+O'Hara, P., Serra-Sogas, N., McWhinnie, L., Pearce, K., Baron, N. L., O'Hagan, G., Nesdoly, A., Marques, T., & Canessa, R. (2022). Automated identification system for ships data as a proxy for marine vessel related stressors.. *The Science of the total environment*, 160987. https://doi.org/10.1016/j.scitotenv.2022.160987
+ 
+Ramirez-Torres, E. E., Macias-Guarasa, J., Pizarro-Perez, D., Tejedor, J., Palazuelos-Cagigas, S., Vidal-Moreno, P. J., Martín-López, S., González-Herráez, M., & Vanthillo, R. (2025). Vessel Detection and Localization Using Distributed Acoustic Sensing in Submarine Optical Fiber Cables. *IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing*. https://doi.org/10.1109/jstars.2026.3716768
+ 
+Renaud, W., Aravindan, P., & Spadon, G. (2026). From Continuous Deployment to Queryable Dataset: Terabyte-Scale AIS-Aligned Passive Acoustic Labelling. https://doi.org/10.48550/arxiv.2607.13840
+ 
+Serra-Sogas, N., O'Hara, P., Pearce, K., Smallshaw, L., & Canessa, R. (2021). Using aerial surveys to fill gaps in AIS vessel traffic data to inform threat assessments, vessel management and planning. *Marine Policy*. https://doi.org/10.1016/j.marpol.2021.104765
+ 
+Wout, D., Klaas, D., Clea, P., Elena, S., & Elisabeth, D. (2025). Transfer Learning for Distance Classification of Marine Vessels Using Underwater Sound. *IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing, 18*, 19710-19726. https://doi.org/10.1109/jstars.2025.3593779
+ 
+Zhang, P., Song, Z., Man, W., He, X., Li, Z., Nie, Q., Du, X., Yu, S., Jiang, Y., & Zhang, X. (2026). YOLO-Based Ship Traffic Monitoring in Fujian Coastal Waters from Sentinel-2 Imagery. *Remote Sensing*. https://doi.org/10.3390/rs18142378
+ 
+
+# Much of this **gap-space work** is **open-source adjacent**, but the full cross-modal pipeline is not open-source end-to-end.
+
+Recent work suggests a **majority of the enabling infrastructure** is open or publicly accessible, while the actual non-AIS acoustic-ranging gap remains only partially built on open-source components  (Hanf‐Dressler et al., 2026; Macaulay & Gillespie, 2022; Lapp et al., 2023). The strongest openness is in tooling and some datasets; the weakest openness is in integrated labels linking small-vessel satellite detections to hydrophone-based distance ground truth  (Hanf‐Dressler et al., 2026; Domingos et al., 2022; Duong et al., 2025).
+
+## Open Components
+
+Open satellite imagery is already a substantial foundation for the optical side of this gap. Small-vessel studies use **open Sentinel-2 imagery**, not proprietary feeds, and frame that openness as key to scalability and accessibility  (Mäyrä et al., 2025; Menhart et al., 2025). Public vessel-detection datasets also exist on the remote-sensing side, including SSDD, OpenSARship, VDS2RAW, and other benchmark sets used for training or comparison  (Fan et al., 2024; Menhart et al., 2025; Humayun et al., 2024).
+
+Open acoustic resources are also common, but more uneven. DeepShip was created specifically because many earlier vessel-acoustics studies used private data, and it provides a **public benchmark dataset** of 47 hours from 265 ships  (Irfan et al., 2021). Other vessel-acoustics studies explicitly build on openly available hydrophone data or public datasets such as Ocean Networks Canada, the Strait of Georgia dataset, and VTUAD  (Domingos et al., 2022; Wout et al., 2025; Nathala et al., 2024).
+
+## Where Openness Stops
+
+| Layer | Open-Source Status | Main Limitation |
+|---|---|---|
+| Satellite imagery inputs | **Often open** | PlanetScope and other commercial imagery remain restricted in many studies  (Menhart et al., 2025; Duong et al., 2025)|
+| Acoustic software tools | **Mostly open/free** | Fragmented, not interoperable end-to-end  (Hanf‐Dressler et al., 2026)|
+| Acoustic ML datasets | **Mixed** | Public benchmarks exist, but labeled datasets remain scarce  (Domingos et al., 2022; Xu et al., 2023)|
+| Code for ship detection models | **Sometimes open** | Public release is inconsistent across papers  (Duong et al., 2025)|
+| Cross-modal non-AIS labels | **Largely absent** | No integrated open benchmark for optical-to-acoustic ranging of small dark vessels  (Parsons et al., 2022; Wout et al., 2025)|
+
+**Figure 1:** Open-source status across the satellite, acoustic, software, and label layers most relevant to non-AIS small-vessel acoustic ranging.
+
+The biggest bottleneck is not raw openness of tools, but the absence of an **open integrated benchmark** for the exact task. Acoustic ML papers still emphasize limited labeled datasets and few open evaluation methods, while PAM reviews describe a fragmented software and data ecosystem despite many free tools  (Domingos et al., 2022; Hanf‐Dressler et al., 2026). Self-supervised acoustics work reinforces why this matters: large-scale underwater labels are expensive, so models increasingly try to learn from unlabeled data instead  (Xu et al., 2023).
+
+## Best Estimate
+
+- **Tooling is mostly open/free**, with 83% of PAM tools freely accessible in one systematic review  (Hanf‐Dressler et al., 2026).
+- **Benchmark datasets are partly open**, including DeepShip, VTUAD, and open hydrophone archives, but many vessel studies still use private or partially reproducible data  (Irfan et al., 2021; Domingos et al., 2022).
+- **Model code is variably open**; some papers release code explicitly, such as FedShip, but many do not state code availability  (Duong et al., 2025).
+- The **target gap itself**—training acoustic distance models for small non-AIS vessels using optical detections—appears minimally developed as an open-source project stack  (Duong et al., 2025; Hanf‐Dressler et al., 2026; Wall et al., 2025).
+
+So, a lot of the surrounding work is built on open-source or open-data components, but the specific gap space you care about is **not yet mostly open-source in a complete, reusable sense**. The open pieces exist; the missing part is stitching them into a shared cross-modal dataset, benchmark, and codebase for **small non-AIS vessel ranging**.
+ 
+_These search results were found and analyzed using Consensus, an AI-powered search engine for research. Try it at https://consensus.app. © 2026 Consensus NLP, Inc. Personal, non-commercial use only; redistribution requires copyright holders’ consent._
+ 
+## References
+ 
+Domingos, L., Santos, P. E., Skelton, P. S. M., Brinkworth, R., & Sammut, K. (2022). An Investigation of Preprocessing Filters and Deep Learning Methods for Vessel Type Classification With Underwater Acoustic Data. *IEEE Access, 10*, 117582-117596. https://doi.org/10.1109/access.2022.3220265
+ 
+Duong, A.-K., La, T., Lê, H.-Â., & Pham, M.-T. (2025). FedShip: Federated Learning for Ship Detection From Multi-Source Satellite Images. *IEEE Geoscience and Remote Sensing Letters, 22*, 1-5. https://doi.org/10.1109/lgrs.2024.3511122
+ 
+Fan, X., Hu, Z., Zhao, Y., Chen, J., Wei, T., & Huang, Z. (2024). A Small-Ship Object Detection Method for Satellite Remote Sensing Data. *IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing, 17*, 11886-11898. https://doi.org/10.1109/jstars.2024.3419786
+ 
+Hanf‐Dressler, T., Nouioua, R., Thomisch, K., Cazau, D., De Selys Longchamps, S., & Darras, K. F. A. (2026). Software Tools for Passive Acoustic Monitoring in Aquatic and Terrestrial Bio- and Ecoacoustics: A Living Systematic Review. *F1000Research, 15*. https://doi.org/10.12688/f1000research.173495.1
+ 
+Humayun, M. F., Nasir, F. A., Bhatti, F., Tahir, M., & Khurshid, K. (2024). YOLO-OSD: Optimized Ship Detection and Localization in Multiresolution SAR Satellite Images Using a Hybrid Data-Model Centric Approach. *IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing, 17*, 5345-5363. https://doi.org/10.1109/jstars.2024.3365807
+ 
+Irfan, M., Zheng, J., Ali, S., Iqbal, M., Masood, Z., & Hamid, U. (2021). DeepShip: An underwater acoustic benchmark dataset and a separable convolution based autoencoder for classification. *Expert Syst. Appl., 183*, 115270. https://doi.org/10.1016/j.eswa.2021.115270
+ 
+Lapp, S., Rhinehart, T., Freeland-Haynes, L., Khilnani, J., Syunkova, A., & Kitzes, J. (2023). OpenSoundscape: An open‐source bioacoustics analysis package for Python. *Methods in Ecology and Evolution, 14*, 2321 - 2328. https://doi.org/10.1111/2041-210x.14196
+ 
+Macaulay, J., & Gillespie, D. (2022). PAMGuard: Open-source detection, classification, and Localization software. *The Journal of the Acoustical Society of America*. https://doi.org/10.1121/10.0010546
+ 
+Mäyrä, J., Virtanen, E., Jokinen, A.-P., Koskikala, J., Väkevä, S., & Attila, J. (2025). Mapping recreational marine traffic from Sentinel-2 imagery using YOLO object detection models. *Remote Sensing of Environment*. https://doi.org/10.1016/j.rse.2025.114791
+ 
+Menhart, P., Eiselbrecher, F., Perocco, C., Stillman, M., & Kruspe, A. (2025). Assessing Stationary Maritime Traffic Density in Territorial Dispute Zones Using Open-Source Sentinel-2 Satellite Imagery. *Proceedings of the International ISCRAM Conference*. https://doi.org/10.59297/e07vg179
+ 
+Nathala, S. S., Yakkati, R. R., Dayal, A., Manikandan, M., Zhou, J., & Cenkeramaddi, L. R. (2024). Vessel Type Classification Utilizing Underwater Acoustic Data and Deep Learning. *2024 IEEE 19th Conference on Industrial Electronics and Applications (ICIEA)*, 1-6. https://doi.org/10.1109/iciea61579.2024.10665252
+ 
+Parsons, M. J. G., Lin, T., Mooney, T., Erbe, C., Juanes, F., Lammers, M., Li, S., Linke, S., Looby, A., Nedelec, S., Van Opzeeland, I. C., Radford, C., Rice, A., Sayigh, L., Stanley, J., Urban, E., & Di Iorio, L. (2022). Sounding the Call for a Global Library of Underwater Biological Sounds. https://doi.org/10.3389/fevo.2022.810156
+ 
+Wall, C. C., Mckenna, M., Hatch, L., Van Parijs, S. M., Bochenek, R., Dugan, P., Parcerisas, C., Ryan, J. P., Anderson, C. D., Becker, K., Berchok, C., Biddle, M., Boebel, O., Canino, A., Canonico, G., Cline, D., Davis, G., Frasier, K., Gedamke, J., . . . Thomisch, K. (2025). Big Data, Sound Science, Lasting Impact: a framework for passive acoustic monitoring. *bioRxiv*. https://doi.org/10.1080/20964471.2025.2583505
+ 
+Wout, D., Klaas, D., Clea, P., Elena, S., & Elisabeth, D. (2025). Transfer Learning for Distance Classification of Marine Vessels Using Underwater Sound. *IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing, 18*, 19710-19726. https://doi.org/10.1109/jstars.2025.3593779
+ 
+Xu, Q., You, K.-S., Zhu, B., Feng, M., Feng, D., & Liu, B. (2023). Self-supervised learning-based underwater acoustical signal classification via mask modeling.. *The Journal of the Acoustical Society of America, 154 1*, 5-15. https://doi.org/10.1121/10.0019937
+ 
+
+
+
