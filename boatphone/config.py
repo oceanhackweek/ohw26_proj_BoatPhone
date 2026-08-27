@@ -198,3 +198,90 @@ VTUAD_SMALLEST_UNIT_SIZE_BYTES: int = 3_310_000_000
 # (2026-08-27). Anti-alias rolloff reaches -3 dB at 11652 Hz relative to the
 # 2-10 kHz median, so the upper edge is the -3 dB corner, not Nyquist.
 VTUAD_BAND_POPULATED_HZ: tuple[int, int] = (10, 11652)
+
+
+# ===========================================================================
+# ONC SSAMBA pretrained checkpoint -- label space and its hard limits (B0-4).
+#
+# Pinned artefacts (docs/derived/b0_external_provenance.json):
+#   repo       OceanNetworksCanada/selfsupervision_anomalies_onc @ e3aebfc
+#   checkpoint merileo/finetune-amba-...-noexclude @ eef6c151,
+#              finetune/ft-cls_best_checkpoint.pth
+#              sha256 e474ddc5a407c78731b9dcfc944a83e53e1da91797bee6851ad2b852c3dc35ca
+#   eval h5    merileo/onc-ssl-tutorial @ ed38793a,
+#              different_locations_incl_backgroundpipelinenormals_multilabel_SMALL.h5
+#
+# READ THIS BEFORE USING ANY INDEX BELOW.
+#
+# The finetuned checkpoint is NOT an 8-class Engine Noise classifier. Measured
+# from the checkpoint's own tensors on 2026-08-27:
+#     mlp_head.1.weight  ->  shape (1, 768)
+# i.e. the model emits ONE logit. `onc_ssamba/utilities/training_utils.py`
+# create_model() confirms the rule that produced it:
+#     label_dim = 1 if args.task == 'ft_cls' and args.n_class == 2
+# and `onc_ssamba/dataset.py` shows the target it was trained against:
+#     labels = torch.tensor(float(sample['is_anomalous']))
+# where `is_anomalous` is TRUE for ANY label other than 'normal'. The single
+# logit is therefore a BINARY normal-vs-anomalous score in which Engine Noise is
+# pooled with Anomaly, Data Gap, Dropout, Rain, Sensitivity, Tonal and Unknown
+# Feature. There is NO index into the model output at which Engine Noise can be
+# read out. ENGINE_NOISE_LABEL_INDEX below indexes the DATASET label matrix, not
+# the model.
+# ===========================================================================
+
+# Ordered label list of the eval h5's `labels` matrix, columns 0..7.
+#
+# DERIVED FROM THE DATA, NOT FROM THE YAML. The h5 has NO `label_names` dataset
+# (its only datasets are index_map_original, label_strings, labels, sources,
+# spectrograms, split/*). The order below was recovered on 2026-08-27 by
+# cross-tabulating each column of `labels` (1158, 8) against `label_strings`:
+# every row with column c set was checked to contain the c-th name below in its
+# semicolon-separated label string, and no other column explains it. Column sums
+# were [22, 25, 55, 31, 28, 20, 59, 27].
+#
+# It happens to agree with external/onc_ssamba/config/dataset_config.yaml's
+# `anomaly_labels`, but that agreement is a CHECK, not the source: the YAML is
+# not what built the array.
+ONC_MODEL_LABEL_NAMES: tuple[str, ...] = (
+    "Anomaly",
+    "Data Gap",
+    "Dropout",
+    "Engine Noise",
+    "Rain",
+    "Sensitivity",
+    "Tonal",
+    "Unknown Feature",
+)
+
+# Column of ONC_MODEL_LABEL_NAMES that means vessel engine noise. This indexes
+# the DATASET label matrix (h5 `labels[:, 3]`). It is NOT a model output index --
+# see the block comment above. Any use of it to slice a logit vector is a bug.
+ENGINE_NOISE_LABEL_INDEX: int = ONC_MODEL_LABEL_NAMES.index("Engine Noise")
+
+# Number of logits the finetuned checkpoint actually emits. MEASURED from
+# mlp_head.1.weight.shape == (1, 768), not read from args.pkl (whose `n_class`
+# and `num_classes` are both 2 and describe the UNUSED VisionMamba v.head).
+ONC_MODEL_N_LOGITS: int = 1
+
+# Decision threshold the ONC training code applies to sigmoid(logit) when it
+# reports precision/recall. Source: `calculate_binary_metrics(..., threshold=0.5)`
+# in onc_ssamba/utilities/metrics/hydrophone_metrics.py. Stated here because
+# every P/R figure quoted from result.csv is a figure AT THIS THRESHOLD.
+ONC_MODEL_DECISION_THRESHOLD: float = 0.5
+
+# Input the model hard-requires: (freq, time) = (512, 512), single channel.
+# Source: AMBAModel.forward raises ValueError for anything else, and the
+# checkpoint's v.pos_embed is (1, 2501, 768) = 50x50 patches + 1 cls token,
+# which is exactly (512 - 16)//10 + 1 = 50 per axis at patch 16 / stride 10.
+ONC_MODEL_INPUT_FDIM: int = 512
+ONC_MODEL_INPUT_TDIM: int = 512
+
+# Per-spectrogram normalisation constants used by the finetune run, applied as
+#     (x - mean) / (2 * std)
+# Source: args.pkl of the pinned run (`dataset_mean`, `dataset_std`) and
+# ONCSpectrogramDataset.normalise() in onc_ssamba/dataset.py. These are in the
+# units of the ONC .mat `SpectData.PSD` field. They are NOT calibrated dB re
+# 1 uPa and they are NOT interchangeable with Folger calibrated levels --
+# see docs/decisions/0002-time-alignment-and-units.md.
+ONC_MODEL_DATASET_MEAN: float = 51.506817
+ONC_MODEL_DATASET_STD: float = 13.638703
