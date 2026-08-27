@@ -94,3 +94,21 @@ Recorded here rather than silently worked around.
   `vars(client)` (or `client.__dict__`, or `%xmode Verbose`, which prints every local
   in each traceback frame) would put the token into git in plain text. Keep the client
   out of cell output.
+
+## B0 out-of-tree installs -- now disposable (2026-08-27)
+
+B0-5/B0-6 needed five packages to even attempt loading the ONC SSAMBA/Vision-Mamba checkpoint:
+`timm` 1.0.11, `einops` 0.8.2, `mamba_ssm` 2.2.5 (built without the CUDA extension -- no `nvcc`,
+no GPU), `triton` 3.7.1, `transformers` 5.16.1.
+
+**All five were installed out-of-tree only**, via `pip install --no-deps --target
+<scratchpad>/pylibs` plus `PYTHONPATH=<scratchpad>/pylibs`. **Nothing was installed into
+`/home/.pixi/envs/default`.** None of it persists for teammates, none of it is a dependency of
+any notebook in `final_notebooks/` or `contributor_folders/`, and none of it is required by
+`scripts/checks.py`.
+
+Per decision `0012`, B0 returned **NO-GO** on the whole pretrained-checkpoint path (independent
+of these packages loading at all -- the checkpoint has no usable Engine Noise output and scoring
+the corpus once would cost ~12 CPU-days). **These five packages are therefore disposable.** They
+are recorded here only so a future session does not wonder where `boatphone/onc_model_cpu.py`'s
+imports were meant to come from.

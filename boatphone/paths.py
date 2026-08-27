@@ -55,6 +55,21 @@ PROCESSED_DIR: pathlib.Path = DATA_DIR / "processed"
 DOCS_DIR: pathlib.Path = REPO_ROOT / "docs"
 SCRIPTS_DIR: pathlib.Path = REPO_ROOT / "scripts"
 
+# Source: docs/decisions/0009-onc-pretrained-checkpoint-is-the-model.md and B0-1 brief.
+# Third-party model code/checkpoints -- immutable to us but not OURS, so invariant 2
+# (data/ immutability) does not apply; they live OUTSIDE data/ entirely, gitignored
+# (large binaries, same rule as bulk ONC downloads), with provenance tracked
+# separately at docs/derived/b0_external_provenance.json.
+EXTERNAL_DIR: pathlib.Path = REPO_ROOT / "external"
+# Clone of OceanNetworksCanada/selfsupervision_anomalies_onc (git commit SHA pinned
+# in the provenance record).
+ONC_MODEL_DIR: pathlib.Path = EXTERNAL_DIR / "onc_ssamba"
+# Hugging Face Hub artefacts pulled from merileo/* (revision pinned in the
+# provenance record): the finetuned SSAMBA/Vision-Mamba classification checkpoint,
+# args.pkl, and a labelled eval .h5. NOT a "CPU CNN baseline" -- decision 0012a found
+# no such artefact exists under any merileo/* repo; that was a literature-sweep error.
+CHECKPOINT_DIR: pathlib.Path = EXTERNAL_DIR / "checkpoints"
+
 # How to obtain each input, keyed by the directory it belongs to. Used to turn a
 # bare FileNotFoundError into an actionable one (CLAUDE.md invariant: errors surface,
 # and "write code that fails clearly when its input is absent").
@@ -84,7 +99,8 @@ _DEFAULT_HOW_TO_OBTAIN = (
 __all__ = [
     "REPO_ROOT", "DATA_DIR", "SAMPLE_DIR", "SAMPLE_DIR_NAME", "RAW_DIR", "ONC_RAW_DIR",
     "SAMPLES_DIR", "DERIVED_DIR", "INTERIM_DIR", "PROCESSED_DIR", "DOCS_DIR",
-    "SCRIPTS_DIR", "UPTIME_CSV_NAME", "DEPLOYMENTS_CSV_NAME",
+    "SCRIPTS_DIR", "EXTERNAL_DIR", "ONC_MODEL_DIR", "CHECKPOINT_DIR",
+    "UPTIME_CSV_NAME", "DEPLOYMENTS_CSV_NAME",
     "UPTIME_PROVENANCE_JSON_NAME", "require_path", "ensure_dir",
 ]
 

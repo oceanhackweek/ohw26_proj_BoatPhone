@@ -1,7 +1,13 @@
 # 0009. ONC's pretrained checkpoint is the vessel-presence model
 
-Status: accepted
+Status: superseded by 0012
 Date: 2026-08-27
+
+**Superseded 2026-08-27 by `docs/decisions/0012-b0-model-viability-outcome.md`.** B0 found the
+premise refuted: no CPU CNN baseline exists, the released checkpoint has no distinct Engine Noise
+output, and it is not CPU-viable at the corpus scale needed. Body left otherwise intact below --
+the VTUAD-rejection reasoning in "Context" is unaffected and still load-bearing. Three factual
+errors are corrected inline where they occur, each pointing at 0012.
 
 ## Context
 
@@ -25,9 +31,18 @@ with sources and retrieval dates, in `docs/vtuad-facts.md`.
 * Domingos et al. 2022 -- VTUAD's own author -- releases MIT training code
   ([`underwater_snd`](https://github.com/lucascesarfd/underwater_snd),
   [`onc_dataset`](https://github.com/lucascesarfd/onc_dataset)) but **no checkpoints**.
-* Decrop et al., IEEE JSTARS 2025 (`10.1109/JSTARS.2025.3593779`) releases an open dataset
-  (`10.14284/723`) but **no code and no weights**.
+* Decrop et al., IEEE JSTARS 2025 (`10.1109/JSTARS.2025.3593779`) releases an open dataset (at
+  VLIZ, DOI `10.14284/723`, CC BY 4.0 -- **[CORRECTION, see 0012h: not Zenodo; Zenodo `12799031`
+  is only the ICUA2024 slide deck]**) but **no code and no weights**.
 * Renaud et al. (`arXiv:2607.13840`) is **method-only** -- no data, no code.
+
+**[CORRECTION, see 0012h]** This "no checkpoints"/"no weights" framing was later used, here and in
+`acoustics_plan_v2.md` §2, to help reject these MIT-licensed, weightless-but-code-reusable
+candidates outright. That specific use is withdrawn -- it contradicted the finding, above and
+restated in 0012h, that weights in this field are not portable across hydrophones anyway, so
+lacking a checkpoint was never a fair reason to reject reusable *code*. The candidates above are
+still not adopted, but for a different, checkable reason (input geometry vs the `.fft.gz`
+surface) -- see 0012h.
 
 So the "AIS-trained model" in the research question was always going to be one we built. That makes
 a poor transfer result ambiguous between "AIS-trained methods do not transfer" and "we built a weak
@@ -41,9 +56,15 @@ its published performance before trusting it.**
 
 * Source: [`OceanNetworksCanada/selfsupervision_anomalies_onc`](https://github.com/OceanNetworksCanada/selfsupervision_anomalies_onc),
   **MIT**, PyTorch. Checkpoints public on Hugging Face under `merileo/*`, MIT-tagged.
+  **[CORRECTION, see 0012f: the repo's actual `LICENSE` file is BSD-3-Clause, not MIT; both are
+  permissive and this did not change the decision.]**
 * Signal: the **`Engine Noise`** class. Full label set: `Anomaly, Data Gap, Dropout, Engine Noise,
   Rain, Sensitivity, Tonal, Unknown Feature`.
+  **[CORRECTION, see 0012b: the released checkpoint has a single-logit binary head; Engine Noise
+  is pooled with seven other anomaly types into one "anomalous" output, not a distinct class.]**
 * **Use the CPU CNN baseline** (`cnn_baseline/cnn_best.pt`) with `eval/evaluate_model.py`. The
+  **[CORRECTION, see 0012a: no CNN baseline exists under any `merileo/*` repo -- live `HfApi`
+  enumeration found none; this was a literature-sweep error, not a since-removed artefact.]**
   SSAMBA/Mamba path needs NVIDIA plus `mamba_ssm`; this environment has no GPU
   (`torch.cuda.is_available()` is False).
 * **Reproduce first.** Before scoring any Folger data, run the checkpoint over ONC's public

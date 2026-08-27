@@ -63,6 +63,56 @@ Isaac (later, Aug 27):
 - Next: B0, a half-day gate confirming ONC's model actually accepts our .fft.gz surface. If it does
   not, we fall back to standard band-level SPL detection (PyPAM/pbp/MHKiT), which needs no model.
 
+Isaac (Aug 27, later still) -- B0 NO-GO, plan surgery, B5 promoted to primary:
+- B0 RAN, TWICE (a normal pass and an adversarial recheck that re-derived every claim from the
+  artefacts themselves). VERDICT: NO-GO on the whole §4 pretrained-checkpoint path. Full record:
+  docs/decisions/0012-b0-model-viability-outcome.md. Four findings, any one of the last two
+  sufficient alone: (1) no CNN baseline exists under any merileo/* repo -- a literature-sweep
+  error in the old plan; (2) the only released checkpoint has a SINGLE-LOGIT BINARY head, with
+  Engine Noise pooled among eight anomaly types (31/1158 eval rows) -- there is no separate Engine
+  Noise output to read, and ZERO Engine Noise rows exist for our exact device (ICLISTENHF1266) in
+  the eval set anyway; (3) the CPU forward pass OOMs under this container's actual 3.90 GB cgroup
+  v2 cap (not the host's 30 GB `free` reports -- an earlier framing of this as possibly
+  architectural was wrong, corrected in 0012); (4) even bracketing all of the above, scoring the
+  full corpus once costs ~12 CPU-DAYS (24-layer bidirectional pure-Python selective scan at
+  L=2501, measured ~2 min/sample) -- independent of RAM, independent of GPU vs CPU host RAM size.
+- CONSEQUENCE: docs/plans/acoustics_plan_v2.md §4 is rewritten (not just annotated -- it asserted
+  three things now known false). B2 (spectrogram adapter) and B4 (reproduce-then-run) are struck
+  from §5; their time goes to B5 and B7. B5 (band-level SPL, no weights, PyPAM/pbp/MHKiT) is
+  PROMOTED FROM "B4's cross-check" TO THE PRIMARY DETECTOR. §7's "Model reproduction" row is
+  struck and "Detector agreement" is replaced with three model-free checks: band-split agreement
+  (an independent detector on a disjoint band, e.g. 1-4 kHz vs 8-20 kHz, over the same windows),
+  the far-field diagnostic, and the null checks -- now non-optional, not a nice-to-have.
+- NO PROJECT GOAL IS LOST. G1, G2 and G3 all still resolve on the B5 path; G4 was never dependent
+  on §4. What is lost is a cross-check and a headline number, not a deliverable.
+- decisions/0009 is SUPERSEDED (not amended) by 0012 -- its VTUAD-rejection reasoning is still
+  sound and load-bearing; only its three claims about the ONC checkpoint (MIT licence -> actually
+  BSD-3-Clause; "CPU CNN baseline exists" -> does not; "Engine Noise is an output class" -> pooled
+  binary logit) are wrong, corrected inline there pointing at 0012.
+- FOR THE WHOLE TEAM: boatphone/fft_io.py now exists and is the SHARED .fft.gz reader --
+  read_fft_gz, frequency_axis_hz, time_axis_utc_s, calibrated_band_hz, assert_calibratable,
+  assert_tone_at, structural_zero_report. Import it rather than writing a second reader. Two of
+  its checks are DELIBERATELY still failing as data-dependent findings (structural zero columns
+  aren't exactly zero; the 38 kHz line measures at bin 150-151 not 152) plus one open convention
+  question (edge- vs centre-binning of frequency bins, worth +-125 Hz on every band edge) --
+  fft_io.py, config.py and the B0-2a checks are under separate adjudication, do not touch them
+  outside that.
+- SMALL FIXES LANDED: CLAUDE.md's "not available" package list was stale (cv2 5.0.0 IS present,
+  now corrected); boatphone/onc_model_cpu.py (the CPU shim built for the dead-end model path) is
+  kept, unused, with an "UNUSED -- see decision 0012" banner, since its docstring is the best
+  surviving evidence for the OOM/cgroup finding; docs/environment-audit.md records that
+  timm/einops/mamba_ssm/triton/transformers were installed OUT-OF-TREE ONLY for B0 (pip --target +
+  PYTHONPATH, nothing in /home/.pixi/envs/default) and are now disposable.
+- RESOURCE PROVISIONING: container RAM can be raised on request, up to 30 GB (current cap measured
+  at 3.90 GB via cgroup v2). Every segment in acoustics_plan_v2.md §5 now states its expected peak
+  RAM, disk and wall-clock/CPU needs and whether it fits the current cap -- as of this writing,
+  none of B1/B3/B5/B6/B7/B8 needs a raise. This does NOT reopen the B0 NO-GO: only one of the four
+  findings above (the OOM) was RAM-bound, and it was already the least load-bearing of the three
+  that matter (missing multi-label output and the 12-CPU-day compute cost are both RAM-independent
+  and both hold regardless of any raise).
+- Next: B3 (bulk acquisition, now with a required WAV second pass for B1's loud-window magnitude
+  regression) and B1a/B1b, then B5 as primary.
+
 
 
 Project Goals:
