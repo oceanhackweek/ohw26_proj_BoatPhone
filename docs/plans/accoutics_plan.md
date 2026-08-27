@@ -1,5 +1,20 @@
 # BoatPhone — Acoustics Workstream Plan
 
+> **SUPERSEDED (2026-08-27) by `docs/plans/acoustics_plan_v2.md`.**
+>
+> This document is retained for its **evidence sections only** -- the 250 Hz bin-mapping
+> derivation in "What changed since rev. 3", and the `.fft.gz` low-frequency anomaly
+> characterisation in §A2. v2 cites both as settled facts.
+>
+> Everything else here is out of date. In particular **§A8 (VTUAD and the transfer experiment) is
+> withdrawn**: VTUAD carries no vessel size or length label, so the size-stratified transfer gap
+> §A8 promises cannot be computed; its audio is uncalibrated where Folger's is calibrated; it sits
+> behind a paid IEEE DataPort subscription with no download API; and no public AIS-trained acoustic
+> weights exist to transfer in the first place. See `docs/vtuad-facts.md` and decision 0009.
+>
+> Where the two plans disagree on anything other than the evidence sections, **v2 wins.**
+
+
 **Owner:** Isaac Guld
 **Parent plan:** `docs/plans/proposed_plan_IG.md` (rev. 3)
 **Sibling plans (other owners):** PlanetScope acquisition (Malachy), YOLO vessel detection (Neve)

@@ -20,7 +20,7 @@ Isaac Guld (hydrophone data and acoustic modelling).
 | `docs/plans/Project_Source_of_Truth.txt` | **Authoritative.** Goals, milestones, who owns what, next steps. Read at the start of any session; it overrides everything else. |
 | `docs/agent-working-agreements.md` | How to work here: branching, the fleet, verification, orchestration. |
 | `docs/decisions/0002-time-alignment-and-units.md` | The one that prevents the project's most likely wrong answer. |
-| `docs/plans/` | Per-topic plans (`accoutics_plan.md`, `proposed_plan_IG.md`). |
+| `docs/plans/` | Per-topic plans. **`acoustics_plan_v2.md` is the current acoustics plan**; `accoutics_plan.md` (v1) is superseded and kept only for its 250 Hz bin-mapping evidence. Also `proposed_plan_IG.md`. |
 | `references/` | Background reading and method notes. |
 
 ## Layout

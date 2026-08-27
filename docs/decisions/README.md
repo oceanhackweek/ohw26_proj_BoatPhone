@@ -51,3 +51,8 @@ Superseding is normal -- mark the old one and link forward. Silently contradicti
 | [0004](0004-context-budget-and-handoff.md) | Long runs stop on a budget, via a validated handoff | accepted |
 | [0005](0005-raw-acquisition-landing-zone.md) | `data/raw/<provider>/` is an append-only acquisition landing zone | accepted (amends 0001) |
 | [0006](0006-acquisitions-in-git-history.md) | The ONC delivery zip stays, and tracked acquisitions stay in history | accepted |
+| [0007](0007-onc-400s-that-are-measured-zeros.md) | Two ONC HTTP 400s are measured zeros, not failures | accepted |
+| [0008](0008-empty-listing-is-a-measured-zero.md) | An empty ONC listing is a measured zero, and the calendar says so | accepted |
+| [0009](0009-onc-pretrained-checkpoint-is-the-model.md) | ONC's pretrained checkpoint is the vessel-presence model | accepted |
+| [0010](0010-analysis-band-and-small-craft.md) | The analysis band, and why >=250 Hz is not a limitation for small craft | accepted |
+| [0011](0011-level-comparability-declarations.md) | Level comparability is declared at every pipeline boundary | accepted |
