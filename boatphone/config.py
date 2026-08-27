@@ -649,3 +649,109 @@ PLANET_SAMPLING_CONDITIONALITY_STATEMENT = (
     "claim, and any seasonal comparison is valid only within that same "
     "local-time band."
 )
+
+
+# --- B5 analysis bands (decision 0010; enforced in boatphone/features.py) ---
+# The ONE definition of every band edge B5 scores on. Do not restate a number
+# from this block in a notebook or a script (invariant 6): a band edge restated
+# in two places is a band-matching bug that produces a plausible number rather
+# than an error.
+#
+# THE FLOOR IS PHYSICAL, NOT A CHOICE. Bin 1 is 250 Hz (FFT_BIN_WIDTH_HZ) and
+# bin 0 is DC, so 250 Hz is the lowest frequency this product carries at all.
+# There is no sub-250 Hz structure to band-limit to, at any width.
+
+# The lowest frequency the product can represent: bin 1. Every band edge below
+# is checked against this, and a band reaching under it RAISES rather than being
+# silently clipped up to it -- a caller asking for 100 Hz has a wrong model of
+# the instrument, and returning the 250 Hz band instead would hide that.
+FFT_LOWEST_REPRESENTABLE_HZ: float = FFT_BIN_WIDTH_HZ  # 250.0, i.e. bin 1
+
+# PRIMARY B5 BAND -- small recreational craft, the project's target population.
+# Source: decision 0010 SS2 -- small planing hulls and outboards radiate peak
+# energy at roughly 1-10 kHz (cavitation broadband), well inside the support and
+# ABOVE the 250 Hz->2 kHz span the ~42 dB low-frequency anomaly distorts
+# (acoustics_plan_v2 SS3). This is the band the gate leads on.
+FFT_B5_SMALL_CRAFT_BAND_HZ: tuple[float, float] = (1_000.0, 10_000.0)
+
+# SECONDARY B5 BAND -- the nearest reachable proxy for the ~100 Hz band ONC
+# recommended in references/ONC_communication.txt ("many ships generate
+# significant energy around this band").
+#
+# ONC'S ~100 Hz SUGGESTION IS NOT IMPLEMENTABLE ON THIS PRODUCT, and this
+# constant is not it. 100 Hz is below FFT_LOWEST_REPRESENTABLE_HZ -- it falls
+# inside bin 0 (DC), which is structurally near-zero (decision 0014). ONC's
+# advice was sound in general and simply predates our 250 Hz bin width. Two
+# further reasons this band is secondary, not primary:
+#   (i)  decision 0010 SS2 -- the 10-100 Hz blade-rate tonals that make ~100 Hz
+#        diagnostic for LARGE ships are entirely below our floor; what survives
+#        here is the skirt of that energy, not the tonal itself;
+#   (ii) the ~42 dB unexplained low-frequency shape difference (acoustics_plan_v2
+#        SS3) sits across exactly 250 Hz -> 2 kHz, and ONC has now confirmed the
+#        fft product has filtering applied that they cannot document. Levels in
+#        this band are therefore shape-distorted by an unknown transfer function.
+# Scored anyway, and reported next to the primary band, because the CATFISH
+# (60-300 Hz discriminative at range) vs May River (discard <800 Hz as fish
+# chorusing) disagreement noted in acoustics_plan_v2 SS4 is unadjudicated, and
+# this is the band on which it gets adjudicated on our own data.
+FFT_B5_SHIP_PROXY_BAND_HZ: tuple[float, float] = (250.0, 1_000.0)
+
+# Decidecade bands are resolved only above this centre frequency. Source:
+# decision 0010 SS3 -- a decidecade band at f is ~0.23*f wide, and spanning two
+# 250 Hz bins requires f >~ 2.2 kHz. BELOW THIS, a band level is a RAW-BIN level
+# and must be labelled as such, never as a standards-compliant band level.
+# Hybrid-millidecade compliance is not claimed at any frequency (0010 SS3).
+FFT_DECIDECADE_MIN_CENTRE_HZ: float = 2_200.0
+
+# How a band level is reduced across the bins inside the band. MEDIAN OF THE
+# PRODUCT'S OWN dB-LIKE VALUES -- stated once here so a notebook and a check
+# cannot disagree. Median rather than mean because the floor censoring at 0
+# (18.7% of cells, FFT_LEVEL_FLOOR) drags a mean toward the floor by an amount
+# that moves with ambient, i.e. is confounded with the signal being detected;
+# the median is unaffected while fewer than half the in-band cells are censored,
+# and features.band_level_series REPORTS the censored fraction so that
+# precondition is checkable rather than assumed.
+#
+# NOT energy-summed. Averaging dB is not averaging power, and the difference
+# matters -- but this product's scale is uncalibrated and its dB-to-count
+# relation is unknown (references/ONC_communication.txt), so converting to
+# "power" would invent a scale we do not have. Every level from this module is
+# therefore RELATIVE and comparable only to another level computed the same way.
+FFT_BAND_LEVEL_STATISTIC: str = "median_of_product_db"
+
+
+# --- Overpass matchup window (B5 gate, B7 matchups) ------------------------
+# Half-width of the acoustic window centred on a scene's acquisition instant.
+# Source: acoustics_plan_v2 SS5 B7 -- "join each detection to its +/-15 min
+# acoustic window". Stated once here because B5's gate and B7's matchup table
+# must use the SAME window; two definitions would make the gate's result and the
+# matchup table describe different amounts of time while looking comparable.
+#
+# NOT the same quantity as PLANET_OVERPASS_WINDOW_*_LOCAL above. That pair is
+# the DAILY ACQUISITION window -- which hours of each date to pull. This is the
+# PER-SCENE ANALYSIS window around one known acquisition instant. They are
+# independent, and the first being wrong (it is -- see below) does not affect
+# this one.
+OVERPASS_MATCH_HALF_WINDOW_S: int = 15 * 60
+
+# The gate2 scene list Malachy's Planet search produced, relative to the repo
+# root. Column `acquired` is the tz-aware UTC acquisition instant and is the
+# join key to the acoustic corpus (it matches `acq_time_utc` in the optical
+# output schema at boatphone/optical.py). Named here so the gate script and its
+# checks open the SAME file.
+PLANET_GATE2_SURVIVORS_RELPATH: str = (
+    "contributor_folders/malachymcc/planet_folger/gate2_survivors.csv"
+)
+
+# MEASURED overpass spread, from the 30 scenes in the file above. RECORDED HERE
+# AS EVIDENCE, deliberately NOT yet wired into PLANET_OVERPASS_WINDOW_*_LOCAL --
+# that correction and its decision record are a separate, tracked change.
+#
+# acoustics_plan_v2 SS9 listed "PlanetScope overpasses fall 09:30-11:30 local"
+# as an ASSUMPTION and said to verify it against the first scene list. Verified
+# 2026-08-27: the scenes fall 18:17-19:49 UTC = 11:17-12:49 America/Vancouver,
+# BIMODAL (a ~18:2x cluster and a ~19:4x cluster, tracking the PS2.SD / PSB.SD
+# constellations). The assumption is FALSIFIED, and the B3 corpus -- pulled for
+# 16:15-18:45 UTC -- covers only 13 of the 30 scenes fully, 5 partially, and 12
+# not at all. Anything reading the corpus as "the overpass window" is wrong.
+PLANET_MEASURED_OVERPASS_SPREAD_UTC: tuple[str, str] = ("18:17", "19:49")

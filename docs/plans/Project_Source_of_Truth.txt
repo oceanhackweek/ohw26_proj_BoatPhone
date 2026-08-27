@@ -143,6 +143,69 @@ Milestones:
 9) Play with other data source?
 
 
+================================================================================
+2026-08-27 (Isaac) -- B5 VIABILITY GATE: GO. The .fft.gz product IS usable.
+================================================================================
+
+ONC ANSWERED (references/ONC_communication.txt). Three things, all consequential:
+  - the .fft.gz product is a proprietary Ocean Sonics black box, "essentially
+    uncalibrated unless you have all the metadata from Ocean Sonics, which I
+    don't believe ONC currently publishes", with filtering applied that ONC
+    cannot document. This EXPLAINS the ~42 dB low-frequency anomaly.
+  - the 256 kHz sensitivity curve exists but "wouldn't be applicable to those
+    files". So EVERY fft bin is uncalibrated, not just bins 205-417.
+  - fallback offered: Oceans 3.0 spectrogram .mat data products -- calibrated,
+    small, but with processing latency.
+
+CONSEQUENCE: acoustics_plan_v2 SS5 B1's pass criterion (slope ~ 1 against WAV)
+is WITHDRAWN -- it cannot be run at all. B1's own fallback (relative and
+shape-based features) is now the decided path. B6's absolute-calibration branch
+is dead on the fft path. Decision 0013's axis question loses its cheapest
+resolution route (ONC has no product definition to give us).
+
+GATE RESULT: GO -- decisions/0027. We do NOT need to order .mat products for
+vessel presence. Over the 13 fully-covered overpass windows, 1-10 kHz band:
+  43 events (>=10 dB excess, >=20 s) against 0 under the frame-shuffle null
+  0.00% in-band floor censoring -- the median reduction is clean
+  synthetic 50 dB injection recovered at 50.0 dB, right time, right duration,
+    and invisible when placed out of band
+  textbook closest-point-of-approach shapes: rise 42 -> 104 -> 31 over ~4 min
+Full gate runs in 42 SECONDS over the existing corpus.
+
+*** NO VESSEL LABELS EXIST YET. *** No Planet imagery has been ordered
+(CONFIRM_ORDER = False, zero pixels in the repo) and the optical detector has
+produced no detections. A "positive" window means only that a cloud-free scene
+was CATALOGUED at that instant. NO detection metric -- P, R, AUC, false-positive
+rate -- is computed or may be quoted. Goal G1's "validated against optical
+labels, with a stated false-positive rate" is BLOCKED ON THE OPTICAL ARM.
+
+*** MALACHY / NEVE, THIS ONE IS FOR YOU: THE OVERPASS WINDOW CONSTANT IS WRONG.
+config.py:633-634 says 09:15-11:45 local. The 30 gate2 scenes actually land at
+18:17-19:49 UTC = 11:17-12:49 local, BIMODAL (PS2.SD vs PSB.SD constellations).
+acoustics_plan_v2 SS9 listed this as an ASSUMPTION to verify; it is now verified
+and FALSIFIED. The 6.8 GB corpus therefore covers only 13 of the 30 scenes
+fully, 5 partially, and 12 NOT AT ALL. Malachy has been notified directly.
+The constant fix + decision record are in docs/plans/b3-close-out-offline.md.
+
+LANDED: boatphone/features.py (the module decision 0010 named but that did not
+exist), boatphone/overpasses.py (scene->corpus join by interval overlap),
+scripts/run_b5_gate.py, the B5 band block in config.py, and nine check_b5_*
+checks mutation-tested against five deliberate sabotages.
+
+CHECK SUITE: 178 passed, 1 failed, 4 skipped, 0 NOT RUN (use --all; it runs past
+failures). The 1 failure is the pre-existing check_b3c_12 on this branch.
+
+NEXT (acoustics): (1) tonight, offline, docs/plans/b3-close-out-offline.md --
+manifest schema migration WITHOUT the ~1h40m re-run (the corpus is complete and
+untouched; every field is derivable from disk), fix check_b3c_12, correct the
+window constants. (2) then the targeted top-up pull for the 17 uncovered/partial
+scenes -- ~210 files, ~60 MB, minutes, now clearly worth doing. (3) B7 matchups
+once optical detections exist.
+
+BLOCKING THE WHOLE PROJECT: optical. Order archive imagery (2020-2025 seasons
+only -- 2026 has no hydrophone data) and produce detections. The acoustic side
+is ready for labels and cannot produce a validated G1 number without them.
+
 Next Steps:
 
 Divy out tasks and claim here

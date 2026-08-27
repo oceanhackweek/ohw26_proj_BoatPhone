@@ -9316,6 +9316,378 @@ def check_b3e_6_compressed_resume_offset_is_wire_bytes_not_compressed_part_size(
         )
 
 
+# --- B5 viability gate (features.py, overpasses.py) -------------------------
+#
+# These checks pin the CONTRACT of the B5 band-level detector, on SYNTHETIC
+# signals with known ground truth (CLAUDE.md invariant 3). None of them touches
+# the real corpus: a check that needs 6.8 GB of gitignored data to run is a
+# check that silently skips for everyone else on the team.
+
+
+def _b5_mods():
+    """Import the B5 library modules, skipping cleanly if they are absent."""
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    try:
+        from boatphone import config as cfg, features, fft_io, overpasses
+    except ImportError as exc:
+        raise SkipCheck(f"B5 modules not importable: {exc}") from exc
+    return cfg, features, fft_io, overpasses
+
+
+def _b5_synthetic_surface(quiet=20.0):
+    """A flat, quiet (n_frames, n_bins) product surface with a known level."""
+    import numpy as np
+    cfg, _features, _fft_io, _ov = _b5_mods()
+    return np.full((cfg.FFT_N_FRAMES, cfg.FFT_N_BINS), float(quiet), dtype=float)
+
+
+class _B5FakeProduct:
+    """Minimal stand-in for fft_io.FftProduct -- named axes, no file needed."""
+
+    def __init__(self, levels_db, freq_hz, t_utc_s):
+        self.levels_db = levels_db
+        self.freq_hz = freq_hz
+        self.t_utc_s = t_utc_s
+
+
+def _b5_product(levels_db, t0=0.0):
+    import numpy as np
+    cfg, _f, fft_io, _ov = _b5_mods()
+    freq_hz = fft_io.frequency_axis_hz(n_bins=levels_db.shape[1])
+    t = t0 + np.arange(levels_db.shape[0], dtype=float) * cfg.FFT_FRAME_SECONDS
+    return _B5FakeProduct(levels_db, freq_hz, t)
+
+
+def check_b5_1_onc_100hz_band_raises_because_the_product_cannot_represent_it():
+    """A band reaching below bin 1 must RAISE, not be silently clipped up to it.
+
+    ONC's reply (references/ONC_communication.txt) recommends "the sound level
+    at ~100 Hz" as a ship detector. That advice is sound in general and NOT
+    implementable on this product: bin 0 is DC and bin 1 is 250 Hz
+    (config.FFT_BIN_WIDTH_HZ), so there is no sub-250 Hz content at any width.
+
+    The failure mode this pins is the quiet one: a band_limit that clips (100,
+    1000) up to (250, 1000) and returns a number. The caller would then believe
+    they had measured ONC's band, and every downstream statement about "the
+    ~100 Hz ship band" would be false while looking entirely reasonable.
+    """
+    cfg, features, _fft_io, _ov = _b5_mods()
+    try:
+        features.assert_band_representable((100.0, 1000.0))
+    except features.UnrepresentableBandError as exc:
+        assert "250" in str(exc), (
+            "the error must name the actual floor (250 Hz) so the caller learns why, "
+            f"got: {exc}"
+        )
+    else:
+        raise AssertionError(
+            "assert_band_representable accepted a band starting at 100 Hz. The product's "
+            f"lowest representable frequency is {cfg.FFT_LOWEST_REPRESENTABLE_HZ} Hz (bin 1); "
+            "accepting 100 Hz means some caller will silently receive the 250 Hz band and "
+            "report it as ONC's ~100 Hz band"
+        )
+    # And the configured proxy band, which IS representable, must be accepted.
+    features.assert_band_representable(cfg.FFT_B5_SHIP_PROXY_BAND_HZ)
+
+
+def check_b5_2_band_above_the_relative_ceiling_bin_408_raises():
+    """Nothing above bin 408 may enter a B5 statistic, even a relative one.
+
+    Decision 0014. Bins 409-418 are anti-alias filter skirt (instrument
+    response, not ocean) and 419-511 are ~99.9% floor-censored, so a mean over
+    them converts "we cannot measure this" into a number.
+    """
+    cfg, features, _fft_io, _ov = _b5_mods()
+    ceiling_hz = features.relative_ceiling_hz()
+    assert ceiling_hz == float(cfg.FFT_B5_RELATIVE_CEILING_BIN) * cfg.FFT_BIN_WIDTH_HZ, (
+        "relative_ceiling_hz must be DERIVED from FFT_B5_RELATIVE_CEILING_BIN, not "
+        f"hardcoded; got {ceiling_hz}"
+    )
+    try:
+        features.assert_band_representable((1000.0, ceiling_hz + cfg.FFT_BIN_WIDTH_HZ))
+    except features.UnrepresentableBandError:
+        pass
+    else:
+        raise AssertionError(
+            f"a band reaching above the relative ceiling ({ceiling_hz} Hz, bin "
+            f"{cfg.FFT_B5_RELATIVE_CEILING_BIN}) was accepted -- decision 0014 forbids it"
+        )
+
+
+def check_b5_3_synthetic_broadband_event_is_recovered_at_its_level_time_and_duration():
+    """A synthetic event of KNOWN level, time and duration must come back exact.
+
+    CLAUDE.md invariant 3: prove the pipeline against a synthetic signal of
+    known level, frequency and time before anything depends on it. Asserts all
+    three at once -- level, peak time inside the injected span, and duration --
+    because a pipeline can get any one right by accident.
+    """
+    import numpy as np
+    cfg, features, _fft_io, _ov = _b5_mods()
+    band = cfg.FFT_B5_SMALL_CRAFT_BAND_HZ
+    quiet, loud = 20.0, 70.0
+    lo_frame, hi_frame = 400, 600
+
+    surface = _b5_synthetic_surface(quiet)
+    product = _b5_product(surface)
+    series = features.band_level_series(product, band)
+    in_band = np.isin(product.freq_hz, np.asarray(
+        [f for f in product.freq_hz if band[0] - cfg.FFT_AXIS_OFFSET_UNCERTAINTY_HZ <= f
+         <= band[1] + cfg.FFT_AXIS_OFFSET_UNCERTAINTY_HZ]))
+    surface[lo_frame:hi_frame, in_band] = loud
+
+    product = _b5_product(surface)
+    series = features.band_level_series(product, band)
+    excess = features.band_excess(series)
+
+    assert abs(excess.peak_excess_product_db - (loud - quiet)) < 1e-9, (
+        f"injected {loud - quiet} dB of excess, recovered "
+        f"{excess.peak_excess_product_db} -- the band reduction is not linear in the "
+        "level it is given"
+    )
+    t_lo = product.t_utc_s[lo_frame]
+    t_hi = product.t_utc_s[hi_frame - 1]
+    assert t_lo <= excess.t_peak_utc_s <= t_hi, (
+        f"peak excess is at t={excess.t_peak_utc_s} s, outside the injected span "
+        f"[{t_lo}, {t_hi}] s -- the time axis and the level array are not aligned, which "
+        "is the exact class of bug CLAUDE.md invariant 4 warns produces a plausible "
+        "correlation"
+    )
+    assert series.decidecade_resolvable is True, (
+        f"band {band} centres above FFT_DECIDECADE_MIN_CENTRE_HZ and must be reported as "
+        "decidecade-resolvable"
+    )
+
+
+def check_b5_4_energy_outside_the_band_is_not_detected():
+    """The negative control: out-of-band energy must be invisible.
+
+    A detector that fires on the same injection whether it is inside or outside
+    its band is band-blind, and a positive-only test would never notice. This
+    is what makes the positive result in check_b5_3 mean anything.
+    """
+    import numpy as np
+    cfg, features, _fft_io, _ov = _b5_mods()
+    band = cfg.FFT_B5_SMALL_CRAFT_BAND_HZ
+    quiet, loud = 20.0, 70.0
+
+    surface = _b5_synthetic_surface(quiet)
+    freq_hz = _b5_product(surface).freq_hz
+    # 20-30 kHz: well inside the product's support, well outside the band.
+    out_mask = (freq_hz >= 20_000.0) & (freq_hz <= 30_000.0)
+    assert out_mask.any(), "fixture error: no bins in the 20-30 kHz out-of-band region"
+    surface[400:600, out_mask] = loud
+
+    series = features.band_level_series(_b5_product(surface), band)
+    excess = features.band_excess(series)
+    assert abs(excess.peak_excess_product_db) < 1e-9, (
+        f"{loud - quiet} dB injected at 20-30 kHz produced "
+        f"{excess.peak_excess_product_db} dB of excess in the {band} Hz band -- the band "
+        "limit is not actually restricting anything"
+    )
+
+
+def check_b5_5_frame_shuffle_null_is_rejected_for_a_synthetic_event():
+    """Shuffling frames must destroy event STRUCTURE while preserving levels.
+
+    The sharpest label-free null available (CLAUDE.md invariant 4). A shuffle
+    preserves the level distribution EXACTLY and destroys only time ordering,
+    so anything that survives it was never about temporal structure. A real
+    closest-point-of-approach cannot survive; a stuck bin or a mis-scaled axis
+    can, which is precisely what this is watching for.
+
+    Asserted two ways: the event must be found before the shuffle, and must be
+    gone after it. Asserting only the second would pass trivially on a detector
+    that never finds anything at all.
+    """
+    import numpy as np
+    cfg, features, _fft_io, _ov = _b5_mods()
+    scripts_dir = REPO_ROOT / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import run_b5_gate
+
+    band = cfg.FFT_B5_SMALL_CRAFT_BAND_HZ
+    quiet, loud = 20.0, 70.0
+    surface = _b5_synthetic_surface(quiet)
+    freq_hz = _b5_product(surface).freq_hz
+    in_band = (freq_hz >= band[0] - cfg.FFT_AXIS_OFFSET_UNCERTAINTY_HZ) & (
+        freq_hz <= band[1] + cfg.FFT_AXIS_OFFSET_UNCERTAINTY_HZ)
+    surface[400:600, in_band] = loud   # 50 s, far above the 20 s duration floor
+
+    product = _b5_product(surface)
+    series = features.band_level_series(product, band)
+    found = run_b5_gate.find_events(series.t_utc_s, series.level_product_db)
+    assert len(found["events"]) == 1, (
+        f"expected exactly 1 synthetic event, found {len(found['events'])} -- the null "
+        "below would pass vacuously if the detector found nothing to begin with"
+    )
+
+    nulled = run_b5_gate.frame_shuffle_null(series.t_utc_s, series.level_product_db)
+    assert len(nulled["events"]) == 0, (
+        f"the frame-shuffled null still yields {len(nulled['events'])} event(s). The "
+        "shuffle preserves the level distribution exactly and destroys only time order, "
+        "so a surviving event means the statistic is not measuring temporal structure "
+        "and every CPA claim built on it is unsupported"
+    )
+
+
+def check_b5_6_time_shifted_window_does_not_carry_the_event():
+    """An event must be found where it IS, and not where it is not.
+
+    The synthetic analogue of the time-shift null. Scoring a stretch of the
+    surface that does not contain the injection must find nothing -- a detector
+    that fires on the injected span AND on a quiet span an hour away is
+    responding to processing, not content.
+
+    NOTE for anyone reading the gate's real-data output: this null has NO
+    discriminating power on the real corpus, because there is no vessel label to
+    misalign. An hour earlier on the same cloud-free summer afternoon has just
+    as many boats, so real and time-shifted event rates are expected to match
+    and their matching is NOT evidence of a bug. It discriminates only here,
+    against known ground truth.
+    """
+    import numpy as np
+    cfg, features, _fft_io, _ov = _b5_mods()
+    scripts_dir = REPO_ROOT / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import run_b5_gate
+
+    band = cfg.FFT_B5_SMALL_CRAFT_BAND_HZ
+    surface = _b5_synthetic_surface(20.0)
+    freq_hz = _b5_product(surface).freq_hz
+    in_band = (freq_hz >= band[0] - cfg.FFT_AXIS_OFFSET_UNCERTAINTY_HZ) & (
+        freq_hz <= band[1] + cfg.FFT_AXIS_OFFSET_UNCERTAINTY_HZ)
+    surface[400:600, in_band] = 70.0
+
+    product = _b5_product(surface)
+    series = features.band_level_series(product, band)
+
+    quiet_slice = slice(700, 1200)   # entirely after the injection
+    nulled = run_b5_gate.find_events(
+        series.t_utc_s[quiet_slice], series.level_product_db[quiet_slice])
+    assert len(nulled["events"]) == 0, (
+        f"a stretch of surface containing no injection yielded {len(nulled['events'])} "
+        "event(s) -- the detector is firing on something other than the signal"
+    )
+
+
+def check_b5_7_single_bin_outlier_cannot_move_the_band_level():
+    """One loud bin among many must not move the band level. Justifies the median.
+
+    config.FFT_BAND_LEVEL_STATISTIC is a MEDIAN precisely so a single bin -- an
+    echosounder line, a stuck bin, a bit error -- cannot masquerade as a vessel.
+    The ~38 kHz echosounder alone would otherwise fire the detector every few
+    seconds. If this reduction is ever changed to a mean, this check fails and
+    says why.
+    """
+    import numpy as np
+    cfg, features, _fft_io, _ov = _b5_mods()
+    band = cfg.FFT_B5_SMALL_CRAFT_BAND_HZ
+    surface = _b5_synthetic_surface(20.0)
+    freq_hz = _b5_product(surface).freq_hz
+    target = int(np.argmin(np.abs(freq_hz - 5000.0)))
+    surface[400:600, target] = 120.0   # one bin, 100 dB above ambient
+
+    series = features.band_level_series(_b5_product(surface), band)
+    excess = features.band_excess(series)
+    assert series.n_bins_in_band > 2, (
+        f"fixture error: only {series.n_bins_in_band} bin(s) in band, a median over "
+        "so few bins would legitimately move"
+    )
+    assert abs(excess.peak_excess_product_db) < 1e-9, (
+        f"a single 100 dB bin moved the band level by {excess.peak_excess_product_db} dB. "
+        f"The statistic is documented as {cfg.FFT_BAND_LEVEL_STATISTIC}; if it has become "
+        "a mean, the ~38 kHz echosounder and any stuck bin now read as vessel passes"
+    )
+
+
+def check_b5_8_overpass_loader_refuses_a_timestamp_with_no_utc_offset():
+    """A scene time with no stated offset must RAISE, never be assumed UTC.
+
+    Decision 0002, and the single most likely way this project produces a
+    confident wrong answer: a one-hour error in the acoustic-to-optical join is
+    invisible in every plot and fatal to every result. The gate2 CSV currently
+    carries `+00:00`; this pins that a future file WITHOUT it fails loudly
+    rather than being silently read as UTC.
+    """
+    _cfg, _features, _fft_io, overpasses = _b5_mods()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp) / "naive.csv"
+        path.write_text(
+            "id,acquired,clear_percent,instrument\n"
+            "20240101_120000_00_0000,2024-01-01T12:00:00.000000,100,PSB.SD\n",
+            encoding="utf-8",
+        )
+        try:
+            overpasses.load_gate2_overpasses(path)
+        except ValueError as exc:
+            assert "0002" in str(exc) or "offset" in str(exc).lower(), (
+                f"the error must say WHY a naive stamp is refused, got: {exc}")
+        else:
+            raise AssertionError(
+                "load_gate2_overpasses accepted an 'acquired' stamp with no UTC offset. "
+                "Assuming UTC is exactly the assumption decision 0002 forbids"
+            )
+
+    # And a stamp in a NON-UTC offset must be converted, not truncated.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp) / "offset.csv"
+        path.write_text(
+            "id,acquired,clear_percent,instrument\n"
+            "20240101_120000_00_0000,2024-01-01T12:00:00.000000-07:00,100,PSB.SD\n",
+            encoding="utf-8",
+        )
+        ops = overpasses.load_gate2_overpasses(path)
+        assert ops[0].acquired_utc.hour == 19, (
+            f"12:00 at -07:00 is 19:00 UTC; loader produced "
+            f"{ops[0].acquired_utc.isoformat()} -- the offset was dropped, not applied"
+        )
+
+
+def check_b5_9_window_coverage_counts_overlap_not_start_containment():
+    """A file straddling a window edge partly covers it. Containment would drop it.
+
+    Decision 0020: the corpus-to-window join is INTERVAL OVERLAP, not equality
+    or start-containment. A start-containment test drops the file that begins
+    just before the window and runs into it, understating coverage at both edges
+    -- which reads as a coverage gap rather than as a join bug.
+    """
+    import datetime as dt
+    _cfg, _features, _fft_io, overpasses = _b5_mods()
+
+    acquired = dt.datetime(2024, 7, 1, 18, 30, tzinfo=dt.timezone.utc)
+    op = overpasses.Overpass(scene_id="fixture", acquired_utc=acquired,
+                             clear_percent=None, instrument=None)
+    win_start, win_end = op.window_utc()
+
+    # One file starting 120 s BEFORE the window and running 300 s: it overlaps
+    # the first 180 s of the window, and its START is outside it.
+    straddler_start = win_start - dt.timedelta(seconds=120)
+    index = [(straddler_start, straddler_start + dt.timedelta(seconds=300),
+              pathlib.Path("straddler.fft.gz"))]
+    cov = overpasses.window_coverage(op, index)
+    assert cov.n_files == 1, (
+        "a file starting before the window but running into it was not counted -- the "
+        "join is using start-containment, which decision 0020 rules out"
+    )
+    assert abs(cov.covered_seconds - 180.0) < 1e-6, (
+        f"expected 180 s of overlap counted, got {cov.covered_seconds} s. Counting the "
+        "whole 300 s file would overstate coverage inside the window"
+    )
+    assert not cov.is_full, "180 s of a 1800 s window is not full coverage"
+
+    # An empty index is a MEASURED ZERO (decisions 0008, 0016), not an error.
+    empty = overpasses.window_coverage(op, [])
+    assert empty.n_files == 0 and empty.covered_seconds == 0.0, (
+        "an uncovered window must report zero coverage, not raise -- 'the corpus does "
+        "not reach this overpass' is a measurement"
+    )
+
+
+
 CHECKS = [
     ("A0.1 paths import is dependency-free", check_a0_1_paths_import_is_dependency_free),
     ("A0.1 paths exports are pathlib.Path", check_a0_1_paths_exports_are_paths),
@@ -9491,6 +9863,15 @@ CHECKS = [
     ("B3-E the ONE reader opens the compressed corpus and the resolver still finds it", check_b3e_4_the_one_reader_opens_the_compressed_corpus_and_the_resolver_still_finds_it),
     ("B3-E compressed resume offset is WIRE bytes, not compressed .part size", check_b3e_6_compressed_resume_offset_is_wire_bytes_not_compressed_part_size),
     ("B3-E mixed corpus of already-pulled plain-text and new gzip files both work", check_b3e_5_mixed_corpus_of_already_pulled_plain_text_and_new_gzip_files_both_work),
+    ("B5 ONC's ~100 Hz band raises: the product cannot represent it", check_b5_1_onc_100hz_band_raises_because_the_product_cannot_represent_it),
+    ("B5 band above the relative ceiling bin 408 raises", check_b5_2_band_above_the_relative_ceiling_bin_408_raises),
+    ("B5 synthetic broadband event recovered at its level, time and duration", check_b5_3_synthetic_broadband_event_is_recovered_at_its_level_time_and_duration),
+    ("B5 energy outside the band is not detected", check_b5_4_energy_outside_the_band_is_not_detected),
+    ("B5 frame-shuffle null is rejected for a synthetic event", check_b5_5_frame_shuffle_null_is_rejected_for_a_synthetic_event),
+    ("B5 time-shifted window does not carry the event", check_b5_6_time_shifted_window_does_not_carry_the_event),
+    ("B5 single-bin outlier cannot move the band level", check_b5_7_single_bin_outlier_cannot_move_the_band_level),
+    ("B5 overpass loader refuses a timestamp with no UTC offset", check_b5_8_overpass_loader_refuses_a_timestamp_with_no_utc_offset),
+    ("B5 window coverage counts overlap, not start containment", check_b5_9_window_coverage_counts_overlap_not_start_containment),
 ]
 
 
