@@ -37,6 +37,11 @@ def main():
     ap.add_argument("--out", default="fused_wake_hull.csv")
     ap.add_argument("--min-aspect", type=float, default=0.0,
                     help="Restrict to elongated A rows (>=2.0 isolates wakes)")
+    ap.add_argument("--selector", choices=("fill", "snr", "small"), default="fill",
+                    help="Which blob in the window is the hull. 'fill' = most COMPACT "
+                         "(blob px / min-area-rect px). 'snr' = brightest, the original "
+                         "choice and a bad one: wake foam is bright in NIR too, so "
+                         "brightness cannot separate hull from foam. 'small' = shortest.")
     args = ap.parse_args()
 
     A = [r for r in csv.DictReader(open(args.a))
@@ -69,20 +74,28 @@ def main():
 
         row["n_hull_candidates"] = int(inside.size)
         if inside.size:
-            # Brightest NIR blob in the window is the hull: a vessel is the bright
-            # object on dark water, which is Detector B's entire premise.
-            best = max(inside, key=lambda j: float(cand[j]["nir_snr"]))
+            # WHICH blob is the hull. Brightness was the original answer and it was
+            # wrong: wake foam is bright in NIR, so 'snr' selects foam as readily as
+            # hull -- measured as 72-109 m "hulls" with wake-like aspect. Compactness
+            # is the physical discriminator: a hull is a solid object, foam is ragged
+            # and extended. `fill` is blob pixels over minimum-area-rectangle pixels.
+            key = {"fill": lambda j: float(cand[j]["fill"]),
+                   "snr":  lambda j: float(cand[j]["nir_snr"]),
+                   "small": lambda j: -float(cand[j]["length_class_m"])}[args.selector]
+            best = max(inside, key=key)
             h = cand[best]
             row["hull_length_m"] = float(h["length_class_m"])
             row["hull_aspect"] = float(h["aspect_ratio"])
             row["hull_size_class"] = h["size_class"]
             row["hull_nir_snr"] = float(h["nir_snr"])
+            row["hull_fill"] = float(h["fill"])
+            row["hull_width_m"] = float(h["width_m"])
             row["hull_offset_m"] = round(float(d[best]), 1)
             row["detector"] = "AB"
             matched += 1
         else:
             for k in ("hull_length_m", "hull_aspect", "hull_size_class",
-                      "hull_nir_snr", "hull_offset_m"):
+                      "hull_nir_snr", "hull_fill", "hull_width_m", "hull_offset_m"):
                 row[k] = ""
             row["detector"] = "A"
         out.append(row)
@@ -91,6 +104,7 @@ def main():
     with open(args.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=fields)
         w.writeheader(); w.writerows(out)
+    print(f"selector: {args.selector}")
     print(f"A rows in (aspect >= {args.min_aspect}): {len(A)}")
     print(f"  with a hull measured : {matched} ({matched/max(len(A),1):.0%})")
     print(f"  A-only, no hull      : {len(A)-matched}")
