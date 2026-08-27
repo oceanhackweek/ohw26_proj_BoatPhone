@@ -1,0 +1,200 @@
+"""Shared project constants -- one definition, for ALL workstreams (acoustics,
+Planet acquisition, optical detection), not an A1-only module.
+
+If you need the study window, the season months, or the device/location, import
+them from here. A second definition in a notebook or in `scripts/config.py` makes
+the optical-acoustic matchup join two different windows and produce a wrong answer
+rather than an error (CLAUDE.md invariant 6).
+
+Conventions pinned here (decision 0002, decisions D1/D2/D4 of the A1 plan):
+
+* **Time base**: UTC end to end. Every `datetime` exported by this module is
+  tz-aware with a zero UTC offset. A naive datetime is never a valid value.
+* **Bin grid**: fixed-width `BIN_SECONDS` bins, half-open `[start, end)`, with
+  edges at integer multiples of `BIN_SECONDS` seconds since the UTC epoch.
+* **Season**: `SEASON_MONTHS_UTC` is evaluated on the **UTC** month of the bin
+  start. No local-timezone conversion happens anywhere in A1.
+
+Names carry their frame: `*_UTC` means tz-aware UTC, `*_SECONDS` means seconds.
+"""
+
+from datetime import datetime, timezone
+
+# Bin width for the uptime calendar. Source: A1 decision D2 -- 300 s (5 min) is
+# the ONC FFT product's natural file cadence, so a bin maps 1:1 onto a listing.
+BIN_SECONDS = 300
+
+# Start of the study window. Source: the validity date of the ICLISTEN HF1266
+# pre-deployment calibration file shipped with the Folger Deep sample. Earlier
+# Folger deployments are *different devices* with different sensitivities, so
+# nothing before this date is comparable in calibrated units.
+STUDY_START_UTC = datetime(2020, 2, 18, 0, 0, 0, tzinfo=timezone.utc)
+
+# End of the study window. CHOSEN BOUND, NOT MEASURED: the planner did not pin a
+# value, so this is the end of the 2026 field season (2026-10-01T00:00:00Z,
+# exclusive). It is an analysis convention -- revise it here, not per notebook,
+# if the deployment record extends further.
+STUDY_END_UTC = datetime(2026, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+# Months included in the "season", evaluated on the UTC month of the bin start.
+# Source: A1 decision D4 -- May through September, the recreational-vessel
+# season in Barkley Sound. Deliberately UTC, not America/Vancouver: a local
+# definition would make the season edge depend on DST (see decision 0002).
+SEASON_MONTHS_UTC = (5, 6, 7, 8, 9)
+
+# The hydrophone. Source: ONC metadata for the Folger Deep ICLISTEN HF1266
+# instrument (device code as used by the ONC API; numeric device id alongside).
+DEVICE_CODE = "ICLISTENHF1266"
+DEVICE_ID = 23235
+
+# ONC data-product extension used for uptime listing. Source: the gzipped FFT
+# product present in the local sample acquisition.
+PRODUCT_EXTENSION = "fft.gz"
+
+# Extension used by ONC's *archive-file index* for the FFT product. NOT the same
+# string as PRODUCT_EXTENSION: the archive index registers these files as "fft"
+# (e.g. ICLISTENHF1266_20240715T000136.000Z.fft), and they arrive gzipped on disk
+# as ".fft.gz" -- which is what the local sample acquisition shows. Source:
+# measured 2026-08-27 against the live ONC archivefile endpoint for FGPD/
+# HYDROPHONE -- a listing filtered on "fft.gz" returns ZERO files for a day that
+# has 289 files under "fft".
+ARCHIVE_EXTENSION = "fft"
+
+# ONC device-category code for the hydrophone, used to scope an archive listing
+# at a location. Source: ONC deployment metadata for DEVICE_CODE
+# (deviceCategoryCode == "HYDROPHONE").
+DEVICE_CATEGORY_CODE = "HYDROPHONE"
+
+# Case-insensitive fragment that identifies the Folger sites in an ONC location
+# NAME. Discovery matches on this, never on a location code, so the code is
+# whatever ONC returns at runtime. Source: ONC location name "Folger Deep".
+FOLGER_NAME_FRAGMENT = "folger"
+
+# Nominal duration of one archive FFT file, in seconds. MEASURED, not assumed:
+# 2011 unique .fft files over 2024-07-12..18 at Folger Deep give consecutive
+# start deltas of 300 s for 1909 of 2010 gaps, 297-302 s for 98 more (sub-second
+# start jitter, files are NOT bin-aligned), and 2 genuine outage gaps (637 s,
+# 1780 s). Equal to BIN_SECONDS by measurement, kept as its own name because it
+# is a property of the instrument's file cadence, not of the calendar's grid.
+FFT_FILE_SECONDS = 300
+
+# ---------------------------------------------------------------------------
+# ONC archive-listing response cap (the A1d defect).
+# ---------------------------------------------------------------------------
+# ONC's archivefile listing endpoint returns ONE PAGE and truncates silently:
+# the `files` list simply stops partway through the requested span, with no
+# error and no flag inside the list itself. The only signal is the response's
+# top-level `next` field.
+#
+# MEASURED 2026-08-27 against the live endpoint (FGPD / HYDROPHONE / "fft"):
+#   2024-05-01..2024-10-01  -> 11,121 rows, stopping at 2024-06-08T15:10Z,
+#                              `next` = {"parameters": {..., "page": "2"}}
+#   2024-05-01..2024-07-01  -> 11,121 rows, same truncation point
+#   2024-05-01..2024-12-01  -> 11,121 rows, same truncation point
+#   2020-01-01..2021-01-01  ->  9,977 rows, `next` present
+#   2024-07-01..2024-08-01  ->  8,922 rows, `next` = None (complete)
+# Paginating the 2024 season took 4 requests / 50.6 s for 44,027 unique files,
+# with page sizes 11121, 11075, 11086, 10745.
+#
+# So the cap is NOT a fixed row count -- page sizes differ by hundreds of rows
+# between pages of one query -- which is why this constant is named "observed
+# max" and is used only for DIAGNOSTIC MESSAGES, never to decide whether a
+# response was truncated. That decision is made from `next`, which is
+# authoritative. Believing a row-count threshold instead would reintroduce the
+# defect the moment ONC's page size moved.
+ONC_LISTING_PAGE_ROWS_OBSERVED_MAX = 11121
+
+# Hard stop on the page-following loop, so a server that ignores our paging
+# parameter cannot spin forever. CHOSEN BOUND, NOT MEASURED: the 2020-2026 study
+# window is ~44 k files per season, i.e. single-digit pages per calendar year, so
+# 200 is orders of magnitude of headroom and still terminates. Exceeding it
+# raises rather than returning a short list.
+ONC_LISTING_MAX_PAGES = 200
+
+# Floor for the adaptive time-subdivision fallback used when a response says it
+# is truncated but advertises no usable paging parameter. A span this short holds
+# one FFT file, so it cannot be subdivided further; still-truncated at the floor
+# raises with the span named. Source: FFT_FILE_SECONDS above.
+ONC_LISTING_MIN_SUBCHUNK_SECONDS = FFT_FILE_SECONDS
+
+
+# ===========================================================================
+# VTUAD constants -- RETAINED, but the corpus is NOT acquired.
+#
+# acoustics_plan_v2 replaced the VTUAD transfer experiment with ONC's own
+# pretrained checkpoint (decision 0009), so nothing below is on the critical
+# path. They are kept because they are sourced, dated, and drift-checked by
+# scripts/checks.py (A8a) against docs/vtuad-facts.md -- re-deriving them costs
+# more than carrying them, and the band figure is cited by decision 0010.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# VTUAD -- Vessel Type Underwater Acoustic Data (Domingos, Skelton, Santos).
+#
+# DOI 10.21227/msg0-ag12. Derived from the ONC Fraser River Delta Lower Slope
+# hydrophone (icListen AF, device ICLISTENAF2523, 147 m depth, Strait of
+# Georgia), 2017-06-24 to 2017-11-03, labelled from AIS.
+#
+# Full provenance, retrieval dates and the UNKNOWN rows: docs/vtuad-facts.md.
+# scripts/checks.py (A8a) asserts these constants against that document, so a
+# change here without a change there is a hard failure, not a silent drift.
+#
+# CALIBRATION WARNING: VTUAD audio is UNCALIBRATED raw PCM (arbitrary counts),
+# while Folger levels are calibrated dB re 1 uPa. Band-matching alone does NOT
+# make the two comparable -- see the calibration section of docs/vtuad-facts.md
+# and docs/decisions/0002-time-alignment-and-units.md.
+# ---------------------------------------------------------------------------
+
+# Source: RIFF `fmt ` chunk of ICLISTENAF2523_20170701T000105.178Z.wav, read via
+# the ONC Oceans 3.0 archivefile API from the VTUAD source deployment,
+# https://doi.org/10.34943/07de823a-41c0-48b5-9bc3-704513d55ccc (2026-08-27).
+# Mono, 24-bit PCM. Nyquist = 16000 Hz. NOT stated in any VTUAD document --
+# measured. Read the rate from each file anyway (decision 0002 rule 2); this
+# constant is the value an unexpected rate should be rejected AGAINST, never a
+# substitute for reading the header.
+VTUAD_SAMPLE_RATE_HZ: int = 32000
+
+# Source: docs/vtuad-facts.md `label_schema` row, from the IEEE DataPort landing
+# page and dataset README, https://ieee-dataport.org/documents/vtuad-vessel-type-underwater-acoustic-data
+# (2026-08-27). Kept as one string so the A8a drift check can compare it to the
+# facts document verbatim. Note what is ABSENT: no continuous range, and no
+# vessel length or size class.
+VTUAD_LABEL_SCHEMA: str = (
+    "5-class vessel type (background, cargo, tanker, tug, passengership) "
+    "x 3 range-bin scenarios (2000-4000, 3000-5000, 4000-6000 m); "
+    "no vessel length or size class"
+)
+
+# Source: IEEE DataPort file listing (archive names inclusion_2000_exclusion_4000,
+# inclusion_3000_exclusion_5000, inclusion_4000_exclusion_6000) and the dataset
+# author's clarification in the landing-page comments (Lucas Domingos,
+# 2024-07-02): inclusion_3000_exclusion_5000 means the vessel is anywhere between
+# 3 km and 5 km of the hydrophone.
+# https://ieee-dataport.org/documents/vtuad-vessel-type-underwater-acoustic-data (2026-08-27)
+#
+# The abstract and README describe the scenarios as 2-3 km, 3-4 km and 4-6 km,
+# which CONTRADICTS the archive filenames. The filenames plus the author's own
+# comment are taken as authoritative; confirm against a downloaded metadata.csv
+# in A8b before any range-dependent result depends on it.
+VTUAD_ZONE_RADII_M: tuple[tuple[int, int], ...] = (
+    (2000, 4000),
+    (3000, 5000),
+    (4000, 6000),
+)
+
+# Source: IEEE DataPort "Dataset Files" listing (2026-08-27): 3.31 GB + 5.83 GB
+# + 4.4 GB of compressed ZIPs. APPROXIMATE -- the listing does not say whether
+# GB means 10^9 or 2^30; this uses 10^9. At 2^30 the total is about 14.5e9
+# bytes. Do not treat this as an exact byte count; it exists to size a download,
+# and it refutes the ~1 TB figure that previously circulated in the plans.
+VTUAD_TOTAL_SIZE_BYTES: int = 13_540_000_000
+
+# Source: same listing. The three scenarios are INDEPENDENT archives, so the
+# smallest useful download is one scenario, not the whole corpus.
+VTUAD_SMALLEST_UNIT_SIZE_BYTES: int = 3_310_000_000
+
+# Source: Welch PSD (Hann, nperseg=8192) of the first 30 s of the archived file
+# named above, https://doi.org/10.34943/07de823a-41c0-48b5-9bc3-704513d55ccc
+# (2026-08-27). Anti-alias rolloff reaches -3 dB at 11652 Hz relative to the
+# 2-10 kHz median, so the upper edge is the -3 dB corner, not Nyquist.
+VTUAD_BAND_POPULATED_HZ: tuple[int, int] = (10, 11652)
