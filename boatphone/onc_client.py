@@ -1826,7 +1826,36 @@ def download_archive_file(client, filename, *, dest_dir, transport,
                 f"{part_path} for a future resume"
             )
         # In WIRE bytes, not bytes-on-disk: see _wire_bytes_on_disk.
-        range_start = _wire_bytes_on_disk(part_path) if part_path.exists() else 0
+        #
+        # A `.part` left by a SIGKILL (or a lost node) can hold a truncated gzip
+        # member, and reading it raises EOFError/BadGzipFile/zlib.error. That is
+        # precisely the scenario resume exists for, so it must not abort a
+        # multi-thousand-file run: the unreadable partial is DISCARDED and this
+        # ONE file restarts from zero. Nothing else is swallowed -- a permission
+        # error or a full disk is still an OSError-not-from-gzip and would only
+        # be caught here if gzip raised it, and the unlink below is itself
+        # unguarded so a failure to remove the partial surfaces. Same shape as
+        # _sha256_of_wire_bytes: build the reason inside the except, act outside.
+        range_start = 0
+        partial_unreadable = None
+        if part_path.exists():
+            try:
+                range_start = _wire_bytes_on_disk(part_path)
+            except (OSError, EOFError, zlib.error) as exc:
+                # gzip.BadGzipFile subclasses OSError.
+                partial_unreadable = f"{type(exc).__name__}: {exc}"
+        if partial_unreadable is not None:
+            discarded_bytes = part_path.stat().st_size
+            # Invariant 5: if bytes are dropped, say how many.
+            print(
+                f"download_archive_file: {filename}: the resume partial {part_path} holds "
+                f"{discarded_bytes} byte(s) on disk that cannot be read as wire bytes "
+                f"({partial_unreadable}) -- almost certainly a gzip member truncated by a "
+                "hard kill. DISCARDING those bytes and restarting THIS file from offset 0; "
+                "the run continues."
+            )
+            part_path.unlink()
+            range_start = 0
         # INSIDE the retried region. A ConnectionError/Timeout at CONNECT time
         # is the single most common failure of a multi-thousand-file overnight
         # pull; with this call above the `try` it was never caught, never

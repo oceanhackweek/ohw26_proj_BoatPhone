@@ -184,24 +184,80 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _git_commit() -> str:
-    """The commit this run was made from, or a stated non-empty reason it is unknown."""
+def _git(*args) -> tuple:
+    """Run one git command in the repo. Returns `(ok, text_or_reason)`.
+
+    Never raises: provenance must record a stated reason it does not know
+    something rather than fail the run that produced the data.
+    """
     try:
         completed = subprocess.run(
-            ["git", "-C", str(paths.REPO_ROOT), "rev-parse", "HEAD"],
+            ["git", "-C", str(paths.REPO_ROOT), *args],
             capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return f"unknown (git unavailable: {exc})"
+        return False, f"git unavailable: {exc}"
     if completed.returncode != 0:
-        return f"unknown (git rev-parse exited {completed.returncode}: {completed.stderr.strip()})"
-    return completed.stdout.strip() or "unknown (git rev-parse printed nothing)"
+        return False, (
+            f"git {' '.join(args)} exited {completed.returncode}: {completed.stderr.strip()}"
+        )
+    return True, completed.stdout
 
 
-# The reason string recorded in absent_log for each of the two ways a listed
-# file can end up NOT downloaded. Decision 0007: both are "absent", never a
-# third bucket -- these strings are what makes them distinguishable in the log.
+def _git_commit() -> str:
+    """The commit this run was made from, WITH a dirty-tree marker if it is dirty.
+
+    A bare `rev-parse HEAD` asserts an identity git cannot vouch for: if the
+    working tree had uncommitted changes, the code that produced this manifest
+    is NOT the code at that commit, and a future reader who checks the commit
+    out gets something else. `git status --porcelain` is consulted (tracked
+    files only -- untracked files do not change what ran) and the answer is
+    stated in the string itself, so the marker cannot be dropped by a consumer
+    that reads only `git_commit`.
+
+    Returns a stated non-empty reason when the commit or the dirty state is
+    unknown; "unknown" is never silently rendered as clean.
+    """
+    ok, out = _git("rev-parse", "HEAD")
+    if not ok:
+        return f"unknown ({out})"
+    commit = out.strip()
+    if not commit:
+        return "unknown (git rev-parse printed nothing)"
+    ok, status = _git("status", "--porcelain", "--untracked-files=no")
+    if not ok:
+        return f"{commit} (dirty state UNKNOWN: {status})"
+    n_dirty = len([line for line in status.splitlines() if line.strip()])
+    if n_dirty:
+        return (
+            f"{commit}-dirty ({n_dirty} tracked file(s) modified in the working tree at "
+            "run time; the code that produced this manifest is NOT exactly this commit)"
+        )
+    return f"{commit} (clean working tree)"
+
+
+# The reason string recorded in absent_log for each of the FOUR ways a listed
+# file (or a whole window) can end up NOT downloaded -- see _ABSENT_DEFINITION,
+# which states the same four to a reader of the provenance sidecar. Decision
+# 0007: all of them are "absent", never a third bucket -- these strings are what
+# makes them distinguishable in the log, and segment D keys on `reason`.
+#
+# `download_archive_file` returns status "absent" for TWO DIFFERENT HTTP
+# answers, so this side must not collapse them: a plain 404, and a 400 carrying
+# ONC's Error 96 "file does not exist" (decision 0023, `_FILE_DOES_NOT_EXIST_
+# MARKERS` in onc_client). A row that says "ONC returned 404" while carrying
+# `http_status: 400` contradicts itself, and the contradiction lands in the
+# artefact segment D reads. They are chosen on `record.http_status`, not on
+# status alone.
 _REASON_ABSENT_404 = "absent: ONC returned 404 for this listed filename"
+_REASON_ABSENT_400_NO_SUCH_FILE = (
+    "absent (decision 0023): ONC returned HTTP 400 Error 96 -- no archive file of this "
+    "name exists. A definitive negative answer, not a 404 and not retried"
+)
+_REASON_ABSENT_UNSTATED_STATUS = (
+    "absent: download_archive_file reported the file absent but recorded no HTTP status, "
+    "so WHICH definitive negative ONC gave (404, or 400 Error 96) is UNKNOWN for this row"
+)
 _REASON_EMPTY_WINDOW = (
     "measured_zero (decision 0016): ONC listed zero files for this whole overpass "
     "window -- the window itself is the measured zero, not any named file"
@@ -232,8 +288,10 @@ _ABSENT_DEFINITION = (
     "disk. requested == present + absent EXACTLY, with no third bucket. A retrieval unit "
     "is one listed filename, OR one whole overpass window that ONC listed no file for at "
     "all (decision 0016; that row carries filename=null). Four kinds land in absent_log, "
-    "distinguished ONLY by the row's `reason`: (1) ONC returned HTTP 404 for a listed "
-    "filename; (2) decision 0007 -- ONC states no data CAN exist (no device deployed, or "
+    "distinguished ONLY by the row's `reason`: (1) ONC gave a definitive negative for a "
+    "listed filename -- either HTTP 404, or HTTP 400 Error 96 'file does not exist' "
+    "(decision 0023); those are two different `reason` strings, because a row saying '404' "
+    "while carrying http_status 400 would contradict itself; (2) decision 0007 -- ONC states no data CAN exist (no device deployed, or "
     "the window has not elapsed); (3) decision 0016 -- the whole window listed zero files; "
     "(4) the file was listed but the download FAILED (retry budget exhausted, unexpected "
     "status, hash mismatch, unstated length -- decision 0019); those rows carry an `error` "
@@ -287,15 +345,30 @@ def _unpack_listing(result, *, local_date):
     )
 
 
-def _bin_identity(filename):
-    """`{"bin_start_utc": ..., "bin_end_utc": ...}` for a NAMED archive file.
+def _file_span(filename):
+    """`{"file_start_utc": ..., "file_end_utc": ...}` for a NAMED archive file.
 
     Goes through `onc_client.parse_file_coverage`, which its own docstring calls
-    "the ONE place a filename becomes a time". Segment D joins the absent log
-    onto the 5-minute UTC bin grid; if it re-derived the span from the filename
-    itself that would be a SECOND path to the same fact, and two paths to one
-    fact drift (CLAUDE.md invariant 3). Recording it at write time means the
-    join reads a value, it does not recompute one.
+    "the ONE place a filename becomes a time". Recording it at write time means
+    a consumer READS the span, it does not recompute one; two paths to the same
+    fact drift (CLAUDE.md invariant 3).
+
+    **These are FILE SPANS, and deliberately NOT called `bin_*`.** In this
+    codebase `bin_start_utc`/`bin_end_utc` mean a cell of the fixed-width
+    `config.BIN_SECONDS` grid whose edges are integer multiples of
+    `BIN_SECONDS` since the UTC epoch (`config.py` L12-14; the real grid cells
+    come out of `onc_client.season_bins_utc` under exactly those two names,
+    `onc_client.py` L1158-1161). A file start is NOT on that grid --
+    `parse_file_coverage` documents observed file-start seconds of ":36",
+    ":04", with 1-2 s jitter between consecutive files. Using one name for both
+    would make an arbitrary file span look equality-joinable against a real
+    grid cell.
+
+    Consequently **segment D's join onto the 5-minute bin grid must be an
+    INTERVAL-OVERLAP join** -- does `[file_start_utc, file_end_utc)` intersect
+    `[bin_start_utc, bin_end_utc)`? -- and never an equality join on the `*_utc`
+    fields. An equality join would match almost nothing and would read as "low
+    coverage" rather than as the naming bug it is.
 
     Values are ISO-8601 strings with an explicit UTC offset, so the manifest
     states its own time base rather than relying on a reader's assumption
@@ -306,10 +379,10 @@ def _bin_identity(filename):
     not a data problem, and papering over it would put a row with no time in a
     log whose whole purpose is time (invariant 5).
     """
-    bin_start_utc, bin_end_utc = onc_client.parse_file_coverage(filename)
+    file_start_utc, file_end_utc = onc_client.parse_file_coverage(filename)
     return {
-        "bin_start_utc": bin_start_utc.isoformat(),
-        "bin_end_utc": bin_end_utc.isoformat(),
+        "file_start_utc": file_start_utc.isoformat(),
+        "file_end_utc": file_end_utc.isoformat(),
     }
 
 
@@ -510,6 +583,26 @@ def run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
             # them, and both are config constants, never restated here
             # (invariant 6).
             "season_months_utc": list(config.SEASON_MONTHS_UTC),
+            # Invariant 3 -- the frame label must be TRUE at every boundary, and
+            # this manifest is a cross-team boundary. The constant's name says
+            # UTC and config defines it as evaluated on the UTC month of a bin
+            # start; THIS run applied it to LOCAL (America/Vancouver) calendar
+            # dates. For this window the two select an identical date set, but a
+            # consumer must be told that from the record, not from a docstring
+            # in a script they will not open (iter_overpass_dates has the full
+            # derivation and the condition under which it stops holding).
+            "season_months_frame_note": (
+                "season_months_utc is named for the UTC month of a bin start "
+                "(config.SEASON_MONTHS_UTC), but this run APPLIED it to LOCAL "
+                f"{config.PLANET_OVERPASS_TZ_NAME} calendar dates. The two select the SAME "
+                "set of dates for this overpass window only, because the window "
+                f"({config.PLANET_OVERPASS_WINDOW_START_LOCAL}-"
+                f"{config.PLANET_OVERPASS_WINDOW_END_LOCAL} local) never crosses midnight "
+                "UTC, so every local month edge coincides with the UTC month edge of the "
+                "windows it selects. If the window end ever moves past ~16:00 local the "
+                "filter must be re-derived; see iter_overpass_dates in "
+                "scripts/pull_overpass_corpus.py"
+            ),
             "corpus_pull_year_span": (
                 f"{config.CORPUS_PULL_START_YEAR}..{config.CORPUS_PULL_END_YEAR} "
                 "(config.CORPUS_PULL_START_YEAR..CORPUS_PULL_END_YEAR; the full corpus "
@@ -519,8 +612,21 @@ def run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
             "start_year": config.CORPUS_PULL_START_YEAR,
             "end_year": config.CORPUS_PULL_END_YEAR,
             "n_dates_requested": len(date_list),
-            "first_date": date_list[0].isoformat() if date_list else None,
-            "last_date": date_list[-1].isoformat() if date_list else None,
+            # NOT an interval. The date list is deliberately DESCENDING (newest
+            # season first, so an interrupted run leaves the newest season
+            # complete), so "first"/"last" would read as an inverted interval:
+            # first_date 2025-05-01 with last_date 2020-09-30. These are named
+            # for their position in the PULL ORDER instead, and the order is
+            # stated in the record so a reader never has to infer it. The
+            # earliest/latest calendar bounds are given separately.
+            "date_order": (
+                "DESCENDING by year (newest season pulled first); within a year, "
+                "calendar order. See pull_order_first_date/pull_order_last_date"
+            ),
+            "pull_order_first_date": date_list[0].isoformat() if date_list else None,
+            "pull_order_last_date": date_list[-1].isoformat() if date_list else None,
+            "earliest_date": min(date_list).isoformat() if date_list else None,
+            "latest_date": max(date_list).isoformat() if date_list else None,
             "requested": manifest["requested"],
             "present": manifest["present"],
             "absent": manifest["absent"],
@@ -600,7 +706,7 @@ def run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
                     # EXPLICIT nulls, not omitted keys. This row has no
                     # filename, so `parse_file_coverage` -- the only sanctioned
                     # way to turn a name into a time -- has nothing to work
-                    # from, and inventing a bin span from the window edges
+                    # from, and inventing a file span from the window edges
                     # would be exactly the second derivation path the named
                     # rows avoid. Writing the keys as null says "not derivable
                     # here" out loud; omitting them would leave a consumer
@@ -608,8 +714,8 @@ def run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
                     # (invariant 9). The window edges below still bound this
                     # measured zero: it is the WINDOW that is the zero, not any
                     # named file (decision 0016).
-                    "bin_start_utc": None,
-                    "bin_end_utc": None,
+                    "file_start_utc": None,
+                    "file_end_utc": None,
                     "local_date": local_date.isoformat(),
                     "window_start_utc": start_utc.isoformat(),
                     "window_end_utc": end_utc.isoformat(),
@@ -652,11 +758,11 @@ def run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
                             "filename": filename,
                             "reason": _REASON_DOWNLOAD_ERROR,
                             "error": download_error,
-                            # See _bin_identity. An error row is still a NAMED
+                            # See _file_span. An error row is still a NAMED
                             # file with a knowable span, and segment D must be
-                            # able to place it on the grid to record that this
-                            # bin's status is unresolved rather than empty.
-                            **_bin_identity(filename),
+                            # able to overlap it onto the grid to record that
+                            # those bins are unresolved rather than empty.
+                            **_file_span(filename),
                             "local_date": local_date.isoformat(),
                             "window_start_utc": start_utc.isoformat(),
                             "window_end_utc": end_utc.isoformat(),
@@ -672,11 +778,13 @@ def run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
                             "local_date": local_date.isoformat(),
                             "window_start_utc": start_utc.isoformat(),
                             "window_end_utc": end_utc.isoformat(),
-                            # Bin identity from parse_file_coverage -- the ONE
-                            # place a filename becomes a time. Segment D needs
-                            # it to flag these bins MEASURED (decision 0020)
-                            # without re-deriving the span a second way.
-                            **_bin_identity(record.filename),
+                            # The file's own time span from
+                            # parse_file_coverage -- the ONE place a filename
+                            # becomes a time. Segment D needs it to flag the
+                            # bins it OVERLAPS as measured (decision 0020)
+                            # without re-deriving the span a second way. It is
+                            # a file span, not a bin edge: see _file_span.
+                            **_file_span(record.filename),
                             "bytes_downloaded": record.bytes_downloaded,
                             "sha256": record.sha256,
                             # Whether the server stated the file's total length,
@@ -688,20 +796,48 @@ def run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
                             # than only in a docstring).
                             "total_size_known": getattr(record, "total_size_known", None),
                             "path": str(record.path) if record.path is not None else None,
+                            # The ON-DISK basename, a SEPARATE field from the
+                            # wire `filename` above. Decision 0024 compresses on
+                            # write, so a wire name `X.fft` lands as `X.fft.gz`
+                            # and the two names differ for every compressed row.
+                            # A consumer joining these rows to
+                            # `boatphone.acquire.resolve_corpus_files()` BY NAME
+                            # must join on THIS field; joining on `filename`
+                            # matches only the plain-`.fft` probe files and
+                            # drops the rest, which reads as low coverage rather
+                            # than as the naming defect it is (invariant 9).
+                            # Taken from the record's own path -- the one place
+                            # the local name is decided (onc_client's
+                            # compress-on-write block) -- never re-derived by
+                            # appending a suffix here.
+                            "disk_basename": (
+                                pathlib.Path(record.path).name
+                                if record.path is not None else None
+                            ),
                             "http_status": record.http_status,
                             "attempts": record.attempts,
                         })
                     elif record.status in ("absent", "measured_zero"):
-                        reason = (
-                            _REASON_ABSENT_404 if record.status == "absent"
-                            else _REASON_MEASURED_ZERO
-                        )
+                        # Three distinguishable causes, not two. See the
+                        # _REASON_ABSENT_* comment: status "absent" covers both
+                        # a 404 and a 400/Error-96, and naming the wrong one
+                        # would put a row in the log that contradicts its own
+                        # http_status field.
+                        if record.status == "measured_zero":
+                            reason = _REASON_MEASURED_ZERO
+                        elif record.http_status == 404:
+                            reason = _REASON_ABSENT_404
+                        elif record.http_status == 400:
+                            reason = _REASON_ABSENT_400_NO_SUCH_FILE
+                        else:
+                            reason = _REASON_ABSENT_UNSTATED_STATUS
                         absent_log.append({
                             "filename": record.filename,
                             "reason": reason,
-                            # See _bin_identity: the row carries its own bin
-                            # span so segment D's join never re-derives it.
-                            **_bin_identity(record.filename),
+                            # See _file_span: the row carries its own file
+                            # span so segment D's interval-overlap join never
+                            # re-derives it.
+                            **_file_span(record.filename),
                             "local_date": local_date.isoformat(),
                             "window_start_utc": start_utc.isoformat(),
                             "window_end_utc": end_utc.isoformat(),

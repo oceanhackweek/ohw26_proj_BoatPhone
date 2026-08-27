@@ -3,7 +3,7 @@
 Status: accepted
 Date: 2026-08-27
 Amends: none
-Scope: `boatphone/onc_client.py` (`_NO_DATA_POSSIBLE_MARKERS`), `boatphone/acquire.py`,
+Scope: `boatphone/onc_client.py` (`_FILE_DOES_NOT_EXIST_MARKERS`), `boatphone/acquire.py`,
 `scripts/pull_overpass_corpus.py` (`absent_log`, decision 0020's consumer)
 Source: B3 live probe against the real ONC archive, 3 in-season 2025 dates, 90 files; a direct
 probe of a deliberately non-existent filename against `archivefile/download`
@@ -49,18 +49,32 @@ launder a real failure into a plausible-looking measured zero -- exactly the fai
 invariant 5 exists to prevent. Only the specific, confirmed "no such file" signal gets the
 measured-negative treatment.
 
-This record establishes the rule; it does not itself implement the fix (no code was changed to
-produce this record, per this segment's scope). Implementing it means adding the marker (or an
-equivalent check against the file-download error path specifically, since `_NO_DATA_POSSIBLE_MARKERS`
-today is listing-scoped) and routing a match to the same `absent_log` path decision 0016 defined
-for empty windows, with its own `reason`.
+**Implemented in the same commit as this record.** `boatphone/onc_client.py` adds a SEPARATE
+constant, `_FILE_DOES_NOT_EXIST_MARKERS` (currently just `"API Error 96"`), rather than appending
+to `_NO_DATA_POSSIBLE_MARKERS`. This is a deliberate choice, not an oversight: `_NO_DATA_POSSIBLE_MARKERS`
+routes to `status="measured_zero"`, and `measured_zero` is reserved for decisions 0007/0008's
+listing-side "no data can exist" evidence. A confirmed-missing *file* is a different evidentiary
+claim -- ONC has a listing that named the file but the archive does not have it -- so
+`download_archive_file` routes an `_FILE_DOES_NOT_EXIST_MARKERS` match to `status="absent"`
+instead, keeping the two 400-body meanings distinct rather than collapsing them into one status
+that would blur decision 0016's three-bucket scheme. `scripts/pull_overpass_corpus.py`'s
+`absent_log` consumes both statuses but records which one produced each row.
 
 ## Consequences
 
-* Until implemented, a bulk pull that happens to request a file ONC does not have (e.g. from a
-  listing/download race, or a listing that is stale relative to the archive) will misrecord that
+* Without this fix, a bulk pull that happens to request a file ONC does not have (e.g. from a
+  listing/download race, or a listing that is stale relative to the archive) would misrecord that
   file as an error and burn retries on it, rather than logging it as absent per decision 0016's
   three-bucket scheme (404-as-bug, positive-zero, and now this: confirmed-missing-file).
+* **Operational fact from the completed 918-date bulk pull (26,689 real requests):** this path
+  never fired. `errors=0` across the whole run, and every one of the 23 absences the manifest
+  recorded was a decision-0016 empty overpass window (a listing with no file at all), not a
+  confirmed-missing-*named*-file. So `_FILE_DOES_NOT_EXIST_MARKERS` remains production-unexercised
+  -- it is evidenced only by the one deliberate probe of a non-existent filename described above,
+  not by anything the real pull encountered. That the code path was written defensively and never
+  needed is a fact worth recording, not a sign it is unnecessary: the listing/download race and
+  stale-listing scenarios above did not happen to occur in this particular 918-date run, but
+  nothing about them is precluded from occurring in a future one.
 * **Unverified beyond the direct non-existent-filename probe:** whether "API Error 96" is the
   *only* 400 body ONC returns for a missing archive file, across product types, devices, or error
   locales, is not established -- only checked once, by name, against one such request.

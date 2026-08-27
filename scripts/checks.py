@@ -7913,30 +7913,59 @@ def check_b3c_6_sampling_conditionality_is_one_named_constant_and_travels_with_t
     )
 
 
-def check_b3c_8_absent_log_rows_carry_bin_identity_via_parse_file_coverage():
-    """Each absent_log row for a NAMED file must expose `bin_start_utc` /
-    `bin_end_utc`, and they must agree with `onc_client.parse_file_coverage()`
+def check_b3c_8_absent_log_rows_carry_file_span_via_parse_file_coverage():
+    """Each absent_log row for a NAMED file must expose `file_start_utc` /
+    `file_end_utc`, and they must agree with `onc_client.parse_file_coverage()`
     on that SAME filename -- 'the ONE place a filename becomes a time'
-    (onc_client.py ~L350). Segment D joins the absent log onto the uptime
-    calendar; if it had to re-derive bin identity from the filename itself,
-    that would be a SECOND path to the same fact, and the two paths drifting
-    is exactly the kind of silent join bug invariant 3 exists to prevent.
+    (onc_client.py ~L376).
+
+    NAMING, pinned deliberately: these are FILE SPANS, not epoch-aligned bin
+    edges, and must NOT be called `bin_start_utc`/`bin_end_utc`. That name is
+    reserved, project-wide, for the fixed-width `config.BIN_SECONDS` grid
+    whose edges are integer multiples of `BIN_SECONDS` since the UTC epoch
+    (`config.py:12-14`, and the real grid cells returned by
+    `onc_client.season_bins_utc` under exactly these two field names,
+    `onc_client.py:1158-1161`). A file's start is NOT on that grid --
+    `parse_file_coverage`'s own docstring measures the file-start seconds as
+    off-grid (":36", ":04") with 1-2 s jitter between consecutive files. Using
+    "bin_*" for both a real grid cell and an arbitrary file span makes the two
+    look joinable by equality when they are not: an equality join between this
+    manifest and the uptime grid would match almost nothing and read as "low
+    coverage" instead of as a naming bug. Segment D's join against the real bin
+    grid must therefore be an INTERVAL-OVERLAP join (does
+    [file_start_utc, file_end_utc) intersect [bin_start_utc, bin_end_utc)?),
+    never an equality join on the *_utc names.
 
     Drives run() with a real 404-shaped absent file (not an empty window --
-    `_REASON_EMPTY_WINDOW` rows carry no filename to derive bins from) so this
-    pins the case segment D actually needs: a NAMED absent file's row must
-    carry its own bin_start_utc/bin_end_utc, sourced through parse_file_coverage
-    and not invented some other way.
+    `_REASON_EMPTY_WINDOW` rows carry no filename to derive a span from) so
+    this pins the case segment D actually needs: a NAMED absent file's row
+    must carry its own file_start_utc/file_end_utc, sourced through
+    parse_file_coverage and not invented some other way.
+
+    Also pins the very property that makes the old `bin_*` name wrong: a
+    realistic ONC file-start timestamp (non-zero seconds, off the 300 s grid)
+    must NOT be epoch-aligned to `config.BIN_SECONDS`. If someone renames these
+    fields back to `bin_*`, this assertion is what should stop them.
     """
     mod = _b3c_mod("run")
-    _cfg, onc = _a1a_mods()
+    cfg, onc = _a1a_mods()
     assert hasattr(onc, "parse_file_coverage"), (
         "boatphone.onc_client.parse_file_coverage is missing; it is the ONE place "
         "a filename becomes a time and this check pins the absent log against it"
     )
 
-    filename = _b3c_fake_filenames(1)[0]
+    # A realistic ONC filename whose stamp has NON-ZERO seconds (":36"), unlike
+    # `_b3c_fake_filenames`'s midnight-stamped fixtures (T000000, which is
+    # trivially 0 % BIN_SECONDS == 0 and would let an epoch-alignment bug hide).
+    filename = "ICLISTENHF1266_20240715T000136.000Z.fft.gz"
     expected_start, expected_end = onc.parse_file_coverage(filename)
+    assert int(expected_start.timestamp()) % cfg.BIN_SECONDS != 0, (
+        f"fixture filename {filename!r} parses to a file_start_utc "
+        f"({expected_start.isoformat()}) that IS epoch-aligned to "
+        f"config.BIN_SECONDS ({cfg.BIN_SECONDS}) -- fixture sanity check failed. This "
+        "check needs an off-grid file start to pin that a file span is not a bin edge; "
+        "pick a filename stamp whose seconds are not a multiple of BIN_SECONDS"
+    )
 
     # A transport that answers this filename with a 404, so the file lands in
     # absent_log as a real absence rather than a measured zero or an error.
@@ -7961,25 +7990,110 @@ def check_b3c_8_absent_log_rows_carry_bin_identity_via_parse_file_coverage():
         "404-shaped absence for this filename)"
     )
     row = named_rows[0]
-    assert "bin_start_utc" in row and "bin_end_utc" in row, (
-        f"absent_log row for {filename!r} has no bin_start_utc/bin_end_utc: {sorted(row)}. "
-        "Segment D joins the absent log onto the 5-min UTC bin grid and must not re-derive "
-        "bin identity from the filename a second way (onc_client.py's parse_file_coverage "
-        "docstring: 'the ONE place a filename becomes a time')"
+    assert "bin_start_utc" not in row and "bin_end_utc" not in row, (
+        f"absent_log row for {filename!r} still carries bin_start_utc/bin_end_utc: "
+        f"{sorted(row)}. These are FILE SPANS from parse_file_coverage, not epoch-aligned "
+        "bin edges, and must be named file_start_utc/file_end_utc so they cannot be "
+        "equality-joined against the real BIN_SECONDS grid by mistake"
+    )
+    assert "file_start_utc" in row and "file_end_utc" in row, (
+        f"absent_log row for {filename!r} has no file_start_utc/file_end_utc: {sorted(row)}. "
+        "Segment D interval-joins the absent log onto the 5-min UTC bin grid and must not "
+        "re-derive the file span from the filename a second way (onc_client.py's "
+        "parse_file_coverage docstring: 'the ONE place a filename becomes a time')"
     )
     from datetime import datetime as _dt
-    got_start = row["bin_start_utc"]
-    got_end = row["bin_end_utc"]
+    got_start = row["file_start_utc"]
+    got_end = row["file_end_utc"]
     got_start = _dt.fromisoformat(got_start) if isinstance(got_start, str) else got_start
     got_end = _dt.fromisoformat(got_end) if isinstance(got_end, str) else got_end
     assert got_start == expected_start, (
-        f"absent_log row's bin_start_utc {got_start} disagrees with "
+        f"absent_log row's file_start_utc {got_start} disagrees with "
         f"parse_file_coverage({filename!r}) = {expected_start} -- a second path to the same "
         "fact has drifted from the ONE place a filename becomes a time"
     )
     assert got_end == expected_end, (
-        f"absent_log row's bin_end_utc {got_end} disagrees with "
+        f"absent_log row's file_end_utc {got_end} disagrees with "
         f"parse_file_coverage({filename!r}) = {expected_end}"
+    )
+
+
+def check_b3c_12_per_file_record_exposes_disk_basename_distinct_from_wire_filename():
+    """A per-file manifest record must expose the ON-DISK basename as its own
+    field, `disk_basename`, distinct from `filename` (the ONC wire name).
+
+    Decision 0024 compresses on write: `filename` stays the name ONC served
+    (e.g. ending `.fft`), but the bytes land on disk as `<filename>.fft.gz`
+    for every compressed row -- 26,666 of 26,756 rows in the real corpus pull,
+    per the B3-C/B3-E handoff. A consumer that joins manifest rows to
+    `boatphone.acquire.resolve_corpus_files()` output BY `filename` alone
+    matches only the 90 already-pulled plain `.fft` probe files and silently
+    drops the other 26,666 -- exactly the kind of "low coverage" misread a
+    naming defect produces, not a real coverage gap.
+
+    Pins two things: (a) `disk_basename` exists on a "downloaded"/"cached" file
+    record and differs from `filename` whenever compression changed the name
+    on disk (i.e. `filename` does not already end `.gz`); (b) the value at
+    `path` for that row actually exists on disk after a real download, and its
+    name equals `disk_basename` -- so a future implementation cannot collapse
+    the two fields back into one and still pass this check.
+    """
+    mod = _b3c_mod("run")
+    filenames = _b3c_fake_filenames(1)  # end '.fft.gz' already? check below, force plain '.fft'
+    # `_b3c_fake_filenames` already yields names ending '.fft.gz'; force a
+    # PLAIN '.fft' wire name here so compress-on-write actually renames it on
+    # disk, which is the case this check exists to catch.
+    filename = filenames[0]
+    if filename.endswith(".gz"):
+        filename = filename[: -len(".gz")]
+    transport = _B3BFakeTransport({filename: b"z" * 32})
+
+    def listing_fn(client, location_codes, start_utc, end_utc):
+        return [filename], 0
+
+    from datetime import date
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "dest"
+        manifest_dir = pathlib.Path(tmp) / "manifest"
+        manifest = mod.run(
+            dates=[date(2024, 7, 1)], dest_dir=dest_dir, manifest_dir=manifest_dir,
+            listing_fn=listing_fn, transport=transport, client=None, sleep=lambda _s: None,
+        )
+
+    files = [row for row in manifest.get("files", []) if row.get("filename") == filename]
+    assert files, (
+        f"no manifest 'files' row for {filename!r} -- fixture sanity check failed (expected "
+        "a successful download of this filename)"
+    )
+    row = files[0]
+    assert "disk_basename" in row, (
+        f"manifest file row for {filename!r} has no 'disk_basename' field: {sorted(row)}. "
+        "The wire filename ('filename', e.g. ending '.fft') and the on-disk name (ending "
+        "'.fft.gz' for a compressed row, decision 0024) must be two DIFFERENT fields -- a "
+        "consumer joining to boatphone.acquire.resolve_corpus_files() BY NAME must be able "
+        "to join on disk_basename, not filename"
+    )
+    disk_basename = row["disk_basename"]
+    assert disk_basename != row["filename"], (
+        f"disk_basename ({disk_basename!r}) equals filename ({row['filename']!r}) for a "
+        "wire name that did not already end '.gz' -- compress-on-write (decision 0024) "
+        "should have renamed the on-disk copy, and if the two fields have collapsed back "
+        "into one value this check must fail: that is exactly the naming defect it pins"
+    )
+    path_value = row.get("path")
+    assert path_value is not None, (
+        f"manifest file row for {filename!r} has no 'path' -- cannot verify disk_basename "
+        "against what is actually on disk"
+    )
+    on_disk_path = pathlib.Path(path_value)
+    assert on_disk_path.exists(), (
+        f"manifest row's path {on_disk_path} does not exist on disk after a real download -- "
+        "'path' must name a file that is actually there, not merely a computed string"
+    )
+    assert on_disk_path.name == disk_basename, (
+        f"disk_basename ({disk_basename!r}) does not match the basename of 'path' "
+        f"({on_disk_path.name!r}) -- disk_basename must name the file that is ACTUALLY on "
+        "disk at 'path', not some other derived name"
     )
 
 
@@ -9364,10 +9478,11 @@ CHECKS = [
     ("B3-C manifest never lands without its provenance sidecar", check_b3c_5_manifest_never_written_without_its_provenance_sidecar),
     ("B3-C sampling-conditionality is one named config constant, carried in the manifest", check_b3c_6_sampling_conditionality_is_one_named_constant_and_travels_with_the_manifest),
     ("B3-C this check itself never writes under data/ (guards the guard)", check_b3c_7_never_writes_under_the_real_data_dir_this_check_guards_the_guard),
-    ("B3-C absent_log rows carry bin identity via parse_file_coverage", check_b3c_8_absent_log_rows_carry_bin_identity_via_parse_file_coverage),
+    ("B3-C absent_log rows carry file_start_utc/file_end_utc via parse_file_coverage, not bin_*", check_b3c_8_absent_log_rows_carry_file_span_via_parse_file_coverage),
     ("B3-C provenance names endpoint/absent-def/dest_dir/season/year-span/checksum caveat", check_b3c_9_provenance_names_endpoint_absent_definition_dest_dir_season_and_checksum_caveat),
     ("B3-C two manifest writes in the same dest do not collide", check_b3c_10_two_manifest_writes_in_the_same_dest_do_not_collide),
     ("B3-C ONE shared corpus resolver finds *.fft AND *.fft.gz, excludes sidecars, raises when absent", check_b3c_11_corpus_resolver_finds_fft_and_fft_gz_but_not_sidecars_and_raises_when_absent),
+    ("B3-C per-file record exposes disk_basename distinct from wire filename", check_b3c_12_per_file_record_exposes_disk_basename_distinct_from_wire_filename),
     ("B3-D FACT1: read_fft_gz accepts plain-ASCII and gzip by CONTENT, not extension", check_b3d_1_fft_reader_accepts_plain_ascii_and_gzip_by_content_not_extension),
     ("B3-D FACT2: ONC 400 'No file could be found' is ABSENT, not raised, no retry storm", check_b3d_2_onc_400_no_file_could_be_found_is_absent_not_error_no_retry_storm),
     ("B3-E downloaded bytes land gzip-compressed and round-trip exactly", check_b3e_1_downloaded_bytes_land_gzip_compressed_and_round_trip_exactly),

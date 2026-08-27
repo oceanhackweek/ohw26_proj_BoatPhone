@@ -48,10 +48,14 @@ Frequency axis
     ``models.band_limit`` directly, so the uncertainty travels with the band.
 
 Censoring
-    ``levels_db`` runs ``[0, 86]`` in the local sample. The FLOOR (0) is
-    confirmed censoring (18.7% of cells sit exactly there). The CEILING (86)
-    is an ASSUMPTION, not a confirmed hard clip -- see
-    ``config.FFT_LEVEL_CEILING``'s comment for why. :func:`censoring_report`
+    ``levels_db`` runs ``[0, 86]`` IN THE TWO LOCAL SAMPLE FIXTURES, and that
+    range does NOT generalise. The FLOOR (0) is confirmed censoring (18.7% of
+    cells sit exactly there). The CEILING (86) is an ASSUMPTION, not a
+    confirmed hard clip -- see ``config.FFT_LEVEL_CEILING``'s comment for why
+    -- and it has since been CHECKED AND FALSIFIED for the B3 overpass-window
+    corpus, which spans 0.0 to 112.0: see
+    ``docs/decisions/0026-fft-level-ceiling-86-is-not-a-ceiling-for-this-corpus.md``.
+    Do not treat 86 as a clip point for corpus data. :func:`censoring_report`
     returns the per-window counts at each limit and every band level should be
     reported next to them regardless.
 

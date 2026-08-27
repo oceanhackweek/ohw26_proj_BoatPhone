@@ -75,21 +75,58 @@ and this record -- it reads whichever container is actually present, not specifi
 
 ## Why this is cheap, and where it interacts with 0018
 
-Decision 0018 establishes that ONC ignores the `Range` header and restarts every interrupted
-transfer from byte zero -- there is no byte-offset relationship between what is on disk locally and
-the server's stream. That means there is no partial-write, resume-from-offset state that
-compressing on write could disturb: a download is either wholly absent, wholly in flight, or
-wholly complete, and it is safe to compress the complete wire payload as the last step before it
-touches disk, exactly like the existing "write then sha256" sequence 0018 assumes.
+**Correction, 2026-08-27 (post-review):** the paragraph originally here overstated 0018's finding
+and, worse, was load-bearing in a way that could mislead a maintainer into deleting real safety
+code. 0018's Range/resume finding is **n=1** -- ONE resumed request, observed live to return a
+bare 200 rather than 206. It is not a general property of the endpoint verified across repeated
+trials, and it does NOT mean there is "no partial-write, resume-from-offset state" in the code.
+
+The opposite is true: `download_archive_file` DOES implement byte-offset resume, and this record's
+gzip-on-write behaviour was built to compose with it, not to assume it away. Concretely, in
+`boatphone/onc_client.py`: `_wire_bytes_on_disk` (around line 1829) computes a resume offset in
+WIRE bytes from a compressed `.part` file (decompressing it to count, since the bytes on disk are
+not the bytes ONC sent once `compress_on_write` is in effect); a `206 Partial Content` response
+(around line 1947) appends a NEW gzip member to the existing `.part`, relying on concatenated gzip
+members being a valid gzip stream (RFC 1952 s2.2); and `check_b3e_6` (per the module's own
+check-suite) exercises exactly that append-on-206 path. This code is real, tested, and load-bearing
+for the (rare, n=1-so-far) case where ONC does honour Range.
+
+The correct, narrower claim: on the ONE resumed request the B3 live probe made, ONC returned a bare
+200 and the discard-and-restart branch fired, which is what makes compress-on-write cheap **in that
+observed case** -- a discarded-and-restarted download has no partial state for compression to
+disturb, because it isn't resumed at all, it's redone from zero. But this is a statement about what
+was *observed once*, not a guarantee about what the endpoint always does. Compressing on write is
+still safe when the 206/resume path DOES fire, because the append-a-gzip-member design above was
+built for exactly that case -- it does not depend on 206 never occurring. Do not read this record,
+or 0018, as license to remove `_wire_bytes_on_disk` or the 206-append branch as dead code: they are
+tested, they are the mechanism that keeps resume and compression correct together, and the n=1
+observation that the live endpoint currently prefers bare-200 does not make them unnecessary.
 
 ## Consequences
 
-* Corpus disk usage projects to roughly 8 GB going forward for newly-pulled dates (the 4.9x ratio
-  applied to 0022's ~40 GB projection, not independently re-measured against a full compressed
-  download). The 90 files already on disk from the live probe remain plain text at 0022's measured
-  43.4 MB/date; this record does not restate or re-derive their total. The corpus as a whole is
-  neither the ~40 GB nor the ~8 GB figure alone -- it is the sum of an uncompressed historical
-  slice and a compressed ongoing one, and no single total is asserted here.
+* **Measured, 2026-08-27 (post-review, after the 918-date bulk pull completed): the corpus is 6.8
+  GB on disk** (`du` over `data/raw/onc/overpass_window_corpus/`, 26,666 files), against a summed
+  wire payload of ~39.3 GB across those same files (matching 0022's ~40 GB projection). This
+  measured 6.8 GB is now the headline number for this record, replacing the pre-run ~8 GB
+  projection below, which is kept for reference as what was predicted beforehand, not as the
+  current estimate.
+* **Two ratios exist and should not be conflated.** The pre-run projection (~8 GB, below) used a
+  **4.9x** ratio observed on the hand-delivered sample file
+  (`ICLISTENHF1266_20260313T000004.000Z.fft.gz`, decompressed/compressed). A **direct measurement
+  on a real file from the completed bulk pull itself**
+  (`ICLISTENHF1266_20250715T161505.000Z.fft.gz`: 1,429,592 wire bytes -> 269,487 bytes on disk,
+  post-review re-check found 269,535 bytes, consistent within rounding/gzip-parameter noise) gives
+  **5.30x**. The bulk-pull corpus compresses somewhat better than the hand-delivered sample
+  predicted; the discrepancy is not resolved by silently picking one figure -- both are stated,
+  and the 5.30x figure is the one drawn from the actual production run, not a proxy sample.
+* **Original pre-run projection, kept for reference:** corpus disk usage was projected to roughly
+  8 GB going forward for newly-pulled dates (the 4.9x sample ratio applied to 0022's ~40 GB
+  projection, not independently re-measured against a full compressed download at the time this
+  record was first written). The 90 files already on disk from the live probe remain plain text at
+  0022's measured 43.4 MB/date; this record does not restate or re-derive their total. The corpus
+  as a whole is not one single uniform-container total -- it is the sum of an uncompressed
+  historical slice (the 90 live-probe files) and a compressed ongoing one (26,666 files, 6.8 GB,
+  per the measurement above).
 * `check_b3c_11` pins the pre-0024 exclusion contract and must be updated to assert the new
   both-extensions match instead. Not done as part of this record -- this is a decision record, not
   an implementation change.
@@ -99,7 +136,9 @@ touches disk, exactly like the existing "write then sha256" sequence 0018 assume
   reason.
 * `read_fft_gz`'s name continues to understate what it does; renaming it is deferred, as it was
   under 0022, to a future refactor rather than bundled into this record.
-* Not verified by this record: the 4.9x compression ratio was observed on one hand-delivered
-  sample file, not measured across a compressed run of the bulk pull itself. If the ratio differs
-  materially once applied at scale across 918 dates, the ~8 GB projection should be re-measured
-  against real output rather than assumed to hold.
+* **Superseded, 2026-08-27:** this bullet originally flagged that the 4.9x ratio was unverified at
+  scale. It has since been checked: the 918-date bulk pull completed, and the measured outcome
+  (6.8 GB on disk, 5.30x on a spot-checked real file, both above) is now the record rather than an
+  open question. The gap between 4.9x (sample) and 5.30x (production) is real but modest and does
+  not change the order-of-magnitude conclusion that gzip-on-write keeps the corpus well under
+  0022's uncompressed ~40 GB.

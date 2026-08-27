@@ -593,6 +593,17 @@ FFT_B5_RELATIVE_CEILING_BIN: int = FFT_ROLLOFF_ONSET_BIN  # 408 == 102 kHz
 FFT_LEVEL_FLOOR: int = 0
 FFT_LEVEL_CEILING: int = 86  # ASSUMED ceiling from the max observed in two quiet
 # fixtures -- not confirmed as a hard clip; see the correction above.
+#
+# CHECKED AND FALSIFIED FOR THE B3 CORPUS -- read
+# docs/decisions/0026-fft-level-ceiling-86-is-not-a-ceiling-for-this-corpus.md
+# before using this number. The resolution path above was walked: levels across
+# the real overpass-window corpus span 0.0 to 112.0, so 86 is NOT a ceiling
+# there and any code treating it as a clip point on that corpus is wrong. The
+# VALUE is deliberately left at 86 because 0026 argues it should be (it remains
+# the correct description of the two local fixtures this constant documents);
+# what changed is that it is no longer merely unverified -- it has been tested
+# against real data and does not hold. Anything reading corpus levels must take
+# its ceiling from 0026, not from here.
 
 # The two axis facts must agree with the file-cadence fact above; a silent
 # disagreement here would put every frame timestamp on the wrong grid.

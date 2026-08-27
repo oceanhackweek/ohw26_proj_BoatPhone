@@ -35,9 +35,16 @@ ONC_RAW_DIR: pathlib.Path = RAW_DIR / "onc"
 # not only inside a manifest a downstream globber will never open: a consumer that
 # globs ONC_RAW_DIR and finds this subdirectory can tell an overpass-window corpus
 # from a whole-day pull by its path alone. Resolve it through
-# `boatphone.acquire.resolve_corpus_files`, which is the ONE glob (invariant 6) and
-# knows that the pulled files carry config.ARCHIVE_EXTENSION ("fft"), NOT
-# config.PRODUCT_EXTENSION ("fft.gz").
+# `boatphone.acquire.resolve_corpus_files`, which is the ONE glob (invariant 6).
+#
+# CONTAINER (corrected -- the earlier note here said the pulled files carry only
+# config.ARCHIVE_EXTENSION, "fft", and NOT config.PRODUCT_EXTENSION, "fft.gz";
+# decision 0024 falsified that): the bulk pull COMPRESSES ON WRITE, so a file
+# ONC serves as `X.fft` lands here as `X.fft.gz`. Both spellings are present --
+# 90 plain `.fft` files from the pre-0024 live probe, and the rest `.fft.gz` --
+# and `resolve_corpus_files` matches BOTH, which is why it must be the only
+# glob. The manifest keeps the two names in separate fields: `filename` is the
+# ONC wire name, `disk_basename` is what is actually here.
 ONC_OVERPASS_CORPUS_DIR: pathlib.Path = ONC_RAW_DIR / "overpass_window_corpus"
 
 # Source: docs/decisions/0005 -- the ONE tracked-fixture exception inside data/.

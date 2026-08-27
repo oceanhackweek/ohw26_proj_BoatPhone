@@ -57,6 +57,46 @@ are byte-identical to the A1 CSV; and total availability after refinement is **<
 before refinement (a higher number after refining is a sign the join is broken, not that uptime
 improved).
 
+## The join contract, added post-review, 2026-08-27
+
+Segment D's join of the pull's manifest onto `data/derived/hydrophone_uptime.csv` **must be an
+INTERVAL-OVERLAP join on UTC time, not an equality join on any field.**
+
+The reason is a real mismatch between the two sides, confirmed against the completed manifest
+(`data/derived/pull_overpass_corpus.manifest.json`, 918 dates, 26,666 files):
+
+* The A1 uptime CSV's `start_utc`/`end_utc` are epoch-aligned edges of the fixed 300 s (5-minute)
+  grid decision 0020's own context describes.
+* The manifest's per-file span fields (currently named `bin_start_utc`/`bin_end_utc` in
+  `scripts/pull_overpass_corpus.py`'s `_bin_identity`) are **not** epoch-aligned -- they are derived
+  from the real archive filename, and real file starts jitter against the grid. Confirmed example
+  from the manifest: `ICLISTENHF1266_20250501T161623.000Z.fft` yields `bin_start_utc =
+  2025-05-01T16:16:23+00:00`, 83 seconds off the nearest 300 s grid edge, not exactly on one.
+
+An equality join between these two time fields matches essentially nothing -- not zero, but close
+enough to zero to be indistinguishable from "the pull found almost no data" rather than "the join
+key is wrong." That reads as low coverage instead of as a broken join, which is precisely the
+confusion invariant 9 exists to catch: a plausible-looking wrong number where the honest answer is
+"this measurement didn't run." The correct join matches a manifest file's `[bin_start_utc,
+bin_end_utc)` interval against the grid bin(s) it overlaps, not against a grid edge it happens to
+equal.
+
+**Field rename in progress:** to stop this exact collision at its source -- two same-named-looking
+fields (`start_utc`/`end_utc` vs. `bin_start_utc`/`bin_end_utc`) that look like they should be
+joined on equality but encode different alignment guarantees -- the manifest's per-file span
+fields are being renamed to `file_start_utc`/`file_end_utc`. As of this correction the code still
+uses `bin_start_utc`/`bin_end_utc` (see `scripts/pull_overpass_corpus.py` `_bin_identity`); the
+rename is planned, not yet landed, and segment D's implementation should not assume the new names
+are present without checking.
+
+**Join key to the corpus on disk:** segment D (or any consumer resolving a manifest row to the
+actual file on disk) must join on `files[].path`, **not** `filename`. The wire name recorded in
+`filename` ends `.fft` for every row (that is the name ONC reports and downloads under), but the
+file actually on disk ends `.fft.gz` for every compressed row (decision 0024) -- only the 90
+live-probe files predating 0024 are plain-text `.fft` on disk. `path` in each manifest row already
+carries the correct on-disk name; `filename` does not, and using it to open a file will fail for
+the entire 26,666-file bulk-pull population.
+
 ## Consequences
 
 * Any code or figure that reads `hydrophone_uptime.csv` after segment D must check the per-bin
@@ -69,3 +109,5 @@ improved).
   "enumerate the covered UTC spans" in the manifest (e.g. one row per date-window vs. a merged
   span list) is left to segment D's implementation; this record only requires that such an
   enumeration exist and be sufficient to reconstruct the coverage fraction.
+* Segment D must use an interval-overlap join per the section above, not equality, and must
+  resolve on-disk files via `path`, not `filename`, per the same section.
