@@ -83,8 +83,19 @@ def main():
         water, mrep = optical.water_mask(green, nir, valid, clear, res_m=res_m)
         blobs, stats = optical.detect_nir_blobs(nir, water, res_m, n_mad=args.n_mad)
         recs = optical.blobs_to_records(blobs, r["id"], r["acq_time_utc"], to_lonlat)
-        for d in recs:
+        # blobs_to_records is strictly 1:1 with blobs (it zips one list, filtering
+        # nothing), so the shape fields can be carried across without touching
+        # optical.py. `fill` = blob pixels / minimum-area-rectangle pixels is the
+        # COMPACTNESS measure: a hull is a solid bright object, wake foam is ragged
+        # and extended. It is the discriminator brightness cannot provide, because
+        # foam is bright in NIR too -- which is Detector B's own premise turned
+        # against it when B is used to size rather than to search.
+        assert len(recs) == len(blobs), "blobs_to_records is no longer 1:1"
+        for d, b in zip(recs, blobs):
             d["size_class"] = optical.size_class(d["length_class_m"])
+            d["fill"] = round(b.fill, 4)
+            d["width_m"] = round(b.width_m, 1)
+            d["n_px"] = b.n_px
         dets.extend(recs)
         scenes.append(optical.classify_scene(recs, r["id"], r["acq_time_utc"]))
         print(f"[{i:>2}/{len(rows)}] {r['id']}  water {water.mean():5.1%}  "
@@ -108,8 +119,8 @@ def main():
         d["n_years_at_cell"] = len(years[d.pop("cell")])
         d["transient"] = int(d["n_years_at_cell"] == 1)
 
-    fields = list(optical.DETECTIONS_FIELDS) + ["size_class", "n_years_at_cell",
-                                                "transient"]
+    fields = list(optical.DETECTIONS_FIELDS) + ["size_class", "fill", "width_m",
+                                                "n_px", "n_years_at_cell", "transient"]
     optical.write_csv(args.out_detections, dets, fields)
 
     # ---------------------------------------------------------- review queue
