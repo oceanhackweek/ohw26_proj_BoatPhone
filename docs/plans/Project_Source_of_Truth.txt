@@ -567,6 +567,51 @@ compose. Cost is one spatial join over data we already own. Not implemented.
 Still open, still mine, still blocking: the fixed TCI scale, and AGPL.
 
 
+Neve (Aug 27, evening) -- MALACHY: A RUNNABLE EXPORTER FOR YOUR 26 SCENES:
+
+    python3 scripts/export_detections.py <scenes>/*.tif --out-dir data/derived/detections
+
+One CSV per image, named <scene_id>_detections.csv. You have the imagery and I do not (only
+20200730 is on the hub), so this is the fastest way to get detections off all 26 without moving
+1.2 GB. Needs rasterio, ultralytics, huggingface_hub and opencv -- all now in environment.yml --
+and it pulls yolo11s_tci.pt from HuggingFace on first run. CPU is fine: ~40 s per 100 km2 scene
+at slice 320, ~20 s at slice 640, so the whole batch is well under an hour.
+
+WHAT EACH ROW CARRIES: the four bounding-box corners in BOTH EPSG:4326 and the scene's own CRS
+(so it drops onto the imagery with no reprojection), a detection id (boat_1, boat_2, ... by
+descending confidence), geodesic range and bearing to Folger Deep, the confidence score, box
+dimensions, FAO size class, distance to the scene edge, and the config that produced it.
+
+RUN IT AT MORE THAN ONE CONFIG, and this is the point of the provenance columns. Your apparent-
+scale finding is real: on 20200730, slice 320 -> imgsz 640 gives 4 detections and slice 640 ->
+imgsz 640 gives 17, and BGR vs RGB gives 15 vs 10 with only 9 in common. So please run at least:
+  --slice 320 --imgsz 640            (the current default, ratio 2.0)
+  --slice 640 --imgsz 640            (ratio 1.0, where the count peaks)
+  --slice 640 --imgsz 640 --rgb      (the channel-order arm)
+Every row records slice_px/imgsz/conf_threshold/channel_order/weights_file, so the outputs are
+comparable rather than three files that disagree for unrecorded reasons.
+
+NOTHING IS FILTERED. No size cut, no water mask, no Detector B. Every box the model returns is a
+row -- that is deliberate, because this file is the INPUT to the section 8 human pass, not a result.
+
+THE NIR COLUMNS ARE ADVISORY AND DO NOT ALTER THE MODEL'S OUTPUT. `possible_false_positive` is
+computed from band 4, which the model never sees (it is fed 3-band RGB), so a bright cluster
+inside a box is genuinely independent evidence. `--no-nir` writes the same rows without those
+columns and the self-test asserts identical row counts and ids both ways. Read the flag as
+"unsupported by NIR", NOT as "not a boat": a dark hull on dark water produces exactly this, and
+dark hulls are Detector B's own documented failure mode. nir_support is graded strong/weak/none
+with the pixel count and the exact threshold recorded, so any flag can be re-derived.
+On 20200730: 4 detections, 1 flagged.
+
+TWO CAVEATS ARE IN THE CSV HEADER so they cannot be lost: bearing_deg_from_hydrophone is the
+hydrophone->detection AZIMUTH, not the vessel's heading (an axis-aligned box carries no heading --
+your Q2 point); and length_m is biased LOW for rotated vessels by up to 17.5%, so Detector B's
+minAreaRect length is preferred wherever B sees the same vessel.
+
+STILL THE FASTEST THING YOU COULD SEND ME: the `visual` clip for 20200730_192942_71_1059. Same
+acquisition, both renderings, so section 5.4 runs on one file rather than on the whole batch.
+
+
 Next Steps:
 
 Divy out tasks and claim here
