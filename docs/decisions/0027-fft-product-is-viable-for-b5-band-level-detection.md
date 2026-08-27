@@ -242,3 +242,62 @@ histograms and per-window median spectra), `windows.json`, `seasonal_ambient.npz
 L95, the ambient a detector can subtract without a window subtracting its own vessel away),
 and figures P1 (LTSA), P2 (SPD), P3 (seasonal spectra and ambient). Produced by
 `scripts/build_population_set.py` and `scripts/plot_population_set.py`.
+
+---
+
+## Amendment 3, 2026-08-27: the second baseline, and a correction to amendment 2's reading
+
+The population ambient is now wired into the review set as a **second baseline** beside the
+per-window one (`features.load_seasonal_ambient_counts`,
+`features.band_baseline_from_per_bin_ambient`). Each window reports how far its own quiet floor
+sits above its season's, per band.
+
+**Measured across all 19 review windows, 1-10 kHz:** baseline shift ranges **+0.0 to +28.0
+counts**, median **+8.0**. Most windows in this set were elevated above their season's quiet
+floor for their entire duration, by an amount comparable to or larger than the +10-count event
+threshold — and the per-window baseline subtracts exactly that away before the threshold is
+applied. The five windows elevated by >= 15 counts average **3.00 events**, against **5.86** for
+the rest, and the three most elevated windows produce **zero events each**. The correlation
+across all 19 is weak (r = -0.234, n = 19) so this is a flag rather than a measurement, but the
+mechanism is not in doubt: a detector that defines "quiet" from the window it is scoring cannot
+see a window that was never quiet.
+
+### The correction
+
+**Amendment 2's far-field reading of the labelled window is withdrawn as unsupported.**
+
+That window (`20210601_191849_05_2412`, optically confirmed no vessels within 10 km2) sits
++12.0 counts above its season's floor in 1-10 kHz and +18.5 in 250-1000 Hz. The earlier
+interpretation offered was far-field contamination — a vessel outside the ~1.78 km reviewed
+radius, audible but not visible — supported by the elevation being stronger at low frequency.
+
+**The control band does not support that, and it is the channel that was added to adjudicate
+exactly this.** Across the 19 windows, the control-band shift and the small-craft shift correlate
+at **r = +0.847**. The control band spans 51-102 kHz, where no small vessel puts meaningful
+energy, so a window elevated there is elevated BROADBAND — sea state, flow noise or instrument
+condition, not a vessel. And the labelled window sits **on that trend, not above it**: its control
+shift of +2.0 against a craft shift of +12.0 is what the relationship predicts. There is no
+vessel-specific excess left to explain once the broadband component is accounted for.
+
+So the honest statement is: **that window was broadband-elevated throughout, in a way shared with
+most windows in this set, and nothing in the acoustics singles it out as containing a
+missed vessel.** The far-field diagnostic `acoustics_plan_v2` §5 B5 asks for remains a real and
+worthwhile check; this is not yet an instance of it.
+
+Two caveats that survive independently, and either could still overturn this:
+
+* The window is **off-strip** (19:03 UTC against the corpus's 16:00-18:59), so its comparison to
+  a season ambient measured at a different hour confounds time-of-day with source. Every
+  off-strip window now carries this warning on the figure and in `summary.json`. The labelled
+  windows are off-strip by construction, so this will recur.
+* **n = 1 label.** Nothing here is a rate.
+
+### What this changes about the detector
+
+Nothing yet, and deliberately. Both baselines are reported and neither replaces the other: the
+per-window baseline is blind to a window elevated throughout, the population baseline assumes the
+window belongs to its population and is wrong for off-strip windows. Switching the detector onto
+the population baseline would trade a known blind spot for an unquantified bias, and decision 0015
+forbids retuning the threshold more than once on the overpass set. The disagreement between them
+is a **reported diagnostic**, and the right moment to act on it is when labels exist to say which
+of the two was right.
