@@ -404,6 +404,61 @@ Milestones:
 9) Play with other data source?
 
 
+Neve (Aug 27, late) -- MALACHY: BOTH OF YOUR POINTS CONFIRMED, ONE OF THEM MATTERS A LOT:
+
+Q2, model.task -- SETTLED, AND THE MODEL CARD IS WRONG. `model.task` is 'detect', the head is
+`Detect`, and `names` is {0: 'boat'}. yolo11s_tci.pt is a plain single-class DETECTION model. The
+HuggingFace card's "fine-tuned instance segmentation model / instance segmentation output" is
+incorrect; train_models.py is the one telling the truth. Nobody should plan around masks that do
+not exist -- recording it here so the card is not believed again.
+- Good: we are NOT silently discarding res.masks, because there are none.
+- Bad: your axis-aligned bias stands and has no cheap fix. L|cos t| + W|sin t| means a 24 x 4 m
+  hull at 45 deg measures 19.8 m, short by 17.5%, pushing 12-24 m vessels into 0-12 m. That is
+  exactly the bin truncation decision 0016 exists to prevent, and Detector A still has it.
+  CONSEQUENCE: length comes from DETECTOR B wherever B sees the vessel -- minAreaRect is
+  orientation-free and measured exactly right on the self-test fixture -- and A-only detections
+  carry a stated, one-sided length bias that belongs in section 13. This also kills the comment in
+  fuse() claiming A's box is the better extent estimate; it is the better DETECTION, not the
+  better MEASUREMENT. Not yet changed in code.
+
+Q1, apparent scale -- YOU ARE RIGHT, AND THE EFFECT IS BIG. Measured on 20200730_192942_71_1059,
+conf 0.10, BGR, full 100 km2 scene:
+
+    slice->imgsz   ratio   20 m boat at input   detections   wall clock
+      320 -> 640    2.00        13.3 px              4          74 s     <- our default
+      512 -> 640    1.25         8.3 px             16          30 s
+      640 -> 640    1.00         6.7 px             17          18 s
+     1024 -> 640    0.62         4.2 px             12           6 s     <- matches training
+     1024 -> 640    0.62         4.2 px  @conf 0.01 19           6 s
+      320 -> 640    2.00        13.3 px  @conf 0.01  6          72 s
+
+The default was returning 4 where a ratio-1.0 tile returns 17, and doing it 4x SLOWER, since
+larger slices mean fewer tiles. My section 6.3 reasoning was wrong in precisely the way you
+diagnosed: I compared our 10 m boat against their 20 m boat, two different vessels.
+- Note the peak is at ratio 1.0-1.25, NOT at the training-matched 0.62 -- so extra pixels do buy
+  something and the optimum sits between parity and 3.3x, which is what you predicted rather than
+  what either of us assumed. Worth saying because it means "match training scale" is not the rule
+  either; it is genuinely empirical, as you said.
+- THE CAVEAT MATTERS MORE THAN THE TABLE: these are COUNTS, not recall. 17 could be 13 more false
+  positives. Ranking these cells needs the eyeball truth set, and section 6.2's rule stands -- the
+  sweep runs AFTER verification, not before. This establishes that the parameter is far more
+  load-bearing than section 6.3 assumed, NOT that 640->640 is the answer.
+- It does retract something from my previous entry: Detector A's "4 detections, a plausible count"
+  was CONFIG-SUPPRESSED, not a property of the scene. Do not build on that number.
+- Your conf rider is folded in above: at ratio 0.62, dropping conf 0.10 -> 0.01 adds 7 detections,
+  so the low-confidence tail is real and unexplored. mayrajeo run 0.001 with a heavy downstream
+  filter stack; we have the water mask, the size prior and the NIR cross-check, which is the same
+  philosophy but much lighter, so we should not assume their threshold transfers.
+
+Your persistence-mask idea for decision 0017 is better than my shoreline-vector suggestion and I
+am adopting it: 26 co-registered scenes over six years means a detection recurring at the same
+coordinates across YEARS is a fixed object. It separates rock from boat by recurrence across
+scenes, where the extent rule separates island from boat by size within a scene -- the two
+compose. Cost is one spatial join over data we already own. Not implemented.
+
+Still open, still mine, still blocking: the fixed TCI scale, and AGPL.
+
+
 Next Steps:
 
 Divy out tasks and claim here
