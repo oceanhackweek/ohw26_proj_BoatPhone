@@ -305,6 +305,67 @@ Wout, D., Klaas, D., Clea, P., Elena, S., & Elisabeth, D. (2025). Transfer Learn
  
 Xu, Q., You, K.-S., Zhu, B., Feng, M., Feng, D., & Liu, B. (2023). Self-supervised learning-based underwater acoustical signal classification via mask modeling.. *The Journal of the Acoustical Society of America, 154 1*, 5-15. https://doi.org/10.1121/10.0019937
  
+# Yes, **open-source AIS-trained hydrophone models** exist for vessel distance and type classification, though no single model covers all attributes.
+
+
+
+Evidence confirms the existence of open-source pipelines and datasets that use AIS data to train single-hydrophone models for vessel distance and type classification, though no single open-source model yet estimates vessel length  (Wout et al., 2025; Domingos et al., 2022).
+
+## Open-Source AIS-Trained Distance Models
+
+A CNN trained on 116 days of passive acoustic data integrated with AIS coordinates classifies vessel distance into discrete bins, and the dataset is explicitly open-source  (Wout et al., 2025). This model addresses dark vessels that do not transmit AIS by classifying distance based on sound production alone  (Wout et al., 2025). A separate database-native workflow aligns terabyte-scale hydrophone archives with AIS position reports to produce distance-resolved data directly usable for machine learning  (Renaud et al., 2026). This framework computes the closest point of approach for each vessel encounter, separating no-contact, single-contact, and two-contact windows to structure the data for GeoAI applications  (Renaud et al., 2026).
+
+## Open-Source Vessel Type and Detection Pipelines
+
+An open-source pipeline for classifying vessel types from underwater acoustic signals uses single-channel hydrophone data from the open-source Ocean Networks Canada archive  (Domingos et al., 2022). This pipeline evaluates VGGNet and ResNet architectures with Constant Q Transform, Gammatone, and Mel spectrogram preprocessing filters  (Domingos et al., 2022). A lightweight CNN optimized for real-time acoustic classification on edge hardware detects fast-moving vessels, though it uses a triangular sparse sensor network rather than a single hydrophone  (Karst et al., 2025).
+
+## Single-Hydrophone AIS-Dependent Models
+
+| Model | Task | AIS Role | Open-Source? |
+|-------|------|---------|--------------|
+| Decrop et al. (2025) | **Distance classification** | Training labels via AIS-Hub | **Yes** (dataset)  (Wout et al., 2025)|
+| Domingos et al. (2024) | **Vessel type classification** | Not AIS-dependent | **Yes** (pipeline)  (Domingos et al., 2022)|
+| Guo et al. (2023) | **Inbound/outbound classification** | Labels from AIS data | Not stated  (Guo et al., 2023)|
+| Alexandri & Diamant (2025) | **URN-AIS track association** | Matches tonal clusters to AIS tracks | Not stated  (Alexandri & Diamant, 2025)|
+| Walker et al. (2024) | **Sound speed estimation** | AIS vessel descriptors as predictors | CC BY license  (Walker et al., 2024)|
+
+**Figure 1:** Comparison of single-hydrophone AIS-dependent acoustic models for vessel detection tasks.
+
+## Single-Hydrophone ML Without AIS Training
+
+- A single-hydrophone CNN using **cepstrum data** estimates range of small boats but was validated against known GPS tracks rather than AIS data  (Lo, 2021).
+- A statistical waveguide-invariant model achieves **range errors below ±4%** up to 62 km using a single hydrophone, but relies on spectrogram striation analysis rather than ML  (Jang et al., 2025).
+- A kNN and ResNet-18 model distinguishes **surface vs. underwater sources** using a single hydrophone, trained on simulated KRAKEN data rather than AIS  (Zhang et al., 2022).
+- A two-hydrophone CNN detects boats in a marina using **cross-correlation time-delay analysis**, trained on manually labeled data without AIS  (Scherrer et al., 2022).
+
+The evidence confirms open-source AIS-trained models exist for vessel distance classification and vessel type classification using single-hydrophone data, but no open-source model was found that estimates vessel length from acoustic data, and most single-hydrophone ML approaches rely on simulated or manually labeled data rather than AIS  (Wout et al., 2025; Domingos et al., 2022; Zhang et al., 2022).
+ 
+_These search results were found and analyzed using Consensus, an AI-powered search engine for research. Try it at https://consensus.app. © 2026 Consensus NLP, Inc. Personal, non-commercial use only; redistribution requires copyright holders’ consent._
+ 
+## References
+ 
+Alexandri, T., & Diamant, R. (2025). Ship Underwater Radiated Noise and Automatic Identification System Track Association. *IEEE Journal of Oceanic Engineering, 50*, 3235-3247. https://doi.org/10.1109/joe.2025.3568070
+ 
+Domingos, L., Santos, P. E., Skelton, P. S. M., Brinkworth, R., & Sammut, K. (2022). An Investigation of Preprocessing Filters and Deep Learning Methods for Vessel Type Classification With Underwater Acoustic Data. *IEEE Access, 10*, 117582-117596. https://doi.org/10.1109/access.2022.3220265
+ 
+Guo, D., Gao, D., Chen, Z., Li, Y., Zhao, X., Song, W., & Li, X. (2023). Classification of inbound and outbound ships using convolutional neural networks. https://doi.org/10.3389/fmars.2023.1151817
+ 
+Jang, J., Hodgkiss, W., & Meyer, F. (2025). Statistical model and estimation method for ranging a moving ship using a single acoustic receiver in shallow water.. *The Journal of the Acoustical Society of America, 158 3*, 2448-2463. https://doi.org/10.1121/10.0039377
+ 
+Karst, J., McGurrin, R., Gavin, K. E., Luttrell, J., Rippy, W., Coniglione, R., McKenna, J. R., & Riedel, R. (2025). Enhancing Maritime Domain Awareness Through AI-Enabled Acoustic Buoys for Real-Time Detection and Tracking of Fast-Moving Vessels. *Sensors (Basel, Switzerland), 25*. https://doi.org/10.3390/s25061930
+ 
+Lo, K. (2021). A matched-field processing approach to ranging surface vessels using a single hydrophone and measured replica fields.. *The Journal of the Acoustical Society of America, 149 3*, 1466. https://doi.org/10.1121/10.0003631
+ 
+Renaud, W., Aravindan, P., & Spadon, G. (2026). From Continuous Deployment to Queryable Dataset: Terabyte-Scale AIS-Aligned Passive Acoustic Labelling. https://doi.org/10.48550/arxiv.2607.13840
+ 
+Scherrer, R., Aulnette, E., Quiniou, T., Kasarhérou, J., Kolb, P., & Selmaoui-Folcher, N. (2022). Boat Detection in Marina Using Time-Delay Analysis and Deep Learning. *Int. J. Data Warehous. Min., 18*, 1-16. https://doi.org/10.4018/ijdwm.298006
+ 
+Walker, J. L., Zeng, Z., ZoBell, V. M., & Frasier, K. E. (2024). Underwater sound speed profile estimation from vessel traffic recordings and multi-view neural networks.. *The Journal of the Acoustical Society of America, 155 5*, 3015-3026. https://doi.org/10.1121/10.0025920
+ 
+Wout, D., Klaas, D., Clea, P., Elena, S., & Elisabeth, D. (2025). Transfer Learning for Distance Classification of Marine Vessels Using Underwater Sound. *IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing, 18*, 19710-19726. https://doi.org/10.1109/jstars.2025.3593779
+ 
+Zhang, W., Wu, Y., Shi, J., Leng, H., Zhao, Y., & Guo, J. (2022). Surface and Underwater Acoustic Source Discrimination Based on Machine Learning Using a Single Hydrophone. *Journal of Marine Science and Engineering*. https://doi.org/10.3390/jmse10030321
+ 
 
 
 
