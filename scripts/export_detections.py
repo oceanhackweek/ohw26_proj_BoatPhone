@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -61,8 +62,48 @@ HEADER_NOTE = (
 )
 
 
-def load_scene(path):
-    """Planet ortho_analytic_4b_sr -> the arrays and callables optical.py needs."""
+def reflectance_coefficients(xml_path):
+    """Per-band DN -> TOA reflectance factors from Planet's scene metadata.
+
+    ortho_analytic_4b is TOA *RADIANCE* in DN, NOT reflectance. The TCI recipe
+    below assumes reflectance x PLANET_QUANT, so applying it to radiance saturates
+    the scene -- measured on 20200730: water at DN 236 of 255, and detections that
+    mean nothing. The XML carries <ps:reflectanceCoefficient> per band (~2e-5).
+    ortho_analytic_4b_sr needs no coefficient because it IS already reflectance x
+    PLANET_QUANT. That asymmetry between the two products is the whole trap.
+    """
+    txt = Path(xml_path).read_text()
+    bands = re.findall(r"<ps:bandNumber>(\d+)</ps:bandNumber>", txt)
+    coefs = re.findall(r"<ps:reflectanceCoefficient>([0-9.eE+-]+)</ps:reflectanceCoefficient>", txt)
+    if len(bands) != len(coefs) or len(coefs) < 4:
+        raise ValueError(f"{xml_path}: {len(bands)} bandNumber, {len(coefs)} "
+                         f"reflectanceCoefficient -- cannot convert radiance to reflectance")
+    return {int(b): float(c) for b, c in zip(bands, coefs)}
+
+
+def radiometry_of(path, override="auto"):
+    """'sr' or 'toa', from Planet's canonical filenames unless overridden.
+
+    ortho_analytic_4b_sr -> *_AnalyticMS_SR_clip.tif
+    ortho_analytic_4b    -> *_AnalyticMS_clip.tif
+    Both bundles ship an identically named *_AnalyticMS_metadata_clip.xml, so the
+    raster name is the only reliable discriminator.
+    """
+    if override != "auto":
+        return override
+    return "sr" if "_AnalyticMS_SR" in os.path.basename(path) else "toa"
+
+
+def load_scene(path, radiometry="auto"):
+    """Planet analytic 4-band (SR or TOA) -> the arrays and callables optical.py needs.
+
+    WHICH PRODUCT TO PREFER: the model was trained on Sentinel-2 L1C, which is
+    TOP-OF-ATMOSPHERE. Over water most of the TOA signal is atmospheric path
+    radiance, so surface reflectance removes the bulk of what it learned. Measured
+    on 20200730 at slice 640 -> imgsz 640, conf 0.05: water DN 50 and 46 detections
+    on TOA against DN 13 and 17 on SR, and only TOA boxes the three wakes visible
+    in the scene. Feed this TOA where you have it.
+    """
     import rasterio
     from rasterio.transform import xy as rio_xy
     from rasterio.warp import transform as rio_transform
@@ -84,8 +125,21 @@ def load_scene(path):
         tf, crs, res = src.transform, src.crs, abs(src.transform.a)
         shape = (src.height, src.width)
 
-    bands = [np.clip((arr[i] + opt.PLANET_SR_OFFSET) / opt.PLANET_QUANT, 0, None)
-             for i in range(4)]
+    mode = radiometry_of(path, radiometry)
+    if mode == "toa":
+        xml = re.sub(r"_AnalyticMS_clip\.tif$", "_AnalyticMS_metadata_clip.xml", path)
+        if not os.path.exists(xml):
+            raise ValueError(
+                f"{os.path.basename(path)} looks like TOA (ortho_analytic_4b) but "
+                f"{os.path.basename(xml)} is missing. The per-band reflectance "
+                f"coefficients live there and radiance cannot be converted without "
+                f"them. Pass --radiometry sr if this really is a surface-reflectance "
+                f"file under a non-standard name.")
+        coefs = reflectance_coefficients(xml)
+        bands = [np.clip(arr[i] * coefs[i + 1], 0, None) for i in range(4)]
+    else:
+        bands = [np.clip((arr[i] + opt.PLANET_SR_OFFSET) / opt.PLANET_QUANT, 0, None)
+                 for i in range(4)]
     valid = np.logical_and.reduce([arr[i] > 0 for i in range(4)])
     for band in bands:
         band[~valid] = 0.0
@@ -110,7 +164,14 @@ def load_scene(path):
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("scenes", nargs="+", help="ortho_analytic_4b_sr GeoTIFFs (globs ok)")
+    ap.add_argument("scenes", nargs="+",
+                    help="Planet analytic 4-band GeoTIFFs, SR or TOA (globs ok)")
+    ap.add_argument("--radiometry", choices=("auto", "sr", "toa"), default="auto",
+                    help="auto reads Planet's filename: *_AnalyticMS_SR_clip.tif is "
+                         "surface reflectance, *_AnalyticMS_clip.tif is TOA radiance "
+                         "and is converted with the XML reflectance coefficients. "
+                         "PREFER TOA: the model was trained on Sentinel-2 L1C, which "
+                         "is top-of-atmosphere.")
     ap.add_argument("--out-dir", default=".")
     ap.add_argument("--slice", type=int, default=opt.SLICE_PX)
     ap.add_argument("--imgsz", type=int, default=opt.IMGSZ)
@@ -149,7 +210,10 @@ def main():
               "weights_file": os.path.basename(weights)}
 
     for path in paths:
-        scene = load_scene(path)
+        # Per scene, not once: with --radiometry auto the mode comes from each
+        # filename, so a mixed SR/TOA batch resolves differently file to file.
+        config["radiometry"] = radiometry_of(path, args.radiometry)
+        scene = load_scene(path, args.radiometry)
         scene_id, acq = parse_scene_meta(path)
         boxes = predict_tiled(model, scene["rgb8"], scene["valid"], args.slice,
                               args.imgsz, args.conf, args.overlap, args.iou,
