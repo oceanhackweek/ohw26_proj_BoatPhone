@@ -1,0 +1,54 @@
+# BoatPhone environment manifest.
+#
+# HONEST HEADER: this file does NOT currently build the environment the team works
+# in. The analysis runs on the shared OHW JupyterHub environment
+# (/home/.pixi/envs/default, Python 3.14.6), which is provisioned by Oceanhackweek
+# and is not derived from this file. This manifest exists so (a) the analysis is
+# reproducible off-hub after the week ends and (b) the dependency set is written
+# down at all. It is a portable floor, not a re-creation of the hub.
+#
+# Versions are LOWER BOUNDS measured on the hub on 2026-08-27
+# (see docs/environment-audit.md for the measured table and the command).
+name: boatphone
+channels:
+  - conda-forge
+dependencies:
+  # Range, not a pin. The hub IS Python 3.14 and is what we run on, so the range
+  # must admit it -- but pinning ==3.14 all but guarantees the solve fails off-hub:
+  # pypam and arlpy have no 3.14 wheels yet. Hence a floor of 3.11 and a ceiling
+  # below 3.15.
+  - python>=3.11,<3.15
+  - numpy>=2.5
+  - scipy>=1.18
+  - xarray>=2025.9
+  - pandas>=3.0
+  - pyproj>=3.7
+  - pyarrow>=22
+  - matplotlib>=3.11
+  - pytorch>=2.12          # optical detection (YOLO); import name `torch`
+  - scikit-learn>=1.9
+  - pyyaml>=6.0
+  # IANA time-zone database for `zoneinfo`. Not optional: off-hub (notably
+  # Windows) there is no system tzdb, so ZoneInfo('America/Vancouver') raises
+  # and A4's DST-aware local-time window -- the one constant that silently
+  # mis-slices the entire pull if wrong -- cannot be computed. Hub has 2026.3.
+  - tzdata>=2026.3
+  - pip
+  - pip:
+      # No conda-forge package for the ONC Oceans 3.0 client.
+      - onc>=2.6
+
+  # ---------------------------------------------------------------------------
+  # OPTIONAL -- NOT installed on the hub, deliberately left commented out.
+  # Uncomment only when the segment it gates actually starts. Installing into the
+  # shared hub environment affects teammates; none of these is needed before A5.
+  # ---------------------------------------------------------------------------
+  # - pip:
+  #     - pypam        # gates A5 -- decidecade (third-octave) band levels
+  #     - mbari-pbp    # gates A5 -- HMD products; imports as `pbp`, NOT `mbari_pbp`
+  #     - arlpy        # gates A8 -- propagation modelling. NOTE: arlpy additionally
+  #                    #   requires a Bellhop/acoustics-toolbox FORTRAN binary that is
+  #                    #   NOT a pip dependency and is NOT present on this machine;
+  #                    #   `pip install arlpy` alone will not make Bellhop work.
+  #     - soundfile    # FLAC reads only. Unnecessary here: the `flac` and `ffmpeg`
+  #                    #   CLI binaries are both present on the hub.

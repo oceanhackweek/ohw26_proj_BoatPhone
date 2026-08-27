@@ -28,8 +28,10 @@ Isaac Guld (hydrophone data and acoustic modelling).
 ```
 contributor_folders/<person>/  per-person working notebooks (avoid merge conflicts)
 final_notebooks/               shared final notebooks
-scripts/                       shared functions and constants (create as things stabilize)
+boatphone/                     importable LIBRARY: constants, paths, credentials, loaders
+scripts/                       runnable ENTRY POINTS (checks.py, acquisition CLIs)
 data/                          IMMUTABLE acquisitions -- see below
+data/samples/                  the one TRACKED small-fixture zone (decision 0005)
 docs/plans/                    source of truth + plans
 docs/decisions/                durable decision records
 references/                    background research
@@ -75,9 +77,17 @@ check available is re-executing a notebook top-to-bottom in a fresh kernel.
 5. **Errors surface.** No bare `except`, no `fillna`/`interpolate` across a real recording gap,
    no truncating to fix a length mismatch. Each turns a data problem into a plausible number. If
    you drop samples, print how many.
-6. **No magic numbers.** Band edges, thresholds, window lengths, the hydrophone location, the FAO
-   size classes (0-12 m / 12-24 m / >24 m) -- named constants with their source in a comment, and
+6. **No magic numbers, and `boatphone/` is where the shared ones live.** Band edges, thresholds,
+   window lengths, the hydrophone location, the study window, filesystem paths, the FAO size
+   classes (0-12 m / 12-24 m / >24 m) -- named constants with their source in a comment, and
    **one** definition shared across notebooks, not one per person.
+   The split, for all three workstreams: **`boatphone/` is the importable library** (constants and
+   functions -- `paths.py`, `config.py`, `credentials.py`); **`scripts/` holds runnable entry
+   points** (`checks.py`, acquisition CLIs) which import from `boatphone/` and define nothing
+   shared themselves. This matters across teams, not just within acoustics: if optical puts the
+   study window in `scripts/config.py` while acoustics has it in `boatphone/config.py`, the
+   optical-acoustic matchup joins two different definitions of the same window and the join
+   quietly produces a wrong answer rather than an error.
 7. **Clear notebook outputs before committing** unless the output is the point; keep large files
    out of git; never commit a Planet or ONC API token.
 8. **Integrate before you push.** Others are pushing to this repo. Pull when the remote is ahead
