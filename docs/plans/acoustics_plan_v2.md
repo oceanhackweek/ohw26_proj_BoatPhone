@@ -163,6 +163,9 @@ by ~150 bins.
 
 ### 3.2 OPEN: centre-vs-edge binning -- +-125 Hz on every band edge
 
+See `docs/decisions/0013-fft-axis-convention-is-an-open-assumption.md` for the full evidence, the
+resolution order, and the residual weakness in how the uncertainty is enforced.
+
 **Not settled, and deliberately not settled by fiat.** The reader stays pinned to bin **centres**
 (`frequency_axis_hz()[1] == 250.0` exactly) because it must be deterministic, but that is now a
 **named assumption** (`FFT_AXIS_CONVENTION = "centre"`), not a settled fact. B1a put it at roughly
@@ -204,6 +207,11 @@ means edge, at integers means centre, and it uses only the two-bin ratio so no l
 needed; (c) once B1 pins counts to dB, re-run the WAV centroid comparison.
 
 ### 3.3 The top of the band is THREE regions, and the level scale is censored
+
+See `docs/decisions/0014-two-spectral-ceilings-and-the-408-exclusion.md` for the two-ceiling
+decision and the measured three-region split, and
+`docs/decisions/0015-censoring-aware-thresholds-for-b5.md` for the censoring-aware requirement on
+B5's thresholds and the "tune on overpasses once" constraint.
 
 Measured over both fixtures (2,400 frames). The single "zeros at col 0 and 419-511" statement was
 wrong at **both** ends.
