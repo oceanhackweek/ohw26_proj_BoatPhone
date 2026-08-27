@@ -49,3 +49,5 @@ Superseding is normal -- mark the old one and link forward. Silently contradicti
 | [0002](0002-time-alignment-and-units.md) | Time base, sample rate, and units are UTC-first and stated | accepted |
 | [0003](0003-hook-orchestration-enforcement.md) | `/run-phase` orchestration is enforced by hooks, not convention | accepted |
 | [0004](0004-context-budget-and-handoff.md) | Long runs stop on a budget, via a validated handoff | accepted |
+| [0005](0005-raw-acquisition-landing-zone.md) | `data/raw/<provider>/` is an append-only acquisition landing zone | accepted (amends 0001) |
+| [0006](0006-acquisitions-in-git-history.md) | The ONC delivery zip stays, and tracked acquisitions stay in history | accepted |

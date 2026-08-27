@@ -3,3 +3,33 @@ ICLISTENHF1266_20260313T000000.029Z_20260313T000500.029Z.wav
 .claude/
 claude/
 .DS_Store
+.env
+.env.*
+!.env.example
+
+# A0.2: derived/large data and media never enter git.
+data/raw/
+data/interim/
+data/derived/
+data/processed/
+*.zip
+*.flac
+*.wav
+*.mp3
+*.fft.gz
+
+# ...EXCEPT data/samples/, the one TRACKED fixture zone (decision 0005; see
+# data/samples/README.md). The blanket media rules above are right for bulk ONC
+# downloads but wrong for a deliberate, small test fixture: without this negation a
+# new `.fft.gz` dropped in as a fixture is silently invisible to `git add`, sitting
+# next to peers that are already tracked, and the next person loses an hour to it.
+# Everything else under data/ stays ignored. Keep fixtures SMALL -- a .fft.gz window
+# is ~0.29 MB.
+!data/samples/
+!data/samples/**
+
+**/.DS_Store
+
+# Python bytecode
+__pycache__/
+*.py[cod]

@@ -105,7 +105,7 @@ boatphone/
 - **Install:** `arlpy` (Bellhop TL), `pypam` or `mbari-pbp` (ISO 18405 conventions), `soundfile` (FLAC). Create the missing `environment.yml` — the repo has **no dependency manifest at all**, which makes the "fresh clone reproduces" verification criterion currently unmeetable.
 - **Already present and sufficient:** `onc` 2.6.0, `scipy` 1.18, `numpy` 2.5, `torch` 2.12, `sklearn` 1.9, `pyproj`, `pyarrow`, `xarray`.
 - **`soundfile` is not needed for the WAV.** `scipy.io.wavfile.read` handles the 24-bit file directly (verified — returns int32, fs 128000, 38.4 M samples). Only FLAC needs it.
-- **Housekeeping:** `search78910238.zip` (72 MB) is fully redundant — it contains only the calibration txt and the same WAV already extracted. Delete it and extend `.gitignore` to `data/raw/`, `data/interim/`, `*.flac`, `*.zip`.
+- **Housekeeping (AMENDED — do not delete the zip).** `search78910238.zip` (72 MB) is the original ONC delivery envelope; the loose WAV and the calibration txt are *extracted from it*, so it is not redundant, and deleting it contradicts `docs/decisions/0001-raw-data-immutability.md` (hook-blocked). It stays, and so do the 127.3 MB of acquisitions already tracked in git — see `docs/decisions/0006-acquisitions-in-git-history.md` for why `git rm --cached` would break teammates' checkouts without shrinking history. What this step actually does is extend `.gitignore` to `data/raw/`, `data/interim/`, `data/derived/`, `data/processed/`, `*.flac`, `*.zip`, `*.wav`, `*.mp3`, `*.fft.gz`, with `data/samples/` negated back in as the tracked fixture zone (`docs/decisions/0005-raw-acquisition-landing-zone.md`), so no *further* acquisition can enter git.
 
 ### A1 — Hydrophone uptime calendar *(Day 1 — outbound blocker O1)*
 
