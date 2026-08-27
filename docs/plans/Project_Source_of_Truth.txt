@@ -137,6 +137,75 @@ Malachy (Aug 27) -- Planet gate-3 pre-checks; nothing ordered, no quota spent:
   probe before any batch order.
 
 
+Neve (Aug 27) -- Option C detection stack landed; scope decided; two silent bugs killed:
+- OPTION C IS BUILT AND PROVEN, WITH NO IMAGERY. boatphone/optical.py is the optical library
+  (water mask, Detector B, A-B fusion, dominance, scene classification, geodesy, both schemas,
+  the FAO classes) and scripts/optical_selftest.py proves it against a synthetic scene with
+  vessels of KNOWN length at KNOWN lon/lat -- the optical counterpart of invariant 3's synthetic
+  tone. 44/44 checks pass; scripts/checks.py still 130/130. Deliberately no file I/O in the
+  library, so none of it waits on rasterio, on the model download, or on a delivered scene.
+- MALACHY, THIS ONE IS FOR YOU, BEFORE YOU ORDER: the bundle must be `analytic_sr`, NOT `visual`.
+  Detector B screens on NIR, and NIR is what certifies a scene CLEAN -- which is the assumption
+  the whole single-dominant-source fit rests on. A `visual` scene cannot be certified, so it is
+  nearly useless to Option C. This costs nothing: `analytic_sr` is already in your
+  SINGLE_RASTER_BUNDLES, and your order cell already re-fetches UDM2 separately for free. Two
+  riders: confirm `analytic_sr` exists for every instrument in the batch (2020 scenes may be PS2,
+  2023+ PSB.SD -- and SuperDove's 8-band product puts NIR at band 8, not band 4), and note the
+  free UDM2 arrives as a FULL scene, not clipped, so it must be windowed at read time.
+- ALSO MALACHY: the plan's section 5 acceptance test wanted `visual` on 2-3 paired scenes. At
+  BATCH_SIZE 26 there is no quota for it. It is being rehearsed on Sentinel-2 instead, for free.
+- ISAAC, TWO INTERFACE MISMATCHES. (1) Option C section 10 specifies detections.csv keyed on
+  scene_id; your I3 specifies detections.parquet keyed on overpass_id with length_px/length_m_est/
+  size_class. Resolved in code, not by picking a winner: optical.to_i3_records() derives your view
+  from the same rows, so there is one detector output and two views that cannot drift. It passes
+  scene_id through as overpass_id until Malachy's overpasses.csv exists -- deliberately, so the
+  unagreed join key is visible rather than invented. (2) Option C's levels.csv asks for
+  band_20_200_db. That band CANNOT EXIST: FFT_BIN_WIDTH_HZ is 250 and bin 0 is a structural zero,
+  so 20-200 Hz is below the first resolvable bin, and band_100_2k_db is partly below it too. The
+  interface line needs rewriting; decision 0010 already says the floor costs large vessels, not
+  our small craft.
+- DECISION 0016 -- the small-craft scope is FAO CLASSES (0-12 m and 12-24 m), applied at ANALYSIS
+  time, not a metres threshold applied at detection time. vessel_detect.py's inherited
+  `--max-length 20` was doing two unrelated jobs. 20 m is not an FAO edge: it bisected [12, 24),
+  so an 18 m vessel was kept and a 22 m one dropped while both reported `12-24m` -- silently
+  truncating that bin and biasing every recall-by-size-class number, including the one I3 hands
+  you. Worse, applied before scene classification it DELETED large vessels, so a scene with a 39 m
+  ship at 1 km passed as SINGLE-DOMINANT on a small craft the ship was acoustically swamping --
+  the plan's own worst failure. 12-24 m is IN scope because AIS carriage is tonnage-based, not
+  length-based, so no length edge tracks it. MAX_PLAUSIBLE_VESSEL_M = 150 keeps the rejection job.
+- TWO SILENT BUGS FOUND AND FIXED, both of the "found nothing" / "is broken" kind (invariant 9).
+  (1) A vessel is bright in NIR, so its own pixels have NEGATIVE NDWI and the water mask excluded
+  the boats it exists to contain -- Detector B returned nothing, with no error, on a scene full of
+  boats. Fixed by closing holes (sized by BEAM, not length) before eroding the shoreline; the
+  self-test asserts 0/4 vessels are in the mask with the fix disabled. (2) cv2.minAreaRect measures
+  corner-to-corner between pixel CENTRES, so every length was short by exactly 1 px = 3 m at
+  PlanetScope GSD, 50% of a 2 px hull. On the fixture the correction alone moved the class tally
+  from {0-12m: 6, 12-24m: 1} to {0-12m: 5, 12-24m: 2}.
+- A NUMBER FOR THE SECTION 8 EYEBALL BUDGET: at the plan's permissive N=3, the null scene yields
+  ~5 false positives per 4.5e5 water px, which scales to ~125 candidate dots per real 10x10 km AOI
+  scene -- not "2 min/scene". N=6 removes all of them while still recovering every planted vessel
+  down to 6 m. Sweep N on real imagery before committing a person to a full census.
+- INVARIANT 6, OPTICAL SIDE: the hydrophone coordinate (-125.278277, 48.814200) and the AOI
+  geometry existed in exactly ONE place -- cell 6 of Malachy's acquisition notebook. They are now
+  importable from boatphone/optical.py along with the FAO classes and both schemas. Malachy,
+  import them rather than restating them. When B7 lands boatphone/geo.py, site geometry should
+  move there and optical.py should import it -- do not let a second copy appear.
+- ENVIRONMENT, EVERYONE: rasterio is NOT in /home/.pixi/envs/default (CLAUDE.md was right about
+  this one). Installed with `pip install --user` into /home/jovyan/.local -- persists across
+  restarts, NOT shared with you, NOT in environment.yml. Neither are ultralytics,
+  huggingface_hub or opencv, all of which the optical path needs. If the optical half is to be
+  reproducible off-hub, those four belong in the manifest.
+- BLOCKED ON DATA, NOT ON CODE. No imagery is delivered. The Sentinel-2 development scene is
+  missing exactly the two things Option C's novel half needs: B08 (NIR) is truncated at 56 MiB and
+  rasterio cannot open it at all, and TCI was never downloaded, so the section 5 acceptance test
+  cannot run either. Re-downloading those two files is the cheapest unblock on the board.
+- STILL OPEN: the repo is MIT, the YOLO weights and ultralytics are AGPL-3.0, and no decision
+  record exists. This was Wednesday's task and is unresolved.
+- Next: sections 7-13 into contributor_folders/neve/option_c_detection.ipynb (left untouched on
+  disk today -- it is open in a live Jupyter session and an autosave clobber already cost Malachy
+  a full session), then Detector A's first real run the moment a scene lands.
+
+
 Project Goals:
 
 1) Create a model that uses hydrophone data and prior knowledge of vessels detected from optical satellite imagery to create continuous estimates of the number of boats, 
