@@ -206,6 +206,78 @@ BLOCKING THE WHOLE PROJECT: optical. Order archive imagery (2020-2025 seasons
 only -- 2026 has no hydrophone data) and produce detections. The acoustic side
 is ready for labels and cannot produce a validated G1 number without them.
 
+================================================================================
+2026-08-27 (Isaac) -- STATE OF PLAY, end of the B5 gate session
+================================================================================
+
+WHERE WE ARE. Acoustics is unblocked and is no longer the project bottleneck.
+Optical is. Read this block before picking anything up.
+
+DONE AND COMMITTED (branch milestone1/b3-bulk-acquisition, still RED):
+  329b7cd  B5 viability gate -- VERDICT GO (decision 0027). The .fft.gz product
+           carries usable vessel-presence structure. 43 events across 13 windows
+           against 0 under the frame-shuffle null; 0.00% in-band floor
+           censoring; synthetic 50 dB injection recovered exactly. We do NOT
+           need Oceans 3.0 .mat products for vessel presence.
+           New: boatphone/features.py, boatphone/overpasses.py,
+           scripts/run_b5_gate.py, B5 band constants, 9 checks.
+  827e63e  Per-overpass review set -> data/derived/review/<run>/ (gitignored).
+  95f4c1f  Denoising / shape figures, and a real double-count fix:
+           corpus_file_index counted 90 windows twice (both containers, same
+           window, byte-identical). Found by references/hydrophone-methods-brief.md,
+           verified independently, fixed, pinned by check_b5_10.
+
+TESTED AND REBUTTED. The methods brief flagged that B5's fixed +10 threshold
+might not survive an ~8.5-count seasonal drift. Ran its own suggested test at
+240 windows / 40 per season: r = -0.021 between a window's baseline and its
+event count. The threshold is relative to THAT WINDOW'S OWN baseline, so
+seasonal ambient is subtracted before it applies. Amendment in decision 0027.
+What WOULD break it is a gain change, which a per-window baseline cannot absorb.
+
+UNEXPLAINED, FLAGGED NOT BURIED. 2022 runs 0.62 events/window against 0.05-0.12
+in every other season, and it does NOT track baseline. Not a threshold artefact.
+Real traffic, propagation regime, or instrument change -- unknown.
+
+IN FLIGHT (this session, not yet committed):
+  - Full-population pass over ALL 26,666 windows (the parallel agent's gallery
+    used a 180-window sample). Produces the exact per-bin integer histogram,
+    per-season ambient, LTSA and band statistics.
+  - Incorporating three findings from the methods brief into the review set:
+    the 51-102 kHz CONTROL BAND as an instrument-vs-ocean channel; a
+    corpus-derived per-bin seasonal ambient as a SECOND baseline (the
+    per-window baseline suppresses a window occupied by a vessel throughout);
+    and a 13-25 kHz RAIN discriminator (with no vessel labels, weather is the
+    main false-positive class).
+  - A UNIT RELABELLING that is a real error: the threshold is named
+    EVENT_EXCESS_THRESHOLD_DB and every figure says "+10 dB". The matched
+    WAV<->product pair measures ~0.52 counts/dB and the relation is non-linear,
+    so the unit is COUNTS, not dB, and "+10 dB" overstates the physical
+    quantity by roughly a factor of two. The detector is unaffected.
+
+STILL OPEN, TRACKED:
+  1. Tonight, offline: docs/plans/b3-close-out-offline.md -- manifest schema
+     migration WITHOUT the ~1h40m re-run, fix check_b3c_12, correct the
+     overpass-window constants. THIS IS WHAT GREENS THE BRANCH.
+  2. The "18.7% censored" figure is the anti-alias dead band, not in-band
+     censoring (measured 0.00-0.12% in band). Still asserted in five places and
+     decision 0015's threshold machinery rests on it.
+  3. Decision 0014's bin-0 and dead-band bounds fail on most corpus files.
+  4. models.py:22-23 / config.py:170-171 still claim Folger levels are
+     calibrated dB re 1 uPa. False of the .fft product per ONC.
+  5. The targeted top-up pull (~210 files, ~60 MB, minutes) for the 17
+     uncovered/partial scenes. Now clearly worth doing -- the product is proven.
+
+*** BLOCKING THE PROJECT: OPTICAL. *** Nothing has been ordered
+(CONFIRM_ORDER = False, zero pixels in the repo), gate-3 vessel review has not
+started, and the detector notebook is still developing against Sentinel-2. The
+acoustic side has a proven detector, a review set with empty image slots, and a
+detections.csv with vessel_in_scene blank. G1's false-positive rate, G2's size
+separability and G3's detection range ALL need those labels and nothing on the
+acoustic side substitutes for them.
+
+Container note: this instance has 4 cores and 15.6 GB, not the 3.90 GB cgroup
+cap the plans assume. The full-corpus pass is ~10 minutes here.
+
 Next Steps:
 
 Divy out tasks and claim here
