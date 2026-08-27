@@ -33,6 +33,35 @@ dependencies:
   # and A4's DST-aware local-time window -- the one constant that silently
   # mis-slices the entire pull if wrong -- cannot be computed. Hub has 2026.3.
   - tzdata>=2026.3
+
+  # ---------------------------------------------------------------------------
+  # OPTICAL VESSEL DETECTION. Missing from this manifest until 2026-08-27, even
+  # though the optical path already depended on every one of them.
+  #
+  # rasterio is a special case and the honest header above needs qualifying for
+  # it: it is NOT on the hub. It is absent from /home/.pixi/envs/default and was
+  # installed with `pip install --user` into /home/jovyan/.local, which persists
+  # across container restarts but is per-user and invisible to teammates. So the
+  # optical loaders do not currently run in a colleague's fresh session. This
+  # file is the fix off-hub; `pip install --user rasterio` is the fix on it.
+  # Everything else here IS on the hub, at or above the floor given.
+  # ---------------------------------------------------------------------------
+  - rasterio>=1.5          # GeoTIFF + JPEG2000 reads: the .SAFE and PlanetScope loaders.
+                           #   The ONLY JP2 reader available -- no GDAL bindings, no glymur
+  - opencv>=4.13           # imports as `cv2`. Detector B's morphology, connected components
+                           #   and minAreaRect. DELIBERATE DEVIATION from the measured-floor
+                           #   rule: the hub has 5.0.0, but nothing boatphone/optical.py uses
+                           #   postdates OpenCV 4, and 5.0 is new enough that pinning it would
+                           #   over-constrain an off-hub solve for no gain
+  - ultralytics>=8.4       # Detector A, the frozen pretrained YOLO. Note the model card's
+                           #   `YOLOv8.from_pretrained(...)` no longer exists in current
+                           #   ultralytics; plain `YOLO(path)` is correct
+  - huggingface_hub>=1.28  # fetches mayrajeo/marine-vessel-yolo:yolo11s_tci.pt, which is
+                           #   AGPL-3.0 against this repo's MIT -- an OPEN question, not a
+                           #   settled one; no decision record exists yet
+  - pillow>=12             # vessel_detect.py's --preview-dir annotated JPEGs only. The
+                           #   notebook draws its previews with matplotlib and does not need it
+
   - pip
   - pip:
       # No conda-forge package for the ONC Oceans 3.0 client.
@@ -52,3 +81,8 @@ dependencies:
   #                    #   `pip install arlpy` alone will not make Bellhop work.
   #     - soundfile    # FLAC reads only. Unnecessary here: the `flac` and `ffmpeg`
   #                    #   CLI binaries are both present on the hub.
+  # - sahi           # optional sliced-inference tiler for Detector A. Not needed:
+  #                  #   vessel_detect.py ships its own tiler and NMS, and the two
+  #                  #   disagree on channel order (SAHI's ultralytics wrapper expects
+  #                  #   RGB, raw ultralytics expects BGR), so adding it introduces a
+  #                  #   silent-accuracy-killer decision for no capability gain.
