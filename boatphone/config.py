@@ -323,6 +323,14 @@ FFT_N_BINS: int = 512
 # FOR ANY fs -- it is equally consistent with 125 and 250 Hz/bin and never
 # discriminated between them. It survives only as a STRUCTURAL check
 # (FFT_ROLLOFF_ONSET_BIN below).
+#
+# The "+14.1 dB" / "NOTHING (<=X dB)" figures above, and FFT_ECHOSOUNDER_ABS_
+# CENTRE_HZ below, are stated relative to a REFERENCE BAND, not the WAV's full
+# 0-64 kHz span -- an unstated convention until this correction. Only a
+# 20-60 kHz reference band reproduces both headline figures (+14.06 dB /
+# -6.24 dB); the full 0-64 kHz band gives +11.64 dB / -8.82 dB instead. Named
+# here per CLAUDE.md invariants 3 and 6 rather than left implicit in a script.
+FFT_WAV_REFERENCE_BAND_HZ: tuple[float, float] = (20_000.0, 60_000.0)
 FFT_BIN_WIDTH_HZ: float = 250.0
 
 # Which point of a bin FFT_BIN_WIDTH_HZ * k names: the bin CENTRE, so bin 1 is
@@ -357,12 +365,17 @@ FFT_BIN_WIDTH_HZ: float = 250.0
 FFT_AXIS_CONVENTION: str = "centre"
 
 # The price of the open question above, in Hz, on EVERY band edge derived from
-# this axis. ONE-SIDED, toward HIGHER frequency: if ONC means edges, then the
-# true centre of bin k is (k + 0.5) * dF, i.e. up to half a bin ABOVE where we
-# name it. Every band-edge consumer must widen its support by this amount
-# (boatphone.fft_io.band_limit_product does; boatphone.models.band_limit takes
-# it as an explicit argument) so that a band edge cannot silently exclude a bin
-# the other convention would have included.
+# this axis. If ONC means edges rather than centres, the true centre of bin k
+# is (k + 0.5) * dF, i.e. up to half a bin ABOVE where we name it -- so the
+# raw uncertainty is one-sided, toward HIGHER frequency. But the mask must be
+# a SUPERSET under EITHER convention (we do not know which is right), so it is
+# CARRIED SYMMETRICALLY on both edges of every band: `boatphone.models.band_limit`
+# widens both the low and the high edge by this amount (verified,
+# `check_b0_2a_axis_uncertainty_is_carried`), and
+# `boatphone.fft_io.band_limit_product` does the same. Widening only the high
+# edge would be correct if the true convention were known to be "edges"; since
+# it is not, symmetric widening is the only choice that cannot silently drop a
+# bin the other convention would have included.
 #
 # Consequences, stated where the number is: B5 is NOT blocked provided it
 # carries this and puts no band edge inside a narrow feature. B6's calibration
@@ -431,8 +444,14 @@ FFT_ROLLOFF_TAIL_MAX_MEAN_LEVEL: float = 0.05
 # the skirt the mean is quantised to multiples of 1/FFT_N_FRAMES and its
 # ordering is pure integer-quantisation noise, so strict monotonicity is not a
 # property of the data. The tolerance is therefore exactly one count in one
-# frame: the smallest nonzero step the product can express.
-FFT_ROLLOFF_MONOTONIC_TOL_LEVEL: float = 1.0 / FFT_N_FRAMES
+# frame: the smallest nonzero step the product can express. Set to TWICE that
+# (2 counts in one frame) rather than exactly one: the measured worst case
+# (fixture ...000004, bin 423->424) is 1/FFT_N_FRAMES to the bit, so a
+# tolerance of exactly that value depended on the check using strict `>` and
+# floats comparing bit-identical -- honest but fragile. 2/FFT_N_FRAMES removes
+# the float-equality dependency without changing what the bound is FOR: it is
+# still ~3 orders of magnitude below the order-1 step a real stride bug makes.
+FFT_ROLLOFF_MONOTONIC_TOL_LEVEL: float = 2.0 / FFT_N_FRAMES
 
 # ---------------------------------------------------------------------------
 # The echosounder hump near 38 kHz -- restated. It is a HUMP, not a line, and
@@ -484,40 +503,68 @@ FFT_ECHOSOUNDER_TEMPORAL_STD_ARGMAX_BIN_RANGE: tuple[int, int] = (147, 155)
 # ---------------------------------------------------------------------------
 # The TWO ceilings. Kept apart on purpose -- they answer different questions.
 # ---------------------------------------------------------------------------
-# Bins the pre-deployment calibration file actually covers, inclusive: it spans
-# 10 Hz - 51.2 kHz, and 51200 / 250 = 204.8 -> bin 205 is the last bin the
-# calibration reaches. Bins 206-417 carry signal but CANNOT be turned into an
-# absolute dB re 1 uPa level. Source: acoustics_plan_v2 SS3 / SS7 and
+# Bins WHOLLY INSIDE the span the pre-deployment calibration file actually
+# covers: it states 10 Hz - 51.2 kHz. Bin 0 (0 Hz, the DC column -- itself
+# near-zero, see FFT_DC_COL) sits BELOW the stated 10 Hz floor, and bin 205
+# (51,250 Hz) sits ABOVE the stated 51,200 Hz ceiling -- both would only be
+# admitted by EXTRAPOLATING the calibration curve past its documented span.
+# 250 / 250 = 1 -> bin 1 (250 Hz) is the first bin wholly inside; 51000 / 250
+# = 204 -> bin 204 (51,000 Hz) is the last. Bins 205-417 carry signal but
+# CANNOT be turned into an absolute dB re 1 uPa level without extrapolating.
+# Source: acoustics_plan_v2 SS3 / SS7 and
 # ICLISTENHF1266_...-hydrophonePreDeploymentCalibration.txt in the sample.
-FFT_CALIBRATED_BIN_RANGE: tuple[int, int] = (0, 205)
+# CHOICE (review-2 [MEDIUM 2]): narrowed from (0, 205) rather than kept with a
+# documented extrapolation, because this is the function a cross-team caller
+# (optical side) uses to ask "can I state a dB here?" -- the wholly-inside
+# range needs no caveat at the call site.
+FFT_CALIBRATED_BIN_RANGE: tuple[int, int] = (1, 204)
 
 # B5 PRECONDITION 1 -- the CALIBRATED ceiling. Nothing above this bin can be
 # expressed in dB re 1 uPa at all.
-FFT_B5_CALIBRATED_CEILING_BIN: int = FFT_CALIBRATED_BIN_RANGE[1]  # 205 == 51.2 kHz
+FFT_B5_CALIBRATED_CEILING_BIN: int = FFT_CALIBRATED_BIN_RANGE[1]  # 204 == 51.0 kHz
 
 # B5 PRECONDITION 2 -- the UNCALIBRATED / RELATIVE ceiling. Even a purely
 # relative statistic must stop here (~102 kHz). NOTHING ABOVE BIN 408 MAY ENTER
 # A B5 STATISTIC, for three independent reasons:
 #   (i)   bins 409-424 are instrument response (the anti-alias skirt), not ocean;
-#   (ii)  they are FLOOR-CENSORED -- 99.94% of cells there sit at 0, so any mean
-#         over them is a censoring artefact biased upward by an unboundable
-#         amount. Averaging them converts "we cannot measure this" into a number;
-#   (iii) it is moot for calibrated work anyway, since calibration stops at 205.
+#   (ii)  409-418 is REAL FILTER SKIRT, not censoring -- only ~half its cells sit
+#         at the floor (measured 49.35%/49.19%). 419-424 alone is ~99% at floor
+#         (99.06%/98.97%), and 419-511 together is 99.94%/99.93% at floor -- that
+#         figure belongs to 419-511, NOT to the whole 409-424 span. Excluding
+#         409-418 rests on (i) and (iii), not on floor-censoring;
+#   (iii) it is moot for calibrated work anyway, since calibration stops at bin 204.
 FFT_B5_RELATIVE_CEILING_BIN: int = FFT_ROLLOFF_ONSET_BIN  # 408 == 102 kHz
 
-# The product's own integer level scale is CENSORED AT BOTH ENDS: values are
-# clipped into [0, 86]. This is missing data with a KNOWN DIRECTION, and the
-# direction moves with ambient -- i.e. it is confounded with the signal a
-# percentile baseline is trying to measure.
+# The product's own integer level scale runs [0, 86] in the local sample. The
+# TWO ends are NOT equally well established -- see the correction below.
 #
-# UPPER CENSORING IS REAL, NOT HYPOTHETICAL: 3 cells sit at the 86 ceiling in
-# bins 140-165 of fixture ...000004, across 2 frames, on a QUIET AMBIENT window.
-# A close vessel pass -- the event of interest -- will clip far harder. Every B5
-# band level must be reported alongside the per-window counts of cells at each
-# of these two values (boatphone.fft_io.censoring_report), and every threshold
-# or regression built on them must be censoring-aware.
+# LOWER END (floor, 0): REAL CENSORING, well established. 18.7% of cells sit
+# exactly at 0 across the local fixtures -- far too dense a pile-up to be
+# ordinary quantisation, and consistent with a hard clip at the scale's floor.
+# This is missing data with a KNOWN DIRECTION, and the direction moves with
+# ambient -- i.e. it is confounded with the signal a percentile baseline is
+# trying to measure. FFT_LEVEL_FLOOR = 0 and the floor-censoring-aware design
+# in decision 0015 rest on this alone and are UNAFFECTED by the correction below.
+#
+# UPPER END (ceiling, 86): AN ASSUMPTION, NOT A MEASUREMENT.
+# [CORRECTION, 2026-08-27, pre-merge quality review] This comment previously
+# asserted the scale "is clipped into [0, 86], not merely quantised" as fact.
+# The only evidence is that 86 is the observed max on two quiet 5-minute
+# fixtures, and the tail argues AGAINST a hard clip: counts at 84/85/86 are
+# 8/3/3 on one fixture, and the OTHER fixture tops out at 84 with ZERO cells at
+# 85 or 86 -- a smooth decay, not the pile-up a real ceiling clip produces (the
+# floor shows exactly that pile-up; the ceiling does not). Ten quiet minutes
+# cannot distinguish "the scale ceilings at 86" from "the loudest event in
+# these two windows happened to reach 86". FFT_LEVEL_CEILING = 86 is kept as a
+# CONSERVATIVE assumption (if wrong, the true ceiling is >= 86, so treating 86
+# as a possible clip point is the safe direction), but it is not established
+# the way the floor is. RESOLUTION PATH: a loud window from B3's corpus pull
+# (e.g. a close vessel pass) would settle this immediately -- either genuine
+# repeated pile-up at 86 (clip confirmed) or values above 86 appear (clip
+# refuted, scale is simply wider than observed so far).
 FFT_LEVEL_FLOOR: int = 0
-FFT_LEVEL_CEILING: int = 86
+FFT_LEVEL_CEILING: int = 86  # ASSUMED ceiling from the max observed in two quiet
+# fixtures -- not confirmed as a hard clip; see the correction above.
 
 # The two axis facts must agree with the file-cadence fact above; a silent
 # disagreement here would put every frame timestamp on the wrong grid.

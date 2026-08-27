@@ -4,7 +4,7 @@
       {
         "downloaded_utc": "2026-08-27T04:58:49.261697+00:00",
         "hf_revision": "eef6c151cbef636f6267fbc7736d15603f35ead6",
-        "licence": "see repo card -- merileo/* is MIT-tagged per decision 0009 (not independently re-verified here)",
+        "licence": "see repo card -- merileo/* is MIT-tagged; decision 0009's licence sentence now carries a [CORRECTION, see 0012f] banner, so this pointer is repointed to 0012f. VERIFIED: this repo's own LICENSE file is BSD-3-Clause (onc_ssamba_repo_clone, this document). NOT INDEPENDENTLY VERIFIED: whether the merileo/* Hugging Face repo card's MIT tag is accurate -- immaterial under the B0 NO-GO since nothing from these artefacts is redistributed",
         "path": "external/checkpoints/finetune/args.pkl",
         "sha256": "d3a39b10019dd09a40b13c05aba906dbf726b1e935c5f11e7cdde49d077124be",
         "size_bytes": 1612,
@@ -13,7 +13,7 @@
       {
         "downloaded_utc": "2026-08-27T04:58:52.588507+00:00",
         "hf_revision": "eef6c151cbef636f6267fbc7736d15603f35ead6",
-        "licence": "see repo card -- merileo/* is MIT-tagged per decision 0009 (not independently re-verified here)",
+        "licence": "see repo card -- merileo/* is MIT-tagged; decision 0009's licence sentence now carries a [CORRECTION, see 0012f] banner, so this pointer is repointed to 0012f. VERIFIED: this repo's own LICENSE file is BSD-3-Clause (onc_ssamba_repo_clone, this document). NOT INDEPENDENTLY VERIFIED: whether the merileo/* Hugging Face repo card's MIT tag is accurate -- immaterial under the B0 NO-GO since nothing from these artefacts is redistributed",
         "path": "external/checkpoints/finetune/ft-cls_best_checkpoint.pth",
         "sha256": "e474ddc5a407c78731b9dcfc944a83e53e1da91797bee6851ad2b852c3dc35ca",
         "size_bytes": 1112286226,
@@ -22,7 +22,7 @@
       {
         "downloaded_utc": "2026-08-27T04:58:55.759843+00:00",
         "hf_revision": "ed38793ade5343257de9f396eeb215c22d9712a1",
-        "licence": "see repo card -- merileo/* is MIT-tagged per decision 0009 (not independently re-verified here)",
+        "licence": "see repo card -- merileo/* is MIT-tagged; decision 0009's licence sentence now carries a [CORRECTION, see 0012f] banner, so this pointer is repointed to 0012f. VERIFIED: this repo's own LICENSE file is BSD-3-Clause (onc_ssamba_repo_clone, this document). NOT INDEPENDENTLY VERIFIED: whether the merileo/* Hugging Face repo card's MIT tag is accurate -- immaterial under the B0 NO-GO since nothing from these artefacts is redistributed",
         "name": "merileo_labelled_eval_h5",
         "note": "verified to contain ICLISTENHF1266 rows after download",
         "path": "external/checkpoints/eval/different_locations_incl_backgroundpipelinenormals_multilabel_SMALL.h5",
@@ -33,7 +33,7 @@
     ],
     "downloaded_utc": "2026-08-27T04:58:55.911351+00:00",
     "hf_revision": "eef6c151cbef636f6267fbc7736d15603f35ead6",
-    "licence": "see repo card -- merileo/* is MIT-tagged per decision 0009 (not independently re-verified here)",
+    "licence": "see repo card -- merileo/* is MIT-tagged; decision 0009's licence sentence now carries a [CORRECTION, see 0012f] banner, so this pointer is repointed to 0012f. VERIFIED: this repo's own LICENSE file is BSD-3-Clause (onc_ssamba_repo_clone, this document). NOT INDEPENDENTLY VERIFIED: whether the merileo/* Hugging Face repo card's MIT tag is accurate -- immaterial under the B0 NO-GO since nothing from these artefacts is redistributed",
     "name": "merileo_checkpoint_bundle",
     "note": "decision 0009 / acoustics_plan_v2 describe a 'CPU CNN baseline checkpoint' (cnn_baseline/cnn_best.pt) that does NOT exist under any merileo/* HF repo as of this run (enumerated live via HfApi). This bundle instead records the real artefacts found: the SSAMBA/Vision-Mamba finetuned classification checkpoint (merileo/finetune-amba-base-f16-t16-b16-lr1e-4-m300-custom-tr0.8-full_dataset_hydrophones-noexclude) and a labelled eval .h5 (merileo/onc-ssl-tutorial/different_locations_incl_backgroundpipelinenormals_multilabel_SMALL.h5). CPU viability of this checkpoint is unresolved and is a finding for B0's model-viability gate, not this acquisition step.",
     "sha256": {
@@ -47,7 +47,7 @@
   "merileo_reproduction_target": {
     "downloaded_utc": "2026-08-27T05:24:53.646730+00:00",
     "hf_revision": "ed38793ade5343257de9f396eeb215c22d9712a1",
-    "licence": "see repo card -- merileo/* is MIT-tagged per decision 0009 (not independently re-verified here)",
+    "licence": "see repo card -- merileo/* is MIT-tagged; decision 0009's licence sentence now carries a [CORRECTION, see 0012f] banner, so this pointer is repointed to 0012f. VERIFIED: this repo's own LICENSE file is BSD-3-Clause (onc_ssamba_repo_clone, this document). NOT INDEPENDENTLY VERIFIED: whether the merileo/* Hugging Face repo card's MIT tag is accurate -- immaterial under the B0 NO-GO since nothing from these artefacts is redistributed",
     "name": "merileo_reproduction_target",
     "note": "B0-3. `result.csv` is NOT in the ONC repo clone -- traintest.py writes it into args.exp_dir and `exp/` is gitignored. It IS on the Hub, in merileo/onc-ssl-tutorial, under an experiment directory with the SAME name as the pinned checkpoint's run. The tutorial repo's copy of ft-cls_best_checkpoint.pth has sha256 e474ddc5a407c78731b9dcfc944a83e53e1da91797bee6851ad2b852c3dc35ca, IDENTICAL to the checkpoint pinned in merileo_checkpoint_bundle -- so this result.csv is the training curve of the exact weights we hold. CAVEAT: result.csv's per-device column HEADER is written once, at epoch 1, from a defaultdict keyed in first-appearance order over the validation loader; the mapping drifts at every resume boundary (epochs 14 and 27 appear twice). Only the epoch-1 row can be attributed to a device by header name.",
     "sha256": {

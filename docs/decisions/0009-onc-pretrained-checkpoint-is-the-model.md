@@ -31,9 +31,18 @@ with sources and retrieval dates, in `docs/vtuad-facts.md`.
 * Domingos et al. 2022 -- VTUAD's own author -- releases MIT training code
   ([`underwater_snd`](https://github.com/lucascesarfd/underwater_snd),
   [`onc_dataset`](https://github.com/lucascesarfd/onc_dataset)) but **no checkpoints**.
-* Decrop et al., IEEE JSTARS 2025 (`10.1109/JSTARS.2025.3593779`) releases an open dataset
-  (`10.14284/723`) but **no code and no weights**.
+* Decrop et al., IEEE JSTARS 2025 (`10.1109/JSTARS.2025.3593779`) releases an open dataset (at
+  VLIZ, DOI `10.14284/723`, CC BY 4.0 -- **[CORRECTION, see 0012h: not Zenodo; Zenodo `12799031`
+  is only the ICUA2024 slide deck]**) but **no code and no weights**.
 * Renaud et al. (`arXiv:2607.13840`) is **method-only** -- no data, no code.
+
+**[CORRECTION, see 0012h]** This "no checkpoints"/"no weights" framing was later used, here and in
+`acoustics_plan_v2.md` §2, to help reject these MIT-licensed, weightless-but-code-reusable
+candidates outright. That specific use is withdrawn -- it contradicted the finding, above and
+restated in 0012h, that weights in this field are not portable across hydrophones anyway, so
+lacking a checkpoint was never a fair reason to reject reusable *code*. The candidates above are
+still not adopted, but for a different, checkable reason (input geometry vs the `.fft.gz`
+surface) -- see 0012h.
 
 So the "AIS-trained model" in the research question was always going to be one we built. That makes
 a poor transfer result ambiguous between "AIS-trained methods do not transfer" and "we built a weak

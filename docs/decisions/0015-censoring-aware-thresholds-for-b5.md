@@ -7,21 +7,34 @@ Date: 2026-08-27
 
 Decision `0012` promoted B5 (band-level SPL, no weights) from cross-check to primary detector
 after the pretrained-model path was closed. B5's input is `levels_db`, the product's own
-uncalibrated integer scale, and B1a established that this scale is **censored at both ends**: it
-is clipped into `[0, 86]`, not merely quantised. A detector built on censored data that ignores the
-censoring will silently convert "off-scale" into "small" or "large" rather than "unknown", exactly
-at the extremes where the signal of interest -- a vessel close-passing the hydrophone -- lives.
+uncalibrated integer scale, and B1a established that the **lower end** of this scale is censored:
+18.7% of cells sit exactly at the 0 floor, far too dense a pile-up to be ordinary quantisation. The
+**upper end (86) is treated as an assumed, not confirmed, ceiling** -- see the correction below. A
+detector built on censored data that ignores the censoring will silently convert "off-scale" into
+"small" or "large" rather than "unknown", exactly at the extremes where the signal of interest -- a
+vessel close-passing the hydrophone -- lives; that risk is real regardless of whether the upper
+end turns out to be a hard clip.
 
 ## Decision
 
-**Levels are on the product's own uncalibrated integer scale, 0-86, censored at both ends.
-B5 must treat this as missing data with a known direction, not as ordinary measurement noise:**
+**Levels are on the product's own uncalibrated integer scale, observed 0-86 in the local sample.
+The floor (0) is confirmed censoring; the ceiling (86) is an assumption. B5 must still treat both
+ends as missing data with a known direction, not as ordinary measurement noise:**
 
-1. **Upper censoring is real and measured, not hypothetical.** Three cells sit at the 86 ceiling in
+1. **Upper "censoring" is an assumption, not a confirmed measurement.** Three cells sit at 86 in
    bins 140-165 of fixture `...000004` (two frames), on a **quiet ambient** window with no known
-   vessel event. A close vessel pass -- the event B5 exists to detect -- will clip far harder than
-   this. Any band level computed from a window with ceiling hits is a **lower bound**, not a
-   measurement.
+   vessel event. **[CORRECTION, 2026-08-27, pre-merge quality review]** This was originally stated
+   as measured, confirmed censoring; it is not. The count tail argues against a hard clip: 84/85/86
+   counts are 8/3/3 on this fixture, and the *other* fixture tops out at 84 with zero cells at 85
+   or 86 -- a smooth decay, not the pile-up a real ceiling clip produces (contrast the floor, whose
+   18.7%-of-cells pile-up is unambiguous). Ten quiet minutes cannot distinguish "the scale
+   ceilings at 86" from "the loudest thing observed happened to reach 86". Kept as a conservative
+   working assumption (`FFT_LEVEL_CEILING = 86`) -- treating a window that reaches 86 as a
+   possible lower bound is the safe direction even if the true ceiling turns out higher -- with a
+   named resolution path: a loud window from B3's corpus pull (a close vessel pass) settles it
+   either way. A close vessel pass, if the assumption holds, will clip far harder than this quiet
+   window did; any band level computed from a window touching 86 should still be treated as a
+   **possible lower bound**, not a confirmed measurement, until the assumption is resolved.
 2. **B5 reports per-window counts at the 0 floor and the 86 ceiling alongside every band level.**
    `fft_io.censoring_report()` supplies these counts; a band level without its accompanying
    censoring counts is incomplete.

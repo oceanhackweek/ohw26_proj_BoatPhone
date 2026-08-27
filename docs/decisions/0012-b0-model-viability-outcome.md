@@ -76,10 +76,21 @@ resource provisioning below and the "how to tell this was wrong" clause.
 
 `depth=24`, `bimamba_type=v2`, `if_bidirectional=True`: 24 layers, 2 directions per layer, each
 running the pure-Python `selective_scan_ref` (the CUDA fast path is unavailable on CPU) at
-L=2501. Measured at **~2 minutes/sample on 4 cores**. B3's target corpus is ~9,300 files. Scoring
-it once is **~12 CPU-days** — independent of RAM, independent of the head-shape problem in (b),
-and independent of what host it runs on unless a GPU (not just more CPU RAM) is provisioned.
-**This is decisive on its own**, even bracketing (b), (c) and (d) entirely.
+L=2501. **[CORRECTION, 2026-08-27, pre-merge quality review]** This section previously said
+"Measured at ~2 minutes/sample on 4 cores". That word was wrong: the forward pass **never
+completed** -- it was OOM-killed at exit 137 (finding d) -- so no per-sample wall-clock was ever
+observed end-to-end. The ~2 min/sample figure is an **extrapolation**: one Mamba layer's
+`selective_scan_ref` was timed in isolation at sequence lengths up to L≈2200 (the pre-OOM regime
+in finding d), and that per-layer, per-direction timing was scaled by 24 layers x 2 directions x
+(2501/2200) to a per-sample estimate. No timing script or artefact for this scaling is checked
+into the repo; the number should be reproduced with a standalone single-layer timing script before
+being relied on further. The downstream arithmetic is unaffected by the relabelling (9,300 files x
+~2 min ≈ **12.9 CPU-days**, restated as an extrapolation not a measurement) and the estimate is
+probably conservative, since it ignores per-sample Python/tensor-allocation overhead outside the
+scan itself, which would only add time. B3's target corpus is ~9,300 files. Scoring it once is
+**~12 CPU-days (extrapolated, see above)** — independent of RAM, independent of the head-shape
+problem in (b), and independent of what host it runs on unless a GPU (not just more CPU RAM) is
+provisioned. **This is decisive on its own**, even bracketing (b), (c) and (d) entirely.
 
 ### f. Licence correction (not a decision input)
 
@@ -108,7 +119,61 @@ for this project's use; this fact did not move the GO/NO-GO call in either direc
   revisiting this path needs to reconcile the drift before trusting anything the repo's own
   `create_model` produces from these args.
 
-### h. How to tell this was wrong
+### h. The model-survey rejection criterion was wrong, and is replaced
+
+The alternative-model survey (plan v2 §2 "Dropped, and why", and 0009's Context) partly rejected
+candidates -- Domingos/`underwater_snd`, Decrop et al., and by extension the whole
+"frozen-encoder-plus-linear-head" family -- on **"no downloadable weights"**. That criterion is
+**withdrawn**. It contradicted the survey's own finding, restated above, that weights in this
+field are not portable: each published checkpoint is bonded to one hydrophone's calibration,
+depth, sample rate and propagation environment, and this project's own experience with the
+`merileo` checkpoint (findings b-e above) is a demonstration of exactly that bonding. A released
+checkpoint from CATFISH, UATR-CMoE or anyone else would have needed retraining or fine-tuning on
+our data regardless, so rejecting an MIT-licensed, weightless, reusable codebase for lacking the
+one artefact we could not have used unmodified anyway was rejecting it for the wrong reason.
+
+**Replacement criterion, which is checkable and does not depend on licence or weights at all:**
+
+> Rejected because our continuous product must be computed from the `.fft.gz` surface, and no
+> published vessel model's input geometry can be fed from it without a spectrogram remap that is a
+> research project in its own right. Waveform-based models can be scored only on the ~25-30
+> labelled windows -- exactly our evaluation set -- so they cannot produce the continuous estimate
+> (G1). Secondarily, CATFISH is band-disqualified (discriminative content collapses to ~60-300 Hz
+> at range) and, with UATR-CMoE and Conformer_UATR, is unlicensed -- a harder blocker than missing
+> weights. MIT-licensed weightless code (the three Peeples models; Domingos/`underwater_snd`) was
+> rejected for the wrong reason: it is reusable, and only corpus-access latency and the CPU budget
+> rule it out this week.
+
+**Corrections carried with the criterion change:**
+
+* **PANNs's code licence is MIT, not Apache-2.0** (verified via the GitHub licence API); its
+  weights are CC BY 4.0. MIT+CC BY is the most permissive combination found anywhere in the
+  survey.
+* **The Decrop dataset is at VLIZ, DOI `10.14284/723`, CC BY 4.0** -- **not** Zenodo. Zenodo record
+  `12799031`, previously cited as its location, is only the ICUA2024 conference slide deck. Decrop
+  is 27,524 x 10 s clips (~76 h), AIS-labelled including vessel type, activity, speed, MMSI, and,
+  uniquely among the open corpora surveyed, **vessel-to-hydrophone distance**. It has no public
+  code, only the dataset.
+* **The WAV-wall arithmetic that makes the input-surface argument decisive:** the full local
+  corpus is ~9,300 files x ~115 MB ≈ **1.07 TB**, against **~1.2 TB free** on this host, before any
+  download time is counted. The `.fft.gz` path over the same corpus is ~50 CPU-minutes single-core
+  (measured, alt-3). That asymmetry -- not licence, not weights -- is why every waveform-native
+  model is confined to the ~25-30 labelled matchup windows and cannot produce a continuous
+  estimate.
+* **Unadjudicated band conflict, to be resolved by B5's band-design justification, not inherited
+  from either paper:** CATFISH's own classifier config puts distant-vessel discriminative content
+  at ~60-300 Hz, mostly below our 250 Hz floor. The May River recreational-vessel detector
+  deliberately discards everything below 800 Hz, treating it as fish chorusing. Barkley Sound has
+  both fish chorusing and small recreational outboards, so neither paper's band choice transfers
+  uncritically; B5 must state and justify its own band against this disagreement rather than
+  adopting one side by default. (It also partly rescues the 250 Hz floor: if May River is right
+  for recreational craft specifically, the floor costs less than CATFISH's low-band emphasis would
+  suggest, because CATFISH's low band is where the *commercial* traffic lives.)
+
+Full detail and the reasoning that reached this replacement: run-phase ledger, `alt-2 DONE` and
+`alt-4 DONE` entries.
+
+### i. How to tell this was wrong
 
 Revisit this path only if **both** of the following become true, not either alone:
 

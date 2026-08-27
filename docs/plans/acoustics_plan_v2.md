@@ -53,7 +53,9 @@ also produces (CLAUDE.md invariant 4). Every headline number below is paired wit
   `assert_calibratable`, `assert_tone_at`, `structural_zero_report`. Start time is read from the
   **filename** (`onc_client.parse_file_coverage`) -- the decompressed payload carries no header, no
   timestamp and no sample rate at all. Null checks (tone ladder, frame-shuffle, alternate time
-  bases) run and reported in the B0-2a-impl log. Two checks remain deliberately failing as
+  bases) run and reported in the B0-2a-impl log; the frame-shuffle null is also now a repeatable
+  `check_b0_2a_synthetic_tone_frame_shuffle_null_is_rejected` in `scripts/checks.py`, not only a
+  ledger diagnostic. Two checks remain deliberately failing as
   data-dependent findings, now **adjudicated and closed** by B1a -- see §3.1-3.3. Both contracts
   were **restated to match measured reality**, not weakened: the top of the band is three regions
   (with a *harder* exact-zero assertion over cols 425-511), and the 38 kHz "line" is a hump asserted
@@ -94,7 +96,11 @@ a bug.
   2025) release an open dataset but no code or weights; Renaud et al. (`arXiv:2607.13840`) is
   method-only. Any such model would therefore have been ours, which makes a poor transfer result
   ambiguous between "the method fails" and "we built it badly" -- the ambiguity invariant 9 exists
-  to prevent.
+  to prevent. **[CORRECTION, §4/0012h]** "No downloadable weights" is *withdrawn* as a rejection
+  criterion for the MIT-licensed, weightless code here (Domingos/`underwater_snd`, the Peeples
+  models) -- see §4 below for the replacement, input-geometry-based criterion. This paragraph's
+  ambiguity argument (any such model would have been ours to train) is unaffected and still holds;
+  what changes is only *why* the ready-made alternatives were not simply adopted instead.
 - **v1's framing of >=250 Hz as a general limitation.** Small planing craft radiate peak energy at
   roughly 1-10 kHz (cavitation broadband); it is *large* ships that carry the diagnostic blade-rate
   tonals at 10-100 Hz. The floor costs us large-ship detection, **not** small-boat detection --
@@ -117,7 +123,7 @@ are 40/40 green and mutation-tested against eight deliberate sabotages.
 | **250 Hz per bin** (1024-pt FFT at 256 kHz, 512 bins over 0-128 kHz) | v1 §"What changed since rev. 3", **re-confirmed B1a** on three absolute measurements on the 128 kHz sample WAV (below) |
 | **Echosounder source centre = 37,650 +- 150 Hz** (not 38.0 kHz) | B1a, measured **absolutely on the 128 kHz WAV** -- no product axis involved. `FFT_ECHOSOUNDER_ABS_CENTRE_HZ` |
 | ~~Anti-alias shoulder onset at bin 408 confirms the mapping~~ | **STRUCK as mapping evidence, B1a** -- see below. Retained only as a structural check |
-| Calibration file covers **10 Hz - 51.2 kHz only** = bins 0-205. Bins 206-417 are uncalibratable | the file's own header |
+| Calibration file states **10 Hz - 51.2 kHz**; the wholly-inside bin range is **1-204** (bins 0 and 205 would need extrapolation). Bins 205-417 are uncalibratable | the file's own header; narrowed from bins 0-205 per review-2 [MEDIUM 2] |
 | Decidecade bands resolved only **above ~2.2 kHz**; no hybrid-millidecade compliance | 250 Hz bins; a decidecade band at *f* is ~0.23*f* wide |
 | **~42 dB unexplained shape difference** across 250 Hz -> 2 kHz survives the remapping | v1 §A2 -- still open, gated in B1 |
 | `.fft.gz` is **0.29 MB per 5-min file**; WAV for the same span is ~3.5 TB | v1 §A4 |
@@ -234,12 +240,15 @@ noise, so the assertion carries a tolerance of exactly one count in one frame,
 
 **Two ceilings, kept apart in `config.py`:**
 
-- `FFT_B5_CALIBRATED_CEILING_BIN = 205` (51.2 kHz) -- above it, no absolute dB re 1 uPa exists.
+- `FFT_B5_CALIBRATED_CEILING_BIN = 204` (51,000 Hz; bins 1-204 are wholly inside the file's stated
+  10 Hz - 51,200 Hz span, no extrapolation) -- above it, no absolute dB re 1 uPa exists.
 - `FFT_B5_RELATIVE_CEILING_BIN = 408` (~102 kHz) -- **nothing above bin 408 may enter a B5
-  statistic**, even a relative one. Bins 409-424 are instrument response, not ocean; they are
-  **floor-censored** (99.94% of cells at 0), so any mean over them is a censoring artefact biased
-  upward by an unboundable amount -- averaging them converts "we cannot measure this" into a
-  number.
+  statistic**, even a relative one. Bins 409-418 are instrument response, not ocean (the
+  anti-alias filter skirt; only ~49% of their cells sit at the 0 floor, so this is real decaying
+  signal, not censoring). Bins 419-511 ARE floor-censored (99.94%/99.93% of cells at 0; 419-424
+  alone ~99%), so any mean over 419+ is a censoring artefact biased upward by an unboundable
+  amount -- averaging them converts "we cannot measure this" into a number. 409-418 is excluded
+  for the instrument-response reason, not the censoring one.
 
 **Upper censoring is real, not hypothetical.** `levels_db` is the product's own uncalibrated
 integer scale, clipped into `[0, 86]` at **both** ends. Three cells sit at the 86 ceiling in bins
@@ -290,6 +299,25 @@ What B0 actually found, against each claim v1-of-this-section made:
   (invariant 9), and it does not matter: (e) above is fatal regardless of RAM.
 - The repo's real licence is BSD-3-Clause, not MIT as first recorded (both permissive; not a
   decision input).
+
+**The model-survey rejection criterion is also corrected (0012h).** §2's "Dropped, and why" and
+0009's Context partly rejected MIT-licensed, weightless candidates (Domingos/`underwater_snd`,
+the Peeples models) on "no downloadable weights" -- withdrawn, because it contradicted this
+project's own finding that weights in this field are not portable across hydrophones. The
+replacement criterion: our continuous product must be computed from the `.fft.gz` surface, and no
+published vessel model's input geometry can be fed from it without a spectrogram remap that is a
+research project in its own right; waveform models can be scored only on the ~25-30 labelled
+matchup windows, so they cannot produce G1 regardless of licence or weights. CATFISH remains
+rejected (band-disqualified, ~60-300 Hz discriminative content at range) and, with UATR-CMoE and
+Conformer_UATR, is additionally unlicensed -- a harder blocker than missing weights. Corrections
+carried with it: PANNs code is **MIT**, not Apache-2.0 (weights CC BY 4.0); the Decrop dataset is
+at **VLIZ, DOI `10.14284/723`, CC BY 4.0** (not Zenodo -- `12799031` is only the ICUA2024 slide
+deck), 76 h with AIS labels including vessel-to-hydrophone distance; and the corpus is **1.07 TB**
+of WAV against **~1.2 TB free** on this host, versus ~50 CPU-minutes for the `.fft.gz` path over
+the same corpus -- that asymmetry, not licence or weights, is decisive. Unadjudicated: CATFISH
+puts distant-vessel content at 60-300 Hz while May River deliberately discards below 800 Hz as
+fish chorusing, and Barkley Sound has both signals; B5's band choice must be justified against
+this disagreement, not inherited from either paper. Full detail: `docs/decisions/0012-*.md` §h.
 
 **Consequence: §5's B2 (spectrogram adapter) and B4 (reproduce-then-run) are struck.** B5
 (band-level SPL, §5 below) is promoted from "B4's independent check" to **primary detector**. No
@@ -597,7 +625,7 @@ re-executing a notebook top-to-bottom in a fresh kernel.
 | **B1's low-frequency anomaly never resolves** | Relative and shape-based features, decided Day 1. G1-G3 survive; only B6 is lost. |
 | ~~No GPU in this environment -> CPU CNN baseline; confirmed as a supported path in B0~~ | **False -- corrected by decision 0012.** No CNN baseline exists at all (0012a), and the actual SSAMBA/Mamba CPU path costs ~12 CPU-days per corpus pass regardless of GPU/RAM (0012e). The real mitigation is the same as always: B5 needs no weights and is now primary. |
 | **`arlpy` / Bellhop unavailable** | B6 is the first segment to cut, and nothing else depends on it. |
-| **No 256 kHz calibration curve from ONC** | Restrict absolute levels to <= 51.2 kHz (bins 1-205). Costs the 51-104 kHz band, which matters little for vessel noise. |
+| **No 256 kHz calibration curve from ONC** | Restrict absolute levels to bins 1-204 (250 Hz - 51,000 Hz, wholly inside the file's stated span). Costs the 51-104 kHz band, which matters little for vessel noise. |
 | **Archive imagery scarce for 2020-2025** | Flagged Day 1 via O1b so Malachy can check yield before spending quota. If scarce, B5 still delivers a continuous presence estimate with no optical labels; only G2 and G3 need matchups. |
 | **Effective N too small for any ML claim** | B5 and B6 need ~0 training data and produce a result regardless. |
 | **I1 timestamps in local or publish time** | Agree the convention in writing Day 1; assert UTC and sanity-check against solar time (~10:30 local overpass). |

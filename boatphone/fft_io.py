@@ -39,16 +39,20 @@ Frequency axis
     intend bin ``k`` to span ``[k*dF, (k+1)*dF)``, which would move every named
     frequency up by half a bin. That question is OPEN, and it is carried, not
     hidden: ``config.FFT_AXIS_CONVENTION`` names the assumption and
-    ``config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ`` (125 Hz, one-sided toward higher
-    frequency) is its price on every band edge. Use :func:`band_limit_product`
-    rather than ``models.band_limit`` directly, so the uncertainty travels with
-    the band.
+    ``config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ`` (125 Hz) is its price on every
+    band edge. Carried SYMMETRICALLY on both edges of the band, because the
+    mask must be a superset under either convention -- the raw error is
+    one-sided (toward higher frequency, if ONC means edges) but which side is
+    unknown, so both edges widen. Use :func:`band_limit_product` rather than
+    ``models.band_limit`` directly, so the uncertainty travels with the band.
 
 Censoring
-    ``levels_db`` is clipped into ``[0, 86]`` by the product itself -- at BOTH
-    ends. Upper censoring is real even on a quiet window, so
-    :func:`censoring_report` returns the per-window counts at each limit and
-    every band level should be reported next to them.
+    ``levels_db`` runs ``[0, 86]`` in the local sample. The FLOOR (0) is
+    confirmed censoring (18.7% of cells sit exactly there). The CEILING (86)
+    is an ASSUMPTION, not a confirmed hard clip -- see
+    ``config.FFT_LEVEL_CEILING``'s comment for why. :func:`censoring_report`
+    returns the per-window counts at each limit and every band level should be
+    reported next to them regardless.
 
 Units
     ``levels_db`` is the product's own integer dB-like level. It is NOT dB re
@@ -287,8 +291,13 @@ def calibrated_band_hz(bin_width_hz: float = FFT_BIN_WIDTH_HZ) -> tuple[float, f
     """The frequency band the calibration covers, Hz, as ``(lo_hz, hi_hz)`` inclusive.
 
     Derived from :data:`boatphone.config.FFT_CALIBRATED_BIN_RANGE` and the bin
-    width -- bins 0-205, i.e. 0 Hz to 51.25 kHz. Above this the product still
-    carries signal but no absolute level can be stated for it.
+    width -- bins 1-204, i.e. 250 Hz to 51,000 Hz, WHOLLY INSIDE the
+    calibration file's documented 10 Hz - 51,200 Hz span (no extrapolation).
+    Bin 0 (below the file's 10 Hz floor) and bin 205 (above its 51,200 Hz
+    ceiling) are deliberately excluded rather than admitted by extrapolating
+    the sensitivity curve -- see decision 0014 and review-2 [MEDIUM 2]. Above
+    bin 204 the product still carries signal but no absolute level can be
+    stated for it without extrapolating past the calibration's stated range.
     """
     lo_bin, hi_bin = FFT_CALIBRATED_BIN_RANGE
     axis_hz = frequency_axis_hz(n_bins=hi_bin + 1, bin_width_hz=bin_width_hz)
@@ -487,14 +496,19 @@ band_limit_product.__doc__ = band_limit_product.__doc__.format(
 def censoring_report(levels_db) -> dict:
     """Per-window counts of cells sitting AT the 0 floor and AT the 86 ceiling.
 
-    A B5 PRECONDITION, not a diagnostic nicety. The product's integer scale is
-    censored at both ends, so a mean or a percentile computed over it is biased
-    toward whichever limit is being hit, by an amount that is not boundable from
-    the censored data alone -- and the amount MOVES WITH AMBIENT, i.e. it is
-    confounded with the very signal a threshold is trying to detect.
+    A B5 PRECONDITION, not a diagnostic nicety. The product's integer scale's
+    FLOOR (0) is confirmed censoring (18.7% of cells sit exactly there); its
+    CEILING (86) is currently an ASSUMPTION, not a confirmed hard clip (see
+    ``config.FFT_LEVEL_CEILING``). Either way, a mean or a percentile computed
+    over a window touching either limit is biased toward it by an amount that
+    is not boundable from the data alone -- and, for the floor, the amount
+    MOVES WITH AMBIENT, i.e. is confounded with the very signal a threshold is
+    trying to detect.
 
-    Upper censoring is measured, not hypothetical: 3 cells at 86 on a QUIET
-    window of the local sample. A close vessel pass will clip far harder.
+    3 cells reach 86 on a QUIET window of the local sample; report the counts
+    regardless of whether the ceiling proves to be a hard clip, since a window
+    touching it is at minimum informative about how close to the observed max
+    it got.
 
     Reporting only -- nothing here modifies, clips or fills anything. Report
     these counts ALONGSIDE every band level; a band level whose window has

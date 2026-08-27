@@ -5409,7 +5409,7 @@ def check_b0_1_external_not_staged_or_untracked_in_git():
 #       axis wearing the name t_utc_s is exactly what decision 0002 forbids.
 #   fft_io.read_fft_gz(path) -> object with .levels_db [n_frames, n_bins],
 #       .freq_hz [n_bins], .t_utc_s [n_frames], .fs_hz.
-#   fft_io.calibrated_band_hz() -> (lo_hz, hi_hz) matching bins 0-205.
+#   fft_io.calibrated_band_hz() -> (lo_hz, hi_hz) matching bins 1-204.
 #   fft_io.assert_calibratable(band_hz) -> raises if band_hz reaches outside
 #       the calibratable support.
 #   fft_io.assert_tone_at(levels_db, freq_hz, t_utc_s, *, expected_freq_hz,
@@ -5428,7 +5428,9 @@ B0_2A_N_BINS = 512
 B0_2A_BIN_WIDTH_HZ = 250.0
 B0_2A_FRAME_SECONDS = 0.25
 B0_2A_STRUCTURAL_ZERO_COL0 = 0
-B0_2A_CALIBRATED_BIN_RANGE = (0, 205)  # inclusive; 10 Hz - 51.2 kHz
+B0_2A_CALIBRATED_BIN_RANGE = (1, 204)  # inclusive; 250 Hz - 51,000 Hz, wholly
+# inside the calibration file's documented 10 Hz - 51,200 Hz span (bins 0 and
+# 205 would only be admissible by extrapolation -- see review-2 [MEDIUM 2]).
 
 # --- RESTATED 2026-08-27 by the B1a frequency-axis adjudication. -------------
 # These three facts were RESTATED, not relaxed. Each new number below is a
@@ -5539,7 +5541,7 @@ def check_b0_2a_config_constants_exist():
     assert not missing, (
         f"boatphone.config is missing B0-2a axis constant(s) {missing}; the "
         "1200x512 frame/bin shape, 250 Hz bin width, 0.25 s frame duration, "
-        "structural-zero columns, 38 kHz line bin, and the 0-205 calibratable "
+        "structural-zero columns, 38 kHz line bin, and the 1-204 calibratable "
         "bin range are project-wide facts (acoustics_plan_v2 SS3) and must have "
         "exactly one definition, in boatphone/config.py -- not a second one in "
         "boatphone/fft_io.py or scripts/checks.py (CLAUDE.md invariant 6)"
@@ -5571,7 +5573,8 @@ def check_b0_2a_config_constants_match_settled_facts():
         "FFT_AXIS_OFFSET_UNCERTAINTY_HZ": B0_2A_AXIS_OFFSET_UNCERTAINTY_HZ,
         "FFT_CALIBRATED_BIN_RANGE": B0_2A_CALIBRATED_BIN_RANGE,
         # The two B5 ceilings, kept apart on purpose: 205 is where CALIBRATION
-        # stops (51.2 kHz), 408 is where the instrument response stops being
+        # stops (51,000 Hz, bins 1-204 wholly inside the file's stated span),
+        # 408 is where the instrument response stops being
         # ocean (~102 kHz). Nothing above 408 may enter a B5 statistic.
         "FFT_B5_CALIBRATED_CEILING_BIN": B0_2A_CALIBRATED_BIN_RANGE[1],
         "FFT_B5_RELATIVE_CEILING_BIN": B0_2A_ROLLOFF_ONSET_BIN,
@@ -5776,6 +5779,58 @@ def check_b0_2a_synthetic_tone_wrong_bin_offset_is_rejected():
         )
 
 
+def check_b0_2a_synthetic_tone_frame_shuffle_null_is_rejected():
+    """NULL CHECK (invariant 4): shuffling which FRAME a tone's data lives in,
+    while leaving the time axis itself untouched, must be rejected at the
+    tone's original time for every draw.
+
+    This reproduces the frame-shuffle null from the B1a-impl ledger entry
+    ("Frame-shuffle 200 draws: 0/200 accepted"), which previously existed only
+    as a one-off diagnostic outside the repo -- CLAUDE.md invariant 4 requires
+    nulls to be load-bearing evidence, so it is added here as a repeatable
+    check rather than left to trust. Uses fewer draws than the original
+    diagnostic (deterministic seed, small N) to keep the suite fast; the
+    property being tested does not depend on draw count.
+    """
+    cfg, fft_io = _b0_2a_fft_io()
+    true_bin, true_frame, level_true_db = 300, 400, -20.0
+    levels_db, freq_hz, t_utc_s = _b0_2a_synthetic_product(
+        fft_io, true_bin=true_bin, true_frame=true_frame, level_true_db=level_true_db,
+    )
+    expected_t_utc_s = t_utc_s[true_frame]
+    rng = np.random.default_rng(0)
+    n_draws = 50
+    n_accepted = 0
+    n_run = 0
+    for _ in range(n_draws):
+        perm = rng.permutation(B0_2A_N_FRAMES)
+        if perm[true_frame] == true_frame:
+            continue  # identity at the tone's own frame is not a shuffle
+        shuffled_levels_db = levels_db[perm, :]
+        n_run += 1
+        try:
+            fft_io.assert_tone_at(
+                shuffled_levels_db, freq_hz, t_utc_s,
+                expected_freq_hz=freq_hz[true_bin], expected_t_utc_s=expected_t_utc_s,
+                freq_tol_hz=B0_2A_FREQ_TOL_HZ, time_tol_s=B0_2A_TIME_TOL_S,
+                expected_level_db=level_true_db, level_tol_db=B0_2A_LEVEL_TOL_DB,
+            )
+        except Exception:
+            pass
+        else:
+            n_accepted += 1
+    assert n_run >= n_draws - 5, (
+        f"only {n_run} of {n_draws} draws produced a genuine frame shuffle -- "
+        "RNG/permutation logic is broken, not a passing null"
+    )
+    assert n_accepted == 0, (
+        f"frame-shuffle null: {n_accepted}/{n_run} shuffled draws were ACCEPTED "
+        f"at the tone's true time {expected_t_utc_s}; a mapping that cannot tell "
+        "a shuffled frame order from the true one is not verifying the time axis "
+        "at all (CLAUDE.md invariant 4)"
+    )
+
+
 def check_b0_2a_synthetic_tone_wrong_hour_offset_is_rejected():
     """NEGATIVE CONTROL, the invariant-4 case verbatim: a tone claimed to have
     started one hour later (or earlier) than it actually did must be REJECTED.
@@ -5891,12 +5946,13 @@ def check_b0_2a_real_fixture_shape_and_structural_zeros():
         report = fft_io.structural_zero_report(levels)
         profile = np.asarray(report["rolloff_profile_bin_means"], dtype=float)
         first_bin = int(report["rolloff_profile_first_bin"])
-        # Tolerance = one count in one frame, the smallest step the product can
-        # express. At the far end of the skirt the mean is quantised to
-        # multiples of 1/1200 and its ordering there is integer noise, not
-        # physics -- fixture ...000004 has bin 423 at 0.0000 and bin 424 at
-        # 0.0008. This is a quantisation floor, NOT a loosened bound: it is
-        # three orders of magnitude below the order-1 step a stride bug makes.
+        # Tolerance = two counts in one frame (config.FFT_ROLLOFF_MONOTONIC_TOL_LEVEL),
+        # comfortably above the smallest step the product can express. At the far
+        # end of the skirt the mean is quantised to multiples of 1/1200 and its
+        # ordering there is integer noise, not physics -- fixture ...000004 has
+        # bin 423 at 0.0000 and bin 424 at 0.0008. This is a quantisation floor,
+        # NOT a loosened bound: it is still ~3 orders of magnitude below the
+        # order-1 step a stride bug makes.
         tol = float(getattr(cfg, "FFT_ROLLOFF_MONOTONIC_TOL_LEVEL"))
         steps = np.diff(profile)
         offenders = [
@@ -6123,13 +6179,16 @@ def check_b0_2a_b5_ceilings_and_censoring_counters_are_available():
     censoring counts are reportable.
 
     Two distinct limits, which a single "max bin" would conflate:
-      * the CALIBRATED ceiling, bin 205 (51.2 kHz) -- above it no absolute
+      * the CALIBRATED ceiling, bin 204 (51,000 Hz) -- above it no absolute
         dB re 1 uPa exists at all;
       * the UNCALIBRATED/RELATIVE ceiling, bin 408 (~102 kHz) -- above it even a
-        relative statistic is meaningless, because bins 409-424 are the
-        instrument's anti-alias skirt and are FLOOR-CENSORED (99.94% of cells at
-        zero). Averaging them turns "we cannot measure this" into a number, and
-        the bias is upward by an unboundable amount.
+        relative statistic is meaningless. Bins 409-418 are the instrument's
+        anti-alias skirt: real, gradually decaying filter response, not ocean
+        (only ~49% of their cells sit at zero -- not censored). Bins 419-511
+        ARE FLOOR-CENSORED (99.94%/99.93% of cells at zero; 419-424 alone
+        ~99%). Averaging 419+ turns "we cannot measure this" into a number,
+        biased upward by an unboundable amount; 409-418 is excluded as
+        instrument response, not because it is censored.
 
     And the censoring counters: the product's integer scale is clipped into
     [0, 86] at BOTH ends. Upper censoring is measured, not hypothetical -- 3
@@ -6142,7 +6201,7 @@ def check_b0_2a_b5_ceilings_and_censoring_counters_are_available():
     relative_ceiling = int(getattr(cfg, "FFT_B5_RELATIVE_CEILING_BIN"))
     assert calibrated_ceiling == B0_2A_CALIBRATED_BIN_RANGE[1], (
         f"FFT_B5_CALIBRATED_CEILING_BIN is {calibrated_ceiling}, expected "
-        f"{B0_2A_CALIBRATED_BIN_RANGE[1]} (bin 205 == 51.2 kHz, where the "
+        f"{B0_2A_CALIBRATED_BIN_RANGE[1]} (bin 204 == 51,000 Hz, where the "
         "pre-deployment calibration file stops)"
     )
     assert relative_ceiling == B0_2A_ROLLOFF_ONSET_BIN, (
@@ -6180,7 +6239,7 @@ def check_b0_2a_b5_ceilings_and_censoring_counters_are_available():
 
 
 def check_b0_2a_calibratable_band_matches_bin_range_and_assert_calibratable_rejects_beyond():
-    """Bins 0-205 are the calibratable set; fft_io.assert_calibratable() REJECTS a
+    """Bins 1-204 are the calibratable set; fft_io.assert_calibratable() REJECTS a
     band reaching outside it, reusing boatphone/models.py's own band vocabulary
     (assert_band_matched) rather than a second, independently-invented comparator
     (CLAUDE.md invariant 6) -- fft_io is only asked to STATE the calibratable
@@ -6197,7 +6256,8 @@ def check_b0_2a_calibratable_band_matches_bin_range_and_assert_calibratable_reje
     assert abs(got_lo_hz - exp_lo_hz) < 1e-6 and abs(got_hi_hz - exp_hi_hz) < 1e-6, (
         f"fft_io.calibrated_band_hz() = {calibrated_band_hz}, expected "
         f"({exp_lo_hz}, {exp_hi_hz}) Hz -- bins {lo_bin}-{hi_bin} inclusive "
-        "(settled fact: the calibration file covers 10 Hz - 51.2 kHz)"
+        "(settled fact: the calibration file covers 10 Hz - 51.2 kHz; bins 1-204 "
+        "are wholly inside that span -- see review-2 [MEDIUM 2])"
     )
 
     # In-range request: assert_band_matched-style acceptance -- must NOT raise.
@@ -6210,7 +6270,7 @@ def check_b0_2a_calibratable_band_matches_bin_range_and_assert_calibratable_reje
             "as calibrated_band_hz(); a self-consistent band must be accepted"
         ) from exc
 
-    # Out-of-range request (reaches past bin 205, i.e. past 51.2 kHz): MUST raise.
+    # Out-of-range request (reaches past bin 204, i.e. past 51,000 Hz): MUST raise.
     beyond_hz = (exp_lo_hz, exp_hi_hz + 10 * B0_2A_BIN_WIDTH_HZ)
     try:
         fft_io.assert_calibratable(beyond_hz)
@@ -6220,7 +6280,7 @@ def check_b0_2a_calibratable_band_matches_bin_range_and_assert_calibratable_reje
         raise AssertionError(
             f"fft_io.assert_calibratable({beyond_hz}) returned without raising; "
             f"that band reaches past the calibratable support {calibrated_band_hz} Hz "
-            "(bins 0-205 only -- an absolute level requested beyond bin 205 has no "
+            "(bins 1-204 only -- an absolute level requested beyond bin 204 has no "
             "calibration applied to it and must not be silently permitted)"
         )
     # And boatphone.models is genuinely reusable here, not merely importable:
@@ -6367,13 +6427,14 @@ CHECKS = [
     ("B0-2a assert_tone_at signature names freq_hz/t_utc_s/levels_db", check_b0_2a_assert_tone_at_signature_names_conventions),
     ("B0-2a SYNTHETIC TONE positive control (freq+time+level)", check_b0_2a_synthetic_tone_positive_control_survives_axis_mapping),
     ("B0-2a WRONG-BIN-FAILS: offset tone claim is rejected", check_b0_2a_synthetic_tone_wrong_bin_offset_is_rejected),
+    ("B0-2a FRAME-SHUFFLE NULL: shuffled frame order is rejected (invariant 4)", check_b0_2a_synthetic_tone_frame_shuffle_null_is_rejected),
     ("B0-2a WRONG-TIME-FAILS: +1h shifted claim is rejected", check_b0_2a_synthetic_tone_wrong_hour_offset_is_rejected),
     ("B0-2a real fixture: shape 1200x512 + 3-region band top (data-dependent)", check_b0_2a_real_fixture_shape_and_structural_zeros),
     ("B0-2a real fixture: echosounder hump CENTROID in bins 149-152 (data-dependent)", check_b0_2a_real_fixture_echosounder_hump_centroid),
     ("B0-2a centre-vs-edge uncertainty is CARRIED (+/-125 Hz applied, not just declared)", check_b0_2a_axis_uncertainty_is_carried),
     ("B0-2a no check pins a bin position tighter than +/-1 bin", check_b0_2a_no_check_asserts_a_bin_position_tighter_than_one_bin),
-    ("B0-2a B5 preconditions: two ceilings (205/408) + censoring counters", check_b0_2a_b5_ceilings_and_censoring_counters_are_available),
-    ("B0-2a calibratable band == bins 0-205; assert_calibratable rejects beyond (reuses models.py)", check_b0_2a_calibratable_band_matches_bin_range_and_assert_calibratable_rejects_beyond),
+    ("B0-2a B5 preconditions: two ceilings (204/408) + censoring counters", check_b0_2a_b5_ceilings_and_censoring_counters_are_available),
+    ("B0-2a calibratable band == bins 1-204; assert_calibratable rejects beyond (reuses models.py)", check_b0_2a_calibratable_band_matches_bin_range_and_assert_calibratable_rejects_beyond),
 ]
 
 

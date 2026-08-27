@@ -16,8 +16,17 @@ settle it. This record exists so that "we pinned `centre`" is never mistaken for
 
 **`FFT_AXIS_CONVENTION = "centre"` stays pinned in `boatphone/config.py` -- the reader must be
 deterministic -- but it is recorded here as a named assumption, not a confirmed fact, carrying
-`FFT_AXIS_OFFSET_UNCERTAINTY_HZ = 125.0` (one-sided, toward higher frequency). Every band-edge
-consumer widens its support by this uncertainty rather than treating the axis as exact.**
+`FFT_AXIS_OFFSET_UNCERTAINTY_HZ = 125.0`. The raw error is one-sided (toward higher frequency, if
+ONC means edges), but it is CARRIED SYMMETRICALLY on both edges of every band, because the mask
+must be a superset under either convention and which convention is true is exactly what is
+unresolved. Every band-edge consumer widens its support by this uncertainty on both sides rather
+than treating the axis as exact.**
+
+**[CORRECTION, 2026-08-27, integration review-2 [LOW 4a]]** This record and `fft_io.py`/`config.py`
+originally said the uncertainty is applied "one-sided, toward higher frequency", but
+`boatphone/models.py`'s `band_limit` widens both edges symmetrically -- the implementation is the
+safe superset and was always correct; the documentation was wrong. Fixed above and at
+`boatphone/config.py:359-365`, `boatphone/fft_io.py:42-46`.
 
 ### The evidence, both ways
 
@@ -67,7 +76,18 @@ bands) and is recorded only because it was the obvious next attempt and it faile
 under centre, 37.58 kHz. Which is closer to the true 37,650 +- 150 Hz source centre flips with the
 choice of background model and dB scale, so it cannot discriminate the +-125 Hz question -- only
 the much coarser question of a 2x mapping error, where it is decisive (it discriminates by ~150
-bins).
+bins). This 37.58/37.70 kHz split, on which the argument above leans, is itself background-model
+dependent at the ~50 Hz level: a median-filter background gives 37,580 Hz instead. Still inside the
++-150 Hz tolerance either way, but named here because the argument above treats the split as if it
+were exact.
+
+*The WAV reference band is a named convention, not a default.* The "+14.1 dB" hump figure and
+`FFT_ECHOSOUNDER_ABS_CENTRE_HZ`'s companion dB figures elsewhere in this record and in
+`boatphone/config.py` are stated relative to `boatphone.config.FFT_WAV_REFERENCE_BAND_HZ =
+(20_000.0, 60_000.0)`, not the WAV's full 0-64 kHz span. Only that 20-60 kHz reference reproduces
+both headline numbers (+14.06 dB / -6.24 dB); the full band gives +11.64 dB / -8.82 dB instead.
+Per CLAUDE.md invariants 3 and 6, this is now a named constant rather than an implicit choice
+baked into a one-off script.
 
 ## Alternatives rejected
 

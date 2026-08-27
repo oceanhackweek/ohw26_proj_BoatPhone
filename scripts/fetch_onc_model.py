@@ -287,8 +287,14 @@ def _h5_contains_iclisten(f) -> bool:
         if isinstance(obj, __import__("h5py").Dataset) and obj.dtype.kind in ("S", "O"):
             try:
                 values = obj[:]
-            except (OSError, ValueError):
-                return
+            except (OSError, ValueError) as exc:
+                raise OSError(
+                    f"h5 dataset {name!r} in {getattr(f, 'filename', '<unknown>')} "
+                    f"could not be read ({type(exc).__name__}: {exc}); refusing to "
+                    "treat an unreadable dataset as 'device not found' (CLAUDE.md "
+                    "invariant 5 -- a data problem must surface, not become a "
+                    "plausible negative answer)"
+                ) from exc
             for v in values:
                 s = v.decode("utf-8", errors="replace") if isinstance(v, bytes) else str(v)
                 if "ICLISTENHF1266" in s:
