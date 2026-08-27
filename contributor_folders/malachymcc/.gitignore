@@ -1,12 +1,20 @@
 # Planet acquisition working files (planet_folger_search_order_download.ipynb).
 #
 # Everything here is REGENERABLE from the notebook and free to re-fetch, so it is
-# cache, not source. Two of these are large enough to matter: tile_previews/ is ~5 MB
-# per scene at native resolution (224 MB for a 48-scene pool) and downloads/ holds the
-# ordered GeoTIFFs you actually paid quota for.
+# cache, not source. Two of these are large enough to matter: previews are ~5 MB per
+# scene at native resolution (139 MB for the 30 survivors, 86 MB for the 18 rejects)
+# and downloads/ holds the ordered GeoTIFFs you actually paid quota for.
 planet_folger/tile_previews/
 planet_folger/udm2_scratch/
 planet_folger/downloads/
+
+# Gate-2 cloud rejects, split out of tile_previews/ so the folder matches the review
+# queue -- browsing tile_previews/ directly used to show all 48 gate-1 scenes, including
+# 82%-cloud ones the pipeline had already discarded. The JPEGs are ignored; the README
+# listing the 18 scenes and their aoi_clear scores is TRACKED, because it is the reserve
+# pool if a delivery fails and it costs nothing to carry.
+planet_folger/rejected_cloud/*.jpg
+planet_folger/rejected_cloud/.ipynb_checkpoints/
 
 # Caches. Deleting any of these just forces the work again:
 #   aoi_clear.json   UDM2 gate-2 scores    (~27 min to rebuild at concurrency 8)
