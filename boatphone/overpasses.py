@@ -43,6 +43,7 @@ __all__ = [
     "corpus_index_duplicates",
     "window_coverage",
     "coverage_summary",
+    "load_optical_labels",
 ]
 
 
@@ -297,3 +298,93 @@ def coverage_summary(coverages) -> dict:
         "zero_scene_ids": [c.overpass.scene_id for c in zero],
         "file_seconds": float(FFT_FILE_SECONDS),
     }
+
+
+# The one place a human vessel label enters the code. Tracked in git, unlike the
+# rest of data/ -- see data/labels/README.md for why, and for why `area_km2`
+# must travel with every label.
+OPTICAL_LABELS_RELPATH = "data/labels/optical_vessel_labels.csv"
+
+
+@dataclasses.dataclass(frozen=True)
+class OpticalLabel:
+    """A human-confirmed vessel presence/absence for one scene.
+
+    ``area_km2`` is the area the reviewer ACTUALLY EXAMINED, and it is not
+    optional. A `no_vessels` label over 10 km2 is a circle of radius ~1.78 km;
+    the hydrophone's detection range is unmeasured (that is goal G3) and is very
+    likely larger. So this class deliberately makes it impossible to read a
+    label as "acoustically silent" without also seeing how far the reviewer
+    looked -- treating these as acoustic negatives without the area would
+    manufacture false positives out of correctly-detected boats that simply sat
+    outside the reviewed box.
+    """
+
+    scene_id: str
+    acquired_utc: _dt.datetime
+    label: str
+    n_vessels: int | None
+    area_km2: float | None
+    reviewer: str
+    reviewed_utc: str
+    notes: str
+
+    @property
+    def implied_radius_km(self) -> float | None:
+        """Radius of a circle of ``area_km2``, as a reading aid. NOT a claim.
+
+        The reviewed region is not necessarily circular and the label does not
+        say that it is; this is the order of magnitude a reader needs to compare
+        the review area against an acoustic detection range.
+        """
+        if self.area_km2 is None:
+            return None
+        import math
+        return math.sqrt(self.area_km2 / math.pi)
+
+
+def load_optical_labels(csv_path=None) -> dict:
+    """Human vessel labels, keyed by ``scene_id``. Empty dict if none exist yet.
+
+    An ABSENT file is not an error: for most of this project's life there were no
+    labels at all, and code that reads them must degrade to "unlabelled" rather
+    than refusing to run. A MALFORMED file is an error -- silently dropping a row
+    would quietly shrink the only ground truth the project has.
+    """
+    if csv_path is None:
+        csv_path = REPO_ROOT / OPTICAL_LABELS_RELPATH
+    csv_path = pathlib.Path(csv_path)
+    if not csv_path.is_file():
+        return {}
+
+    out = {}
+    with open(csv_path, newline="", encoding="utf-8") as handle:
+        for row_no, row in enumerate(csv.DictReader(handle), start=2):
+            scene_id = (row.get("scene_id") or "").strip()
+            if not scene_id:
+                raise ValueError(f"{csv_path.name} line {row_no}: empty scene_id")
+            stamp = _dt.datetime.fromisoformat((row.get("acquired_utc") or "").strip())
+            if stamp.tzinfo is None:
+                raise ValueError(
+                    f"{csv_path.name} line {row_no}: acquired_utc states no UTC "
+                    "offset (decision 0002)"
+                )
+            n = (row.get("n_vessels") or "").strip()
+            area = (row.get("area_km2") or "").strip()
+            if not area:
+                raise ValueError(
+                    f"{csv_path.name} line {row_no}: area_km2 is empty. A label "
+                    "without the reviewed area cannot be read as an acoustic "
+                    "negative -- see data/labels/README.md"
+                )
+            out[scene_id] = OpticalLabel(
+                scene_id=scene_id,
+                acquired_utc=stamp.astimezone(_dt.timezone.utc),
+                label=(row.get("label") or "").strip(),
+                n_vessels=int(n) if n else None,
+                area_km2=float(area),
+                reviewer=(row.get("reviewer") or "").strip(),
+                reviewed_utc=(row.get("reviewed_utc") or "").strip(),
+                notes=(row.get("notes") or "").strip(),
+            )
+    return out

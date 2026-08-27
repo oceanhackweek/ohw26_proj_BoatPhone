@@ -1,0 +1,2 @@
+scene_id,acquired_utc,label,n_vessels,area_km2,reviewer,reviewed_utc,notes
+20210601_191849_05_2412,2021-06-01T19:18:49.050614+00:00,no_vessels,0,10.0,Isaac Guld,2026-08-27,"Confirmed by optical review: no vessels within 10 km2 around the hydrophone."

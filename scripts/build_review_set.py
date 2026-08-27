@@ -53,6 +53,7 @@ import matplotlib.pyplot as plt
 
 from boatphone import config, features, fft_io
 from boatphone import overpasses as ov
+from boatphone import paths
 from boatphone.paths import DERIVED_DIR, ensure_dir
 
 import run_b5_gate
@@ -77,6 +78,11 @@ SLOPE_SMOOTHING_SECONDS = 45.0
 CENTROID_SMOOTHING_SECONDS = 15.0
 AMBIENT_PERCENTILE = 10.0      # per-bin background percentile, matches the band baseline
 PERCENTILE_SPECTRA = (5, 25, 50, 75, 95)
+# How far the rain and small-craft peak excesses must differ before the shape is
+# called either way. Never validated against a labelled rain event -- it is a
+# reading aid, not a classifier, and the width is a judgement about what counts
+# as "the same" on an uncalibrated scale, not a measurement.
+SHAPE_DEADBAND_COUNTS = 3.0
 
 
 def _git_sha() -> str:
@@ -103,7 +109,8 @@ def _load_window_surface(paths):
     return levels[order], t_utc_s[order], products[0].freq_hz
 
 
-def _plot_window(scene_dir, cov, levels, t_utc_s, freq_hz, band_results):
+def _plot_window(scene_dir, cov, levels, t_utc_s, freq_hz, band_results,
+                 diag=None, label=None):
     """Two stacked panels: the spectrogram, and the band traces that drive detection."""
     t0 = cov.overpass.acquired_utc.timestamp()
     t_min = (t_utc_s - t0) / 60.0
@@ -139,9 +146,18 @@ def _plot_window(scene_dir, cov, levels, t_utc_s, freq_hz, band_results):
         f"clear {cov.overpass.clear_percent}%)", fontsize=11)
 
     for band_name, res in band_results.items():
-        line, = ax_band.plot(res["t_min"], res["level"], lw=0.8,
-                             label=f"{band_name} ({res['band_hz'][0]:.0f}-"
-                                   f"{res['band_hz'][1]:.0f} Hz)")
+        # Diagnostic bands are drawn thin and unshaded: they explain a
+        # detection, they never make one, and shading them would read as a
+        # detection in a band that has none.
+        is_detection = band_name in ("small_craft", "ship_proxy")
+        line, = ax_band.plot(
+            res["t_min"], res["level"], lw=0.8 if is_detection else 0.5,
+            alpha=1.0 if is_detection else 0.45,
+            label=f"{band_name} ({res['band_hz'][0]:.0f}-"
+                  f"{res['band_hz'][1]:.0f} Hz)"
+                  + ("" if is_detection else "  [diagnostic]"))
+        if not is_detection:
+            continue
         ax_band.axhline(res["baseline"], color=line.get_color(), ls=":", lw=1.0)
         ax_band.axhline(res["baseline"] + res["threshold"], color=line.get_color(),
                         ls="--", lw=1.0)
@@ -158,16 +174,110 @@ def _plot_window(scene_dir, cov, levels, t_utc_s, freq_hz, band_results):
     ax_band.legend(loc="upper left", fontsize=8, framealpha=0.9)
     ax_band.grid(alpha=0.25)
 
-    n_ev = sum(len(r["events"]) for r in band_results.values())
+    n_ev = sum(len(r["events"]) for name, r in band_results.items()
+               if name in ("small_craft", "ship_proxy"))
     verdict = f"{n_ev} candidate event(s)" if n_ev else "DETECTOR SILENT -- no event"
-    fig.suptitle(
-        f"{verdict}   |   dotted = ambient baseline, dashed = +"
-        f"{run_b5_gate.EVENT_EXCESS_THRESHOLD_COUNTS:.0f} counts threshold, shaded = event "
-        f"(>= {run_b5_gate.EVENT_MIN_DURATION_S:.0f} s)   |   levels are RELATIVE, "
-        "not dB re 1 uPa",
-        y=0.985, fontsize=9.5)
+
+    banner = ""
+    if label is not None:
+        radius = label.implied_radius_km
+        banner = (f"   |   OPTICAL LABEL: {label.label.upper()} "
+                  f"({label.n_vessels} vessels in {label.area_km2:g} km2, "
+                  f"~{radius:.1f} km radius -- the hydrophone may hear further)")
+
+    lines = [
+        f"{verdict}{banner}",
+        f"dotted = ambient baseline, dashed = +"
+        f"{run_b5_gate.EVENT_EXCESS_THRESHOLD_COUNTS:.0f} counts, shaded = event "
+        f"(>= {run_b5_gate.EVENT_MIN_DURATION_S:.0f} s)   |   levels are UNCALIBRATED "
+        "COUNTS, not dB",
+    ]
+    if diag:
+        lines.append(f"shape: {diag['shape_reading']}   |   "
+                     f"{diag['control_reading']}")
+    fig.suptitle("\n".join(lines), y=1.0, fontsize=9.0)
     fig.savefig(scene_dir / "acoustics.png", dpi=115, bbox_inches="tight")
     plt.close(fig)
+
+
+def _window_diagnostics(band_results, t0):
+    """Rain-vs-vessel shape and instrument-vs-ocean checks for one window.
+
+    Neither is a detection. Both answer "should I believe this detection?", which
+    is the question a review set exists to support and which the level alone
+    cannot answer.
+
+    * ``rain_minus_craft_counts`` -- the rain band's peak excess minus the
+      small-craft band's. A vessel radiates broadband cavitation peaking at
+      1-10 kHz, BELOW the rain band, so a vessel gives a NEGATIVE value; rainfall
+      peaks at 13-25 kHz and gives a positive one. A discriminator, not a
+      threshold: it is reported and never used to suppress anything, because it
+      has never been validated against a labelled rain event.
+    * ``control_peak_excess_counts`` -- how far the 51-102 kHz control band moved.
+      No small vessel puts energy there, so a large value alongside a detection
+      means the INSTRUMENT moved and the detection is suspect.
+    """
+    craft = band_results["small_craft"]
+    rain = band_results.get("rain")
+    control = band_results.get("control")
+
+    craft_peak = float(np.max(craft["level"]) - craft["baseline"])
+    out = {
+        "small_craft_peak_excess_counts": round(craft_peak, 2),
+        "rain_peak_excess_counts": None,
+        "rain_minus_craft_counts": None,
+        "shape_reading": "unavailable",
+        "control_peak_excess_counts": None,
+        "control_reading": "unavailable",
+    }
+    if rain is not None:
+        rain_peak = float(np.max(rain["level"]) - rain["baseline"])
+        delta = rain_peak - craft_peak
+        out["rain_peak_excess_counts"] = round(rain_peak, 2)
+        out["rain_minus_craft_counts"] = round(delta, 2)
+        # A DEADBAND, because a tie is not evidence. The bands differ in width
+        # (37 bins against 49) and sit on an uncalibrated, non-linear scale, so a
+        # difference of a couple of counts is not a shape difference. Without
+        # this, delta == 0.0 exactly -- which happened on the first labelled
+        # window -- would be reported as a confident "rain-like".
+        if delta < -SHAPE_DEADBAND_COUNTS:
+            out["shape_reading"] = "vessel-like (energy peaks BELOW the rain band)"
+        elif delta > SHAPE_DEADBAND_COUNTS:
+            out["shape_reading"] = "rain-like (energy peaks IN the 13-25 kHz rain band)"
+        else:
+            out["shape_reading"] = (
+                f"ambiguous (rain and craft bands within {SHAPE_DEADBAND_COUNTS:g} "
+                "counts -- shape does not separate them here)")
+    if control is not None:
+        ctrl_peak = float(np.max(control["level"]) - control["baseline"])
+        ctrl_base = float(control["baseline"])
+        drift = abs(ctrl_base - config.FFT_CONTROL_BAND_EXPECTED_COUNTS)
+        out["control_peak_excess_counts"] = round(ctrl_peak, 2)
+        out["control_baseline_counts"] = round(ctrl_base, 2)
+        out["control_baseline_drift_counts"] = round(drift, 2)
+
+        # The BASELINE is the instrument reference. See
+        # config.FFT_CONTROL_BAND_EXPECTED_COUNTS for why the PEAK is not: a
+        # close pass legitimately radiates above 51 kHz, and vetoing on that
+        # would reject the strongest true detections in the corpus.
+        if drift > config.FFT_CONTROL_BAND_DRIFT_TOLERANCE_COUNTS:
+            out["control_reading"] = (
+                f"INSTRUMENT SUSPECT -- control baseline {ctrl_base:.0f} counts is "
+                f"{drift:.0f} from the expected "
+                f"{config.FFT_CONTROL_BAND_EXPECTED_COUNTS:.0f}")
+        else:
+            out["control_reading"] = (
+                f"instrument stable (control baseline {ctrl_base:.0f} counts, "
+                f"expected ~{config.FFT_CONTROL_BAND_EXPECTED_COUNTS:.0f})")
+        out["control_peak_reading"] = (
+            f"control band peaked +{ctrl_peak:.0f} counts. Above ~half the "
+            "small-craft excess this is broadband energy reaching past 51 kHz, "
+            "which a CLOSE pass produces -- it is not by itself an instrument "
+            "fault."
+            if ctrl_peak >= craft_peak / 2 else
+            f"control band peaked +{ctrl_peak:.0f} counts -- no unusual "
+            "high-frequency energy")
+    return out
 
 
 def _plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz):
@@ -368,7 +478,18 @@ def main(argv=None):
     windows_dir = ensure_dir(out_dir / "windows")
 
     overpass_list = ov.load_gate2_overpasses()
+    labels = ov.load_optical_labels()
+
+    # BOTH landing zones. The bulk corpus holds the 09:15-11:45 local strip; the
+    # top-up zone holds windows pulled for a specific labelled scene, which are
+    # off-strip by construction (the overpass-window constant was wrong). A
+    # review set that read only the corpus would silently omit exactly the
+    # windows that have ground truth.
     index = ov.corpus_file_index()
+    if paths.ONC_LABELLED_WINDOW_DIR.is_dir():
+        extra = ov.corpus_file_index(paths.ONC_LABELLED_WINDOW_DIR)
+        index = sorted(index + extra, key=lambda row: row[0])
+        print(f"corpus {len(index) - len(extra):,} + labelled top-up {len(extra)} windows")
     coverages = [ov.window_coverage(o, index) for o in overpass_list]
     summary = ov.coverage_summary(coverages)
 
@@ -376,10 +497,24 @@ def main(argv=None):
     if args.max_windows:
         renderable = renderable[: args.max_windows]
 
+    # Four bands now. The first two are detection bands; the last two are
+    # DIAGNOSTIC and exist to explain a detection rather than to make one:
+    #   control -- 51-102 kHz, ~5 counts in every season 2020-2025. No small
+    #     vessel puts energy here, so a rise that appears in a detection band AND
+    #     here is the instrument, not the ocean. It is the only channel that can
+    #     falsify "the ambient changed" as an explanation.
+    #   rain -- 13-25 kHz, where rainfall on the sea surface peaks. With no
+    #     vessel labels the false-positive class is unconstrained and weather is
+    #     its largest member: rain is broadband and transient on exactly the
+    #     timescale the event rule accepts. A vessel peaks BELOW this band; rain
+    #     peaks IN it.
     bands = {
         "small_craft": config.FFT_B5_SMALL_CRAFT_BAND_HZ,
         "ship_proxy": config.FFT_B5_SHIP_PROXY_BAND_HZ,
+        "rain": config.FFT_RAIN_BAND_HZ,
+        "control": config.FFT_CONTROL_BAND_HZ,
     }
+    DETECTION_BANDS = ("small_craft", "ship_proxy")
 
     rows = []
     print(f"review set -> {out_dir}")
@@ -420,6 +555,8 @@ def main(argv=None):
                 "n_bins": series.n_bins_in_band,
                 "decidecade_resolvable": series.decidecade_resolvable,
             }
+            if band_name not in DETECTION_BANDS:
+                continue   # diagnostic band: explains a detection, never makes one
             for ev in found["events"]:
                 rows.append({
                     "scene_id": scene.scene_id,
@@ -441,7 +578,12 @@ def main(argv=None):
                     "reviewer_notes": "",
                 })
 
-        _plot_window(scene_dir, cov, levels, t_utc_s, freq_hz, band_results)
+        # Diagnostics, computed once per window from the bands above.
+        diag = _window_diagnostics(band_results, t0)
+        label = labels.get(scene.scene_id)
+
+        _plot_window(scene_dir, cov, levels, t_utc_s, freq_hz, band_results,
+                     diag=diag, label=label)
         extra = {}
         extra.update(_plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz))
         extra.update(_plot_band_detail(
@@ -449,7 +591,11 @@ def main(argv=None):
         extra.update(_plot_spectra(
             scene_dir, cov, levels, t_utc_s, freq_hz, band_results))
 
-        n_ev = sum(len(r["events"]) for r in band_results.values())
+        # DETECTION bands only, matching the figure and detections.csv. Counting
+        # the diagnostic bands here would report events that were never recorded
+        # as events anywhere else.
+        n_ev = sum(len(r["events"]) for name, r in band_results.items()
+                   if name in DETECTION_BANDS)
         if n_ev == 0:
             rows.append({
                 "scene_id": scene.scene_id, "overpass_id": scene.scene_id,
@@ -472,6 +618,18 @@ def main(argv=None):
             "corpus_files": [p.name for p in sorted(cov.paths)],
             "window_utc": [cov.window_start_utc.isoformat(),
                            cov.window_end_utc.isoformat()],
+            "optical_label": (
+                {"label": label.label, "n_vessels": label.n_vessels,
+                 "area_km2": label.area_km2,
+                 "implied_radius_km": round(label.implied_radius_km, 3),
+                 "reviewer": label.reviewer, "reviewed_utc": label.reviewed_utc,
+                 "notes": label.notes,
+                 "caveat": ("area_km2 is the area REVIEWED. 'no_vessels' means no "
+                            "vessel inside it, never 'acoustically silent' -- the "
+                            "hydrophone's range is unmeasured (goal G3) and likely "
+                            "larger.")}
+                if label is not None else None),
+            "diagnostics": diag,
             "bands": {k: {"band_hz": list(v["band_hz"]),
                           "baseline_counts": v["baseline"],
                           "threshold_counts": v["threshold"],

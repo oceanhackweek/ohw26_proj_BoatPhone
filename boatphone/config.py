@@ -788,6 +788,27 @@ FFT_CONTROL_BAND_HZ: tuple[float, float] = (51_250.0, 102_000.0)
 # useful.
 FFT_RAIN_BAND_HZ: tuple[float, float] = (13_000.0, 25_000.0)
 
+# The control band's expected AMBIENT level, in counts. Measured ~5 in every
+# season 2020-2025 (methods brief SS1.4) and confirmed at 5-6 on both windows
+# scored here so far.
+#
+# THE DISTINCTION THAT MAKES THIS USABLE, and getting it wrong flags real
+# detections as faults: it is the control band's BASELINE that is the instrument
+# reference, not its PEAK. A baseline far from this value means the instrument
+# or its gain moved. A PEAK excursion during a close vessel pass is ordinary
+# physics -- a boat at closest approach radiates broadband energy that reaches
+# well above 51 kHz -- and reading that as an instrument fault would veto the
+# strongest true detections in the corpus. The brief's "no small vessel puts
+# energy here" was measured on seasonal MEDIANS, and does not transfer to the
+# peak of a near-field pass.
+FFT_CONTROL_BAND_EXPECTED_COUNTS: float = 5.0
+
+# How far the control band's baseline may sit from the expected value before the
+# instrument is suspected. Deliberately loose: this is a "something changed"
+# alarm, not a measurement, and a tight bound on an uncalibrated integer scale
+# would fire on ordinary seasonal variation.
+FFT_CONTROL_BAND_DRIFT_TOLERANCE_COUNTS: float = 5.0
+
 # THE UNIT. The product's levels are small integers on an unknown, possibly
 # non-linear, monotone transform of power (references/ONC_communication.txt;
 # methods brief SS0a). The matched WAV<->product pair measures roughly 0.52
