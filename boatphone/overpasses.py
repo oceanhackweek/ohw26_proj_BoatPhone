@@ -31,6 +31,10 @@ from .config import (
 from .onc_client import parse_file_coverage
 from .paths import ONC_OVERPASS_CORPUS_DIR, REPO_ROOT
 
+# Non-product files that legitimately sit in a landing zone beside the products.
+# An explicit list, so an unparseable name that is NOT one of these still raises.
+_SIDECAR_SUFFIXES = frozenset({".sha256", ".json"})
+
 __all__ = [
     "Overpass",
     "WindowCoverage",
@@ -147,7 +151,12 @@ def corpus_file_index(corpus_dir=None) -> list[tuple[_dt.datetime, _dt.datetime,
     :func:`corpus_index_duplicates`, never discarded silently (CLAUDE.md
     invariant 5).
 
-    `.sha256` sidecars are skipped.
+    SIDECARS ARE SKIPPED BY AN EXPLICIT EXTENSION LIST, not by swallowing parse
+    failures. `.sha256` checksums and `.json` manifests live beside the products
+    in a landing zone, and neither is a product. Anything else whose name does
+    not parse still RAISES: a genuinely malformed product filename is a data
+    problem, and skipping it quietly would drop acoustic data from every
+    statistic with no error to notice (CLAUDE.md invariant 5).
     """
     if corpus_dir is None:
         corpus_dir = ONC_OVERPASS_CORPUS_DIR
@@ -160,7 +169,7 @@ def corpus_file_index(corpus_dir=None) -> list[tuple[_dt.datetime, _dt.datetime,
     by_start: dict = {}
     duplicates: list = []
     for path in corpus_dir.iterdir():
-        if path.suffix == ".sha256" or not path.is_file():
+        if path.suffix in _SIDECAR_SUFFIXES or not path.is_file():
             continue
         start_utc, end_utc = parse_file_coverage(path.name)
         existing = by_start.get(start_utc)

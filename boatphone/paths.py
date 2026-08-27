@@ -47,6 +47,19 @@ ONC_RAW_DIR: pathlib.Path = RAW_DIR / "onc"
 # ONC wire name, `disk_basename` is what is actually here.
 ONC_OVERPASS_CORPUS_DIR: pathlib.Path = ONC_RAW_DIR / "overpass_window_corpus"
 
+# Windows pulled for a SPECIFIC labelled scene, OUTSIDE the corpus's 09:15-11:45
+# local strip. A SEPARATE directory on purpose, and this is not tidiness.
+#
+# ONC_OVERPASS_CORPUS_DIR means one exact thing -- every in-season date, that
+# local time strip, nothing else -- and `PLANET_SAMPLING_CONDITIONALITY_STATEMENT`
+# is written against that definition. Dropping off-strip files into it would
+# silently falsify every population statistic computed over the directory and
+# every caption that cites the conditionality statement, with no error anywhere.
+# The scenes needing this pull are precisely the ones the wrong overpass-window
+# constant missed (18:17-19:49 UTC measured, 16:15-18:45 pulled), so they are
+# off-strip BY CONSTRUCTION and will keep arriving.
+ONC_LABELLED_WINDOW_DIR: pathlib.Path = ONC_RAW_DIR / "labelled_window_topup"
+
 # Source: docs/decisions/0005 -- the ONE tracked-fixture exception inside data/.
 # Small committed test fixtures only (see data/samples/README.md); negated out of
 # the .gitignore media rules so a deliberate fixture is actually committable.
@@ -96,6 +109,10 @@ _HOW_TO_OBTAIN: dict[pathlib.Path, str] = {
         "download the ONC/CIOOS Folger Deep ICLISTEN HF1266 sample into "
         f"'{SAMPLE_DIR}' (ONC Oceans 3.0, https://data.oceannetworks.ca)"
     ),
+    ONC_LABELLED_WINDOW_DIR: (
+        "produce it by running scripts/pull_labelled_windows.py for the scene(s) "
+        "whose optical label you hold; these are windows OUTSIDE the corpus strip"
+    ),
     ONC_OVERPASS_CORPUS_DIR: (
         "run `python3 scripts/pull_overpass_corpus.py` to pull the overpass-window "
         f"corpus into '{ONC_OVERPASS_CORPUS_DIR}' (2.5 h/day, in-season, "
@@ -123,6 +140,7 @@ _DEFAULT_HOW_TO_OBTAIN = (
 __all__ = [
     "REPO_ROOT", "DATA_DIR", "SAMPLE_DIR", "SAMPLE_DIR_NAME", "RAW_DIR", "ONC_RAW_DIR",
     "ONC_OVERPASS_CORPUS_DIR",
+    "ONC_LABELLED_WINDOW_DIR",
     "SAMPLES_DIR", "DERIVED_DIR", "INTERIM_DIR", "PROCESSED_DIR", "DOCS_DIR",
     "SCRIPTS_DIR", "EXTERNAL_DIR", "ONC_MODEL_DIR", "CHECKPOINT_DIR",
     "UPTIME_CSV_NAME", "DEPLOYMENTS_CSV_NAME",

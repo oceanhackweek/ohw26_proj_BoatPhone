@@ -755,3 +755,49 @@ PLANET_GATE2_SURVIVORS_RELPATH: str = (
 # 16:15-18:45 UTC -- covers only 13 of the 30 scenes fully, 5 partially, and 12
 # not at all. Anything reading the corpus as "the overpass window" is wrong.
 PLANET_MEASURED_OVERPASS_SPREAD_UTC: tuple[str, str] = ("18:17", "19:49")
+
+
+# --- Diagnostic bands (methods brief SS1.2; used by B5 and the population pass) ---
+
+# INSTRUMENT CONTROL BAND. Sits above the calibration ceiling and below the
+# anti-alias skirt, and measures ~5 counts in EVERY season 2020-2025 (methods
+# brief SS1.4, Figure 4) -- no small vessel puts meaningful energy here, so
+# whatever moves in it is the instrument, not the ocean.
+#
+# THE NULL IT PROVIDES, which nothing else in B5 supplies: if a level change
+# appears in an analysis band AND in this band together, it is a gain or
+# instrument change; if it appears only in the analysis band, it may be the
+# ocean. Report it beside every detection. It is the one channel that can
+# falsify "the ambient got louder" as an explanation.
+#
+# Note it sits ABOVE FFT_B5_CALIBRATED_CEILING_BIN (204) and below
+# FFT_B5_RELATIVE_CEILING_BIN (408), so it is admissible for RELATIVE work only
+# -- which is all any of this is (decision 0027).
+FFT_CONTROL_BAND_HZ: tuple[float, float] = (51_250.0, 102_000.0)
+
+# RAIN SIGNATURE BAND. Rainfall on the sea surface radiates a broad peak at
+# roughly 13-25 kHz, well above the 1-10 kHz cavitation peak of small craft.
+#
+# WHY THIS MATTERS HERE SPECIFICALLY: there are no vessel labels yet (decision
+# 0027), so the detector's false-positive class is unconstrained, and weather is
+# the largest member of it -- rain is broadband, transient on the right
+# timescale, and would satisfy the excess-over-ambient AND minimum-duration
+# rules that define an event. The ratio of energy in this band to the
+# small-craft band separates the two: a vessel peaks below it, rain peaks in it.
+# This is a DISCRIMINATOR, not a detector, and it does not need a label to be
+# useful.
+FFT_RAIN_BAND_HZ: tuple[float, float] = (13_000.0, 25_000.0)
+
+# THE UNIT. The product's levels are small integers on an unknown, possibly
+# non-linear, monotone transform of power (references/ONC_communication.txt;
+# methods brief SS0a). The matched WAV<->product pair measures roughly 0.52
+# COUNTS PER dB with r^2 ~ 0.55 and visible curvature, so:
+#
+#   * a level difference in this product is NOT a difference in decibels;
+#   * "+10" is about +20 dB physical, not +10 dB, and the factor is not fixed;
+#   * every threshold, axis label and caption must say COUNTS.
+#
+# Named here so no module invents a second word for it. The earlier
+# "product dB" wording overstated a physical quantity by roughly a factor of two
+# and is corrected wherever it appeared.
+FFT_LEVEL_UNIT: str = "product counts (uncalibrated; NOT decibels)"

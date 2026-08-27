@@ -279,16 +279,49 @@ def read_fft_gz(path, *,
     is_gzip = first_bytes == GZIP_MAGIC_BYTES
     opener = gzip.open if is_gzip else open
     with opener(path, "rt", encoding="ascii") as handle:
-        tokens = handle.read().split()
+        text = handle.read()
     expected = int(n_frames) * int(n_bins)
-    if len(tokens) != expected:
+
+    # Parsed with pandas' C tokenizer rather than `np.asarray(text.split())`.
+    # The ASCII-to-number conversion, NOT the gzip decode, is this reader's whole
+    # cost: measured 120 ms against 10 ms to decompress, so a full-corpus pass
+    # spends most of its life in `float()`. pandas' tokenizer does the same job
+    # in ~59 ms and returns bit-identical values (asserted by
+    # check_b5_12_fast_reader_matches_the_reference_parse).
+    #
+    # BOTH GUARDS BELOW STILL APPLY AND ARE THE REASON THIS IS SAFE. A file whose
+    # lines carry differing token counts is padded with NaN by any table parser;
+    # here that lands as either a wrong element count (caught by the length
+    # check) or a non-finite value (caught by the finite check). Neither is
+    # silently absorbed.
+    import io as _io
+    import pandas as _pd
+    try:
+        values = _pd.read_csv(
+            _io.StringIO(text), sep=r"\s+", header=None, dtype=float,
+            engine="c", na_filter=False,
+        ).to_numpy().ravel()
+    except (ValueError, _pd.errors.ParserError) as exc:
+        # The tokenizer's own message names neither the file nor what this
+        # reader expected ("could not convert string to float: ''" for a
+        # truncated payload). Re-raised with both, and chained so the original
+        # is still reachable -- a fast parser must not cost the caller a
+        # diagnosable error (CLAUDE.md invariant 5).
         raise ValueError(
-            f"{path.name}: holds {len(tokens)} values, expected exactly {expected} "
+            f"{path.name}: payload is not parseable as {expected} whitespace-"
+            f"separated numbers ({n_frames} frames x {n_bins} bins). Underlying "
+            f"parser error: {type(exc).__name__}: {exc}. Refusing to pad or "
+            "truncate to fit: a malformed product is a data problem, and "
+            "reshaping it to fit would hide it."
+        ) from exc
+    if values.size != expected:
+        raise ValueError(
+            f"{path.name}: holds {values.size} values, expected exactly {expected} "
             f"({n_frames} frames x {n_bins} bins). Refusing to truncate or pad: a "
             "product of the wrong length is a data problem, and reshaping it to fit "
             "would hide it (CLAUDE.md invariant 5)."
         )
-    levels_db = np.asarray(tokens, dtype=float).reshape(int(n_frames), int(n_bins))
+    levels_db = values.reshape(int(n_frames), int(n_bins))
     if not np.all(np.isfinite(levels_db)):
         raise ValueError(
             f"{path.name}: contains {int((~np.isfinite(levels_db)).sum())} non-finite "

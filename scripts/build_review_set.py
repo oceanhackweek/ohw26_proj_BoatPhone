@@ -26,7 +26,7 @@ reviewing it would be reviewing the algorithm. Audio requires a separate WAV
 pull from ONC (~115 MB per 5-minute file) for chosen windows.
 
 UNITS, stated at every boundary (decision 0002 SS4): levels are the product's own
-UNCALIBRATED dB-like scale, `level_product_db`, never dB re 1 uPa -- ONC states
+UNCALIBRATED dB-like scale, `level_counts`, never dB re 1 uPa -- ONC states
 the product is uncalibrated and undocumented-filtered
 (references/ONC_communication.txt, decision 0027). Times are absolute UTC.
 
@@ -122,7 +122,7 @@ def _plot_window(scene_dir, cov, levels, t_utc_s, freq_hz, band_results):
         t_min, freq_hz[lo_bin: top_bin + 1] / 1000.0,
         levels[:, lo_bin: top_bin + 1].T, shading="nearest", cmap="magma")
     cbar = fig.colorbar(mesh, ax=ax_spec, pad=0.01)
-    cbar.set_label("level (product dB, UNCALIBRATED)")
+    cbar.set_label("level (product COUNTS, uncalibrated)")
     ax_spec.set_ylabel("frequency (kHz)")
     ax_spec.set_yscale("log")
     ax_spec.set_ylim(freq_hz[lo_bin] / 1000.0, freq_hz[top_bin] / 1000.0)
@@ -154,7 +154,7 @@ def _plot_window(scene_dir, cov, levels, t_utc_s, freq_hz, band_results):
         ax.axvline(0.0, color="cyan", lw=1.6)
     ax_band.set_xlabel("minutes relative to scene acquisition   "
                        "(cyan line = the instant the satellite imaged)")
-    ax_band.set_ylabel("band level\n(product dB, UNCALIBRATED)")
+    ax_band.set_ylabel("band level\n(product COUNTS, uncalibrated)")
     ax_band.legend(loc="upper left", fontsize=8, framealpha=0.9)
     ax_band.grid(alpha=0.25)
 
@@ -162,7 +162,7 @@ def _plot_window(scene_dir, cov, levels, t_utc_s, freq_hz, band_results):
     verdict = f"{n_ev} candidate event(s)" if n_ev else "DETECTOR SILENT -- no event"
     fig.suptitle(
         f"{verdict}   |   dotted = ambient baseline, dashed = +"
-        f"{run_b5_gate.EVENT_EXCESS_THRESHOLD_DB:.0f} dB threshold, shaded = event "
+        f"{run_b5_gate.EVENT_EXCESS_THRESHOLD_COUNTS:.0f} counts threshold, shaded = event "
         f"(>= {run_b5_gate.EVENT_MIN_DURATION_S:.0f} s)   |   levels are RELATIVE, "
         "not dB re 1 uPa",
         y=0.985, fontsize=9.5)
@@ -178,7 +178,7 @@ def _plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz):
     top_bin = min(SPECTROGRAM_CEILING_BIN, levels.shape[1] - 1)
     f_khz = freq_hz[lo_bin: top_bin + 1] / 1000.0
 
-    excess, _ambient = features.ambient_subtracted_product_db(
+    excess, _ambient = features.ambient_subtracted_counts(
         levels, percentile=AMBIENT_PERCENTILE)
     normalised, usable = features.robust_normalised_excess(
         levels, percentile=AMBIENT_PERCENTILE)
@@ -191,7 +191,7 @@ def _plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz):
                          shading="nearest", cmap="inferno", vmin=0.0,
                          vmax=float(np.percentile(excess[:, lo_bin: top_bin + 1], 99.8)))
     fig.colorbar(m1, ax=ax_a, pad=0.01).set_label(
-        "excess over per-bin ambient (product dB)")
+        "excess over per-bin ambient (counts)")
     ax_a.set_title(
         f"AMBIENT-SUBTRACTED -- each frequency bin minus its own "
         f"{AMBIENT_PERCENTILE:.0f}th-percentile level across this window", fontsize=10)
@@ -245,19 +245,19 @@ def _plot_band_detail(scene_dir, cov, levels, t_utc_s, freq_hz, band_results):
         # are integer-quantised: differencing the raw trace gives quantisation
         # noise, and differencing a rolling median gives a differentiated
         # staircase -- impulses separated by exact zeros, which looks like
-        # structure and is not. See features.level_slope_db_per_min.
+        # structure and is not. See features.level_slope_counts_per_min.
         ax_dt.plot(res["t_min"],
-                   features.level_slope_db_per_min(
+                   features.level_slope_counts_per_min(
                        res["level"], SLOPE_SMOOTHING_SECONDS),
                    lw=1.3, color=line.get_color())
 
-    ax_lv.set_ylabel("band level\n(product dB, UNCALIBRATED)")
+    ax_lv.set_ylabel("band level\n(product COUNTS, uncalibrated)")
     ax_lv.legend(loc="upper left", fontsize=8, framealpha=0.9)
     ax_lv.set_title(f"faint = raw 0.25 s frames, bold = {SMOOTHING_SECONDS:.0f} s rolling "
                     "median (DISPLAY ONLY -- the detector runs on the raw trace)",
                     fontsize=10)
     ax_dt.axhline(0.0, color="grey", lw=0.8)
-    ax_dt.set_ylabel("rate of change\n(dB per minute)")
+    ax_dt.set_ylabel("rate of change\n(counts per minute)")
     ax_dt.set_title(
         f"slope from a {SLOPE_SMOOTHING_SECONDS:.0f} s local quadratic fit: positive then negative is an "
         "approach and departure, and the zero crossing is closest approach", fontsize=10)
@@ -314,13 +314,13 @@ def _plot_spectra(scene_dir, cov, levels, t_utc_s, freq_hz, band_results):
     fig, (ax_p, ax_d) = plt.subplots(2, 1, figsize=(12, 9),
                                      gridspec_kw={"hspace": 0.28})
 
-    spectra = features.percentile_spectra_product_db(levels, PERCENTILE_SPECTRA)
+    spectra = features.percentile_spectra_counts(levels, PERCENTILE_SPECTRA)
     for pct in sorted(spectra):
         ax_p.plot(f_khz, spectra[pct][sl], lw=1.1, label=f"{pct}th percentile")
     ax_p.set_title("PERCENTILE SPECTRA -- the distribution of level at each frequency. "
                    "A wide gap between low and high percentiles means an intermittent "
                    "source, which is what a passing vessel is.", fontsize=10, wrap=True)
-    ax_p.set_ylabel("level (product dB, UNCALIBRATED)")
+    ax_p.set_ylabel("level (product COUNTS, uncalibrated)")
 
     if in_event.any() and (~in_event).any():
         ev_spec = np.median(levels[in_event], axis=0)
@@ -335,7 +335,7 @@ def _plot_spectra(scene_dir, cov, levels, t_utc_s, freq_hz, band_results):
                        "craft radiate broadband cavitation peaking around 1-10 kHz; a "
                        "flat or low-frequency-only lift is more likely weather or a "
                        "distant ship.", fontsize=10, wrap=True)
-        ax_d.set_ylabel("event - ambient (product dB)")
+        ax_d.set_ylabel("event - ambient (counts)")
     else:
         reason = ("no events detected in this window"
                   if not in_event.any() else "every frame is inside an event")
@@ -407,13 +407,13 @@ def main(argv=None):
                                   fs_hz=config.FFT_PRODUCT_FS_HZ,
                                   start_utc=cov.window_start_utc, path=cov.paths[0]),
                 band_hz)
-            found = run_b5_gate.find_events(series.t_utc_s, series.level_product_db)
+            found = run_b5_gate.find_events(series.t_utc_s, series.level_counts)
             band_results[band_name] = {
                 "band_hz": band_hz,
                 "t_min": (series.t_utc_s - t0) / 60.0,
-                "level": series.level_product_db,
-                "baseline": found["baseline_product_db"],
-                "threshold": found["threshold_db"],
+                "level": series.level_counts,
+                "baseline": found["baseline_counts"],
+                "threshold": found["threshold_counts"],
                 "events": found["events"],
                 "censoring": series.censoring,
                 "fraction_at_floor": series.fraction_in_band_at_floor,
@@ -433,8 +433,8 @@ def main(argv=None):
                     "minutes_from_acquisition": round(
                         (ev["t_peak_utc_s"] - t0) / 60.0, 3),
                     "duration_s": round(ev["duration_s"], 2),
-                    "peak_excess_product_db": round(ev["peak_excess_product_db"], 2),
-                    "baseline_product_db": round(found["baseline_product_db"], 2),
+                    "peak_excess_counts": round(ev["peak_excess_counts"], 2),
+                    "baseline_counts": round(found["baseline_counts"], 2),
                     "fraction_in_band_at_floor": round(
                         series.fraction_in_band_at_floor, 5),
                     "vessel_in_scene": "",      # <- filled by the human reviewer
@@ -456,8 +456,8 @@ def main(argv=None):
                 "acquired_utc": scene.acquired_utc.isoformat(), "coverage": tag,
                 "band": "both", "band_lo_hz": "", "band_hi_hz": "",
                 "event_peak_utc": "", "minutes_from_acquisition": "",
-                "duration_s": "", "peak_excess_product_db": "",
-                "baseline_product_db": "", "fraction_in_band_at_floor": "",
+                "duration_s": "", "peak_excess_counts": "",
+                "baseline_counts": "", "fraction_in_band_at_floor": "",
                 "vessel_in_scene": "", "reviewer_notes": "DETECTOR SILENT",
             })
 
@@ -473,15 +473,15 @@ def main(argv=None):
             "window_utc": [cov.window_start_utc.isoformat(),
                            cov.window_end_utc.isoformat()],
             "bands": {k: {"band_hz": list(v["band_hz"]),
-                          "baseline_product_db": v["baseline"],
-                          "threshold_db": v["threshold"],
+                          "baseline_counts": v["baseline"],
+                          "threshold_counts": v["threshold"],
                           "n_events": len(v["events"]),
                           "n_bins_in_band": v["n_bins"],
                           "fraction_in_band_at_floor": v["fraction_at_floor"],
                           "decidecade_resolvable": v["decidecade_resolvable"],
                           "censoring": v["censoring"]}
                       for k, v in band_results.items()},
-            "level_units": "product dB, UNCALIBRATED -- not dB re 1 uPa (decision 0027)",
+            "level_units": "product COUNTS, uncalibrated -- not dB re 1 uPa (decision 0027)",
             "display_processing": dict(extra, ambient_percentile=AMBIENT_PERCENTILE),
         }, indent=1, default=str), encoding="utf-8")
         print(f"  {scene.scene_id}  {tag:<7} {cov.n_files} files  {n_ev} event(s)")
@@ -493,7 +493,7 @@ def main(argv=None):
             "acquired_utc": cov.overpass.acquired_utc.isoformat(),
             "coverage": "NONE", "band": "", "band_lo_hz": "", "band_hi_hz": "",
             "event_peak_utc": "", "minutes_from_acquisition": "", "duration_s": "",
-            "peak_excess_product_db": "", "baseline_product_db": "",
+            "peak_excess_counts": "", "baseline_counts": "",
             "fraction_in_band_at_floor": "", "vessel_in_scene": "",
             "reviewer_notes": "NO ACOUSTIC DATA -- outside the pulled overpass window",
         })
@@ -513,13 +513,13 @@ def main(argv=None):
         "scene_list": config.PLANET_GATE2_SURVIVORS_RELPATH,
         "coverage": {k: v for k, v in summary.items() if not k.endswith("_ids")},
         "bands_hz": {k: list(v) for k, v in bands.items()},
-        "event_threshold_db": run_b5_gate.EVENT_EXCESS_THRESHOLD_DB,
+        "event_threshold_db": run_b5_gate.EVENT_EXCESS_THRESHOLD_COUNTS,
         "event_min_duration_s": run_b5_gate.EVENT_MIN_DURATION_S,
         "band_level_statistic": config.FFT_BAND_LEVEL_STATISTIC,
         "axis_convention": config.FFT_AXIS_CONVENTION,
         "axis_offset_uncertainty_hz": config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ,
         "spectrogram_ceiling_bin": SPECTROGRAM_CEILING_BIN,
-        "level_units": "product dB, UNCALIBRATED -- not dB re 1 uPa",
+        "level_units": "product COUNTS, uncalibrated -- not dB re 1 uPa",
         "sampling_conditionality": config.PLANET_SAMPLING_CONDITIONALITY_STATEMENT,
         "no_labels_caveat": (
             "No PlanetScope imagery has been ordered and no optical detections exist. "
@@ -543,7 +543,7 @@ for that window and an empty `planet_scene/` slot for the image.
   instrument response, not ocean.
 * **Bottom panel** -- band level against time, which is what the detector actually
   sees. Dotted = ambient baseline (10th percentile), dashed = the
-  +{run_b5_gate.EVENT_EXCESS_THRESHOLD_DB:.0f} dB threshold, shading = a detected
+  +{run_b5_gate.EVENT_EXCESS_THRESHOLD_COUNTS:.0f} counts threshold, shading = a detected
   event (a run of at least {run_b5_gate.EVENT_MIN_DURATION_S:.0f} s above it).
 * **Cyan vertical line** -- the instant the satellite imaged. A vessel visible in the
   scene should sit near this line; acoustic energy well away from it is a different

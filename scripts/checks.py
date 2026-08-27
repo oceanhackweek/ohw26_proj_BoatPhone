@@ -9441,9 +9441,9 @@ def check_b5_3_synthetic_broadband_event_is_recovered_at_its_level_time_and_dura
     series = features.band_level_series(product, band)
     excess = features.band_excess(series)
 
-    assert abs(excess.peak_excess_product_db - (loud - quiet)) < 1e-9, (
+    assert abs(excess.peak_excess_counts - (loud - quiet)) < 1e-9, (
         f"injected {loud - quiet} dB of excess, recovered "
-        f"{excess.peak_excess_product_db} -- the band reduction is not linear in the "
+        f"{excess.peak_excess_counts} -- the band reduction is not linear in the "
         "level it is given"
     )
     t_lo = product.t_utc_s[lo_frame]
@@ -9481,9 +9481,9 @@ def check_b5_4_energy_outside_the_band_is_not_detected():
 
     series = features.band_level_series(_b5_product(surface), band)
     excess = features.band_excess(series)
-    assert abs(excess.peak_excess_product_db) < 1e-9, (
+    assert abs(excess.peak_excess_counts) < 1e-9, (
         f"{loud - quiet} dB injected at 20-30 kHz produced "
-        f"{excess.peak_excess_product_db} dB of excess in the {band} Hz band -- the band "
+        f"{excess.peak_excess_counts} dB of excess in the {band} Hz band -- the band "
         "limit is not actually restricting anything"
     )
 
@@ -9518,13 +9518,13 @@ def check_b5_5_frame_shuffle_null_is_rejected_for_a_synthetic_event():
 
     product = _b5_product(surface)
     series = features.band_level_series(product, band)
-    found = run_b5_gate.find_events(series.t_utc_s, series.level_product_db)
+    found = run_b5_gate.find_events(series.t_utc_s, series.level_counts)
     assert len(found["events"]) == 1, (
         f"expected exactly 1 synthetic event, found {len(found['events'])} -- the null "
         "below would pass vacuously if the detector found nothing to begin with"
     )
 
-    nulled = run_b5_gate.frame_shuffle_null(series.t_utc_s, series.level_product_db)
+    nulled = run_b5_gate.frame_shuffle_null(series.t_utc_s, series.level_counts)
     assert len(nulled["events"]) == 0, (
         f"the frame-shuffled null still yields {len(nulled['events'])} event(s). The "
         "shuffle preserves the level distribution exactly and destroys only time order, "
@@ -9567,7 +9567,7 @@ def check_b5_6_time_shifted_window_does_not_carry_the_event():
 
     quiet_slice = slice(700, 1200)   # entirely after the injection
     nulled = run_b5_gate.find_events(
-        series.t_utc_s[quiet_slice], series.level_product_db[quiet_slice])
+        series.t_utc_s[quiet_slice], series.level_counts[quiet_slice])
     assert len(nulled["events"]) == 0, (
         f"a stretch of surface containing no injection yielded {len(nulled['events'])} "
         "event(s) -- the detector is firing on something other than the signal"
@@ -9597,8 +9597,8 @@ def check_b5_7_single_bin_outlier_cannot_move_the_band_level():
         f"fixture error: only {series.n_bins_in_band} bin(s) in band, a median over "
         "so few bins would legitimately move"
     )
-    assert abs(excess.peak_excess_product_db) < 1e-9, (
-        f"a single 100 dB bin moved the band level by {excess.peak_excess_product_db} dB. "
+    assert abs(excess.peak_excess_counts) < 1e-9, (
+        f"a single 100 dB bin moved the band level by {excess.peak_excess_counts} dB. "
         f"The statistic is documented as {cfg.FFT_BAND_LEVEL_STATISTIC}; if it has become "
         "a mean, the ~38 kHz echosounder and any stuck bin now read as vessel passes"
     )
@@ -9728,6 +9728,111 @@ def check_b5_10_corpus_index_deduplicates_windows_present_in_both_containers():
             "Discarding 90 files silently is the same class of error as counting "
             "them twice"
         )
+
+
+
+def check_b5_11_population_histogram_vectorisation_matches_the_per_bin_loop():
+    """The flattened-index histogram must equal the per-bin loop it replaced.
+
+    `scripts/build_population_set.py` accumulates an EXACT per-bin integer
+    histogram over the whole corpus, and every percentile, ambient curve and SPD
+    panel downstream is read from it. The obvious implementation is one
+    `bincount` per bin; the fast one flattens `(bin, level)` into a single index.
+    An off-by-one in that flattening would shift counts between adjacent bins --
+    a corruption that leaves the totals right and every plot plausible.
+    """
+    import numpy as np
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    scripts_dir = REPO_ROOT / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        import build_population_set as pop
+    except ImportError as exc:
+        raise SkipCheck(f"build_population_set not importable: {exc}") from exc
+
+    rng = np.random.default_rng(11)
+    n_bins, n_frames, axis_max = 64, 300, pop.LEVEL_AXIS_MAX
+    clipped = rng.integers(0, axis_max, (n_frames, n_bins))
+
+    loop = np.zeros((n_bins, axis_max), dtype=np.int64)
+    for b in range(n_bins):
+        loop[b] = np.bincount(clipped[:, b], minlength=axis_max)
+
+    bin_index = np.repeat(np.arange(n_bins, dtype=np.int64), clipped.shape[0])
+    flat = bin_index * axis_max + clipped.T.reshape(-1)
+    fast = np.bincount(flat, minlength=n_bins * axis_max).reshape(n_bins, axis_max)
+
+    assert np.array_equal(loop, fast), (
+        "the vectorised histogram does not match the per-bin loop. Differing "
+        f"cells: {int((loop != fast).sum())}. Every percentile and ambient curve "
+        "in the population set is read from this array"
+    )
+    assert int(fast.sum()) == n_frames * n_bins, (
+        f"histogram holds {int(fast.sum())} counts for {n_frames * n_bins} cells "
+        "-- values are being dropped or double-counted"
+    )
+
+
+def check_b5_12_fast_reader_matches_the_reference_parse():
+    """`read_fft_gz` must return exactly what a plain split-and-convert returns.
+
+    The reader parses with pandas' C tokenizer because the ASCII-to-number
+    conversion, not the gzip decode, is its whole cost (120 ms against 10 ms).
+    That is a real speedup and a real risk: a table parser handles ragged rows by
+    padding, where the reference parse simply yields a different count.
+
+    Pins bit-equality against the reference on a synthetic product whose values
+    are known, and pins that a RAGGED file still raises rather than being padded
+    into a plausible-looking array.
+    """
+    import gzip as _gzip
+    import numpy as np
+    _cfg, _features, fft_io, _ov = _b5_mods()
+
+    rng = np.random.default_rng(12)
+    n_frames, n_bins = _cfg.FFT_N_FRAMES, _cfg.FFT_N_BINS
+    values = rng.integers(0, 113, (n_frames, n_bins))
+    text = "\n".join(" ".join(str(int(v)) for v in row) for row in values)
+    name = "ICLISTENHF1266_20250701T161505.000Z.fft.gz"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp) / name
+        with _gzip.open(path, "wt", encoding="ascii") as handle:
+            handle.write(text)
+        got = fft_io.read_fft_gz(path).levels_db
+        reference = np.asarray(text.split(), dtype=float).reshape(n_frames, n_bins)
+        assert np.array_equal(got, reference), (
+            f"fast reader differs from the reference parse in "
+            f"{int((got != reference).sum())} cell(s)"
+        )
+        assert np.array_equal(got, values.astype(float)), (
+            "fast reader does not return the values that were written"
+        )
+
+        # A ragged file must RAISE, not be padded into the right shape.
+        ragged = pathlib.Path(tmp) / "ICLISTENHF1266_20250701T162005.000Z.fft.gz"
+        with _gzip.open(ragged, "wt", encoding="ascii") as handle:
+            handle.write(text[: len(text) // 2])
+        try:
+            fft_io.read_fft_gz(ragged)
+        except ValueError as exc:
+            message = str(exc)
+            assert ragged.name in message, (
+                f"a truncated product raised without naming the file: {message}")
+            assert ("expected exactly" in message
+                    or "not parseable as" in message), (
+                "a truncated product raised, but with a message that states "
+                f"neither the expected count nor that the payload is malformed: "
+                f"{message}. A fast parser must not cost the caller a "
+                "diagnosable error")
+        else:
+            raise AssertionError(
+                "a truncated product did not raise. A table parser pads ragged "
+                "rows, and a padded array of the right shape is exactly the "
+                "silent corruption the length check exists to prevent"
+            )
 
 
 CHECKS = [
@@ -9915,6 +10020,8 @@ CHECKS = [
     ("B5 overpass loader refuses a timestamp with no UTC offset", check_b5_8_overpass_loader_refuses_a_timestamp_with_no_utc_offset),
     ("B5 window coverage counts overlap, not start containment", check_b5_9_window_coverage_counts_overlap_not_start_containment),
     ("B5 corpus index deduplicates windows present in both containers", check_b5_10_corpus_index_deduplicates_windows_present_in_both_containers),
+    ("B5 population histogram vectorisation matches the per-bin loop", check_b5_11_population_histogram_vectorisation_matches_the_per_bin_loop),
+    ("B5 fast reader matches the reference parse", check_b5_12_fast_reader_matches_the_reference_parse),
 ]
 
 

@@ -67,7 +67,7 @@ EVENT_MIN_DURATION_S = 20.0
 # product's own dB-like units. Chosen ABOVE the frame-to-frame spread of quiet
 # ambient, not tuned on any label -- there are no labels to tune on, and
 # decision 0015 forbids tuning thresholds more than once on the overpass set.
-EVENT_EXCESS_THRESHOLD_DB = 10.0
+EVENT_EXCESS_THRESHOLD_COUNTS = 10.0
 
 
 def _frames_per_event_min(frame_seconds: float) -> int:
@@ -89,22 +89,22 @@ def concat_window(paths, band_hz):
     if not series:
         raise ValueError("no files in window")
     t = np.concatenate([s.t_utc_s for s in series])
-    level = np.concatenate([s.level_product_db for s in series])
+    level = np.concatenate([s.level_counts for s in series])
     order = np.argsort(t)
     n_at_floor = sum(s.censoring["n_at_floor"] for s in series)
     n_cells = sum(s.censoring["n_cells"] for s in series)
     return {
         "t_utc_s": t[order],
-        "level_product_db": level[order],
+        "level_counts": level[order],
         "n_bins_in_band": series[0].n_bins_in_band,
         "fraction_in_band_at_floor": n_at_floor / n_cells if n_cells else float("nan"),
-        "max_cell_level": max(float(np.max(s.level_product_db)) for s in series),
+        "max_cell_level": max(float(np.max(s.level_counts)) for s in series),
         "decidecade_resolvable": series[0].decidecade_resolvable,
     }
 
 
-def find_events(t_utc_s, level_product_db, *, frame_seconds=None,
-                threshold_db=EVENT_EXCESS_THRESHOLD_DB):
+def find_events(t_utc_s, level_counts, *, frame_seconds=None,
+                threshold_counts=EVENT_EXCESS_THRESHOLD_COUNTS):
     """Contiguous runs of excess-over-ambient lasting at least the minimum duration.
 
     The DURATION constraint is the whole point (acoustics_plan_v2 SS5 B5:
@@ -115,9 +115,9 @@ def find_events(t_utc_s, level_product_db, *, frame_seconds=None,
     """
     if frame_seconds is None:
         frame_seconds = config.FFT_FRAME_SECONDS
-    baseline = features.ambient_baseline_product_db(level_product_db)
-    excess = np.asarray(level_product_db, dtype=float) - baseline
-    hot = excess >= threshold_db
+    baseline = features.ambient_baseline_counts(level_counts)
+    excess = np.asarray(level_counts, dtype=float) - baseline
+    hot = excess >= threshold_counts
     min_frames = _frames_per_event_min(frame_seconds)
 
     events = []
@@ -140,11 +140,11 @@ def find_events(t_utc_s, level_product_db, *, frame_seconds=None,
             "t_start_utc_s": float(t_utc_s[lo]),
             "t_peak_utc_s": float(t_utc_s[lo + peak]),
             "duration_s": float((hi - lo) * frame_seconds),
-            "peak_excess_product_db": float(seg[peak]),
+            "peak_excess_counts": float(seg[peak]),
         })
-    return {"baseline_product_db": float(baseline), "events": out,
-            "peak_excess_product_db": float(np.max(excess)),
-            "threshold_db": float(threshold_db),
+    return {"baseline_counts": float(baseline), "events": out,
+            "peak_excess_counts": float(np.max(excess)),
+            "threshold_counts": float(threshold_counts),
             "min_duration_s": EVENT_MIN_DURATION_S}
 
 
@@ -186,7 +186,7 @@ def synthetic_tone_test(band_hz):
             "tone_freq_hz": float(freq_hz[tone_bin]),
             "tone_frames": [tone_lo, tone_hi],
             "n_events": len(found["events"]),
-            "peak_excess_product_db": found["peak_excess_product_db"],
+            "peak_excess_counts": found["peak_excess_counts"],
             "t_peak_utc_s": found["events"][0]["t_peak_utc_s"] if found["events"] else None,
         }
 
@@ -213,7 +213,7 @@ def synthetic_tone_test(band_hz):
     )
     results["broadband_in_band"] = {
         "n_events": len(found["events"]),
-        "peak_excess_product_db": found["peak_excess_product_db"],
+        "peak_excess_counts": found["peak_excess_counts"],
         "expected_excess_product_db": loud - quiet,
         "peak_time_inside_injection": ok_time,
         "duration_s": found["events"][0]["duration_s"] if found["events"] else None,
@@ -234,7 +234,7 @@ def synthetic_tone_test(band_hz):
 
 # --- Test D: nulls ---------------------------------------------------------
 
-def frame_shuffle_null(t_utc_s, level_product_db, *, seed=0):
+def frame_shuffle_null(t_utc_s, level_counts, *, seed=0):
     """Shuffle frames in time. Event STRUCTURE must collapse; level stats must not.
 
     The sharpest available null for "is this a pass or is it processing?"
@@ -243,7 +243,7 @@ def frame_shuffle_null(t_utc_s, level_product_db, *, seed=0):
     structure. A CPA event cannot survive; a mis-scaled axis or a stuck bin can.
     """
     rng = np.random.default_rng(seed)
-    shuffled = np.asarray(level_product_db, dtype=float).copy()
+    shuffled = np.asarray(level_counts, dtype=float).copy()
     rng.shuffle(shuffled)
     return find_events(t_utc_s, shuffled)
 
@@ -293,8 +293,8 @@ def main(argv=None):
               f"{'floor%':>7} {'shufEv':>7} {'shiftEv':>8}")
         for cov in full:
             w = concat_window(cov.paths, band_hz)
-            found = find_events(w["t_utc_s"], w["level_product_db"])
-            shuffled = frame_shuffle_null(w["t_utc_s"], w["level_product_db"])
+            found = find_events(w["t_utc_s"], w["level_counts"])
+            shuffled = frame_shuffle_null(w["t_utc_s"], w["level_counts"])
 
             # Time-shift null: score a REAL window an hour away on the same date.
             shifted = _dt.timedelta(hours=args.shift_hours)
@@ -306,7 +306,7 @@ def main(argv=None):
             shift_cov = ov.window_coverage(shifted_op, index)
             if shift_cov.n_files:
                 sw = concat_window(shift_cov.paths, band_hz)
-                shift_found = find_events(sw["t_utc_s"], sw["level_product_db"])
+                shift_found = find_events(sw["t_utc_s"], sw["level_counts"])
                 shift_n = len(shift_found["events"])
             else:
                 shift_found, shift_n = None, None
@@ -324,8 +324,8 @@ def main(argv=None):
                 "null_time_shift_hours": args.shift_hours,
                 "null_time_shift": shift_found,
             })
-            print(f"{cov.overpass.scene_id:<26} {found['baseline_product_db']:6.1f} "
-                  f"{found['peak_excess_product_db']:7.1f} {len(found['events']):6d} "
+            print(f"{cov.overpass.scene_id:<26} {found['baseline_counts']:6.1f} "
+                  f"{found['peak_excess_counts']:7.1f} {len(found['events']):6d} "
                   f"{longest:8.1f} {w['fraction_in_band_at_floor']*100:6.2f}% "
                   f"{len(shuffled['events']):7d} "
                   f"{'n/a' if shift_n is None else shift_n:>8}")
@@ -356,7 +356,7 @@ def main(argv=None):
     bb = tone["broadband_in_band"]
     print(f"  bins in band                : {tone['n_bins_in_band']}")
     print(f"  broadband in-band  events   : {bb['n_events']} "
-          f"(peak {bb['peak_excess_product_db']:.1f} dB, expected "
+          f"(peak {bb['peak_excess_counts']:.1f} counts, expected "
           f"{bb['expected_excess_product_db']:.1f})")
     print(f"  peak lands inside injection : {bb['peak_time_inside_injection']}")
     print(f"  duration {bb['duration_s']} s, expected {bb['expected_duration_s']} s")

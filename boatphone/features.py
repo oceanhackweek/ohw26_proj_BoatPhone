@@ -14,9 +14,11 @@ filtering applied that they cannot document. The 256 kHz sensitivity curve they
 can supply is explicitly "not applicable to those files". So:
 
 * no function here returns, or can be made to return, dB re 1 uPa;
-* the unit is the product's own dB-like integer scale, named
-  ``level_product_db`` at every boundary, never ``level_db`` and never
-  ``level_db_re_1upa`` (decision 0002 SS4);
+* the unit is ``config.FFT_LEVEL_UNIT`` -- the product's own integer COUNT
+  scale, named ``level_counts`` at every boundary, never ``level_db`` and never
+  ``level_db_re_1upa`` (decision 0002 SS4). Counts are not decibels: the matched
+  WAV<->product pair measures ~0.52 counts/dB with visible curvature, so a
+  10-count excess is roughly 20 dB and the factor is not fixed;
 * two levels are comparable only if computed by the same function over the same
   band -- carried explicitly on :class:`BandLevelSeries` so it is visible rather
 than assumed.
@@ -45,20 +47,20 @@ from .fft_io import band_limit_product, censoring_report
 
 __all__ = [
     "BandLevelSeries",
-    "per_bin_ambient_product_db",
-    "ambient_subtracted_product_db",
+    "per_bin_ambient_counts",
+    "ambient_subtracted_counts",
     "robust_normalised_excess",
     "rolling_median",
-    "level_slope_db_per_min",
+    "level_slope_counts_per_min",
     "spectral_centroid_hz",
-    "percentile_spectra_product_db",
+    "percentile_spectra_counts",
     "BandExcess",
     "UnrepresentableBandError",
     "relative_ceiling_hz",
     "assert_band_representable",
     "band_level_series",
     "is_decidecade_resolvable",
-    "ambient_baseline_product_db",
+    "ambient_baseline_counts",
     "band_excess",
 ]
 
@@ -148,7 +150,7 @@ class BandLevelSeries:
     ----------
     t_utc_s : ndarray, shape (n_frames,)
         Frame start times, ABSOLUTE UTC epoch seconds (decision 0002).
-    level_product_db : ndarray, shape (n_frames,)
+    level_counts : ndarray, shape (n_frames,)
         Band level per frame in the PRODUCT'S OWN uncalibrated dB-like scale.
         Not dB re 1 uPa and not convertible to it.
     band_hz : (float, float)
@@ -177,7 +179,7 @@ class BandLevelSeries:
     """
 
     t_utc_s: np.ndarray
-    level_product_db: np.ndarray
+    level_counts: np.ndarray
     band_hz: tuple[float, float]
     n_bins_in_band: int
     statistic: str
@@ -236,7 +238,7 @@ def band_level_series(product, band_hz) -> BandLevelSeries:
     n_bins_in_band = int(in_band.sum())
 
     band_cells = levels[:, in_band]
-    level_product_db = np.median(band_cells, axis=1)
+    level_counts = np.median(band_cells, axis=1)
 
     at_floor = int(np.count_nonzero(band_cells <= FFT_LEVEL_FLOOR))
     fraction_at_floor = at_floor / band_cells.size if band_cells.size else float("nan")
@@ -244,7 +246,7 @@ def band_level_series(product, band_hz) -> BandLevelSeries:
     centre_hz = 0.5 * (float(band_hz[0]) + float(band_hz[1]))
     return BandLevelSeries(
         t_utc_s=np.asarray(product.t_utc_s, dtype=float),
-        level_product_db=level_product_db,
+        level_counts=level_counts,
         band_hz=(float(band_hz[0]), float(band_hz[1])),
         n_bins_in_band=n_bins_in_band,
         statistic=FFT_BAND_LEVEL_STATISTIC,
@@ -254,7 +256,7 @@ def band_level_series(product, band_hz) -> BandLevelSeries:
     )
 
 
-def ambient_baseline_product_db(level_product_db, percentile: float = 10.0) -> float:
+def ambient_baseline_counts(level_counts, percentile: float = 10.0) -> float:
     """A low percentile of a band-level series: the ambient reference.
 
     A PERCENTILE, not a mean or a minimum. The mean is pulled up by the very
@@ -272,29 +274,29 @@ def ambient_baseline_product_db(level_product_db, percentile: float = 10.0) -> f
     quiet window look louder. Check it with
     ``BandLevelSeries.fraction_in_band_at_floor``.
     """
-    level_product_db = np.asarray(level_product_db, dtype=float)
-    if level_product_db.size == 0:
+    level_counts = np.asarray(level_counts, dtype=float)
+    if level_counts.size == 0:
         raise ValueError("cannot take an ambient baseline of an empty series")
     if not 0.0 < float(percentile) < 100.0:
         raise ValueError(f"percentile must be in (0, 100), got {percentile}")
-    return float(np.percentile(level_product_db, float(percentile)))
+    return float(np.percentile(level_counts, float(percentile)))
 
 
 @dataclasses.dataclass(frozen=True)
 class BandExcess:
-    """Excess of a band level over its own ambient baseline, in product dB.
+    """Excess of a band level over its own ambient baseline, in product counts.
 
-    ``peak_excess_product_db`` is the detection statistic; ``t_peak_utc_s`` is
+    ``peak_excess_counts`` is the detection statistic; ``t_peak_utc_s`` is
     where in the window it happened, which is what makes a time-shift null
     meaningful (a real pass moves when the labels move; a processing artefact
     does not).
     """
 
     band_hz: tuple[float, float]
-    baseline_product_db: float
+    baseline_counts: float
     baseline_percentile: float
-    excess_product_db: np.ndarray
-    peak_excess_product_db: float
+    excess_counts: np.ndarray
+    peak_excess_counts: float
     t_peak_utc_s: float
     fraction_in_band_at_floor: float
     n_bins_in_band: int
@@ -302,26 +304,26 @@ class BandExcess:
 
 
 def band_excess(series: BandLevelSeries, *, percentile: float = 10.0,
-                baseline_product_db: float | None = None) -> BandExcess:
+                baseline_counts: float | None = None) -> BandExcess:
     """Excess-over-ambient for one band-level series.
 
-    ``baseline_product_db`` may be supplied to score a window against an
+    ``baseline_counts`` may be supplied to score a window against an
     ambient estimated ELSEWHERE -- from matched-hour negative windows, say.
     That is the honest way to score a window that may be entirely occupied by a
     pass: taking its baseline from itself would subtract the signal off.
     """
-    if baseline_product_db is None:
-        baseline_product_db = ambient_baseline_product_db(
-            series.level_product_db, percentile=percentile
+    if baseline_counts is None:
+        baseline_counts = ambient_baseline_counts(
+            series.level_counts, percentile=percentile
         )
-    excess = np.asarray(series.level_product_db, dtype=float) - float(baseline_product_db)
+    excess = np.asarray(series.level_counts, dtype=float) - float(baseline_counts)
     peak_idx = int(np.argmax(excess))
     return BandExcess(
         band_hz=series.band_hz,
-        baseline_product_db=float(baseline_product_db),
+        baseline_counts=float(baseline_counts),
         baseline_percentile=float(percentile),
-        excess_product_db=excess,
-        peak_excess_product_db=float(excess[peak_idx]),
+        excess_counts=excess,
+        peak_excess_counts=float(excess[peak_idx]),
         t_peak_utc_s=float(series.t_utc_s[peak_idx]),
         fraction_in_band_at_floor=series.fraction_in_band_at_floor,
         n_bins_in_band=series.n_bins_in_band,
@@ -340,7 +342,7 @@ def band_excess(series: BandLevelSeries, *, percentile: float = 10.0,
 # re-validated against the nulls in decision 0027, not inherited.
 
 
-def per_bin_ambient_product_db(levels_db, percentile: float = 10.0):
+def per_bin_ambient_counts(levels_db, percentile: float = 10.0):
     """Per-BIN ambient level across a window: the background to subtract.
 
     One value per frequency bin, taken as a low percentile OVER TIME. Per-bin
@@ -369,7 +371,7 @@ def per_bin_ambient_product_db(levels_db, percentile: float = 10.0):
     return np.percentile(levels_db, float(percentile), axis=0)
 
 
-def ambient_subtracted_product_db(levels_db, percentile: float = 10.0):
+def ambient_subtracted_counts(levels_db, percentile: float = 10.0):
     """Excess over the per-bin ambient, in the product's own dB-like units.
 
     Returns ``(excess, ambient)``. Excess is NOT clipped at zero: bins quieter
@@ -383,7 +385,7 @@ def ambient_subtracted_product_db(levels_db, percentile: float = 10.0):
     more; it is comparable between bins of this window and to nothing outside it.
     """
     levels_db = np.asarray(levels_db, dtype=float)
-    ambient = per_bin_ambient_product_db(levels_db, percentile=percentile)
+    ambient = per_bin_ambient_counts(levels_db, percentile=percentile)
     return levels_db - ambient[np.newaxis, :], ambient
 
 
@@ -407,7 +409,7 @@ def robust_normalised_excess(levels_db, percentile: float = 10.0):
     than quietly plotting around them.
     """
     levels_db = np.asarray(levels_db, dtype=float)
-    excess, _ambient = ambient_subtracted_product_db(levels_db, percentile=percentile)
+    excess, _ambient = ambient_subtracted_counts(levels_db, percentile=percentile)
     median = np.median(levels_db, axis=0)
     mad = np.median(np.abs(levels_db - median[np.newaxis, :]), axis=0)
     usable = mad > 0.0
@@ -478,7 +480,7 @@ def spectral_centroid_hz(levels_db, freq_hz, band_hz, *, percentile: float = 10.
     return centroid
 
 
-def percentile_spectra_product_db(levels_db, percentiles=(5, 25, 50, 75, 95)):
+def percentile_spectra_counts(levels_db, percentiles=(5, 25, 50, 75, 95)):
     """Level at each frequency for a set of percentiles over time.
 
     The standard passive-acoustics summary of a window: instead of one averaged
@@ -493,7 +495,7 @@ def percentile_spectra_product_db(levels_db, percentiles=(5, 25, 50, 75, 95)):
     return {int(p): np.percentile(levels_db, p, axis=0) for p in percentiles}
 
 
-def level_slope_db_per_min(level_product_db, window_seconds: float,
+def level_slope_counts_per_min(level_counts, window_seconds: float,
                            frame_seconds: float | None = None):
     """Rate of change of a band level, by local polynomial fit (Savitzky-Golay).
 
@@ -515,7 +517,7 @@ def level_slope_db_per_min(level_product_db, window_seconds: float,
     polynomial's derivative, which is defined and smooth regardless of
     quantisation.
 
-    Returns dB per MINUTE (the product's dB-like units per minute -- relative,
+    Returns counts per MINUTE (the product's dB-like units per minute -- relative,
     like everything else here), so the numbers sit at a human scale for a
     passage lasting minutes.
     """
@@ -523,7 +525,7 @@ def level_slope_db_per_min(level_product_db, window_seconds: float,
 
     if frame_seconds is None:
         frame_seconds = FFT_FRAME_SECONDS
-    level_product_db = np.asarray(level_product_db, dtype=float)
+    level_counts = np.asarray(level_counts, dtype=float)
     window_frames = int(round(float(window_seconds) / float(frame_seconds)))
     if window_frames % 2 == 0:
         window_frames += 1
@@ -533,12 +535,12 @@ def level_slope_db_per_min(level_product_db, window_seconds: float,
             f"window_seconds={window_seconds} gives {window_frames} frame(s) at "
             f"{frame_seconds} s/frame, too few for a degree-{polyorder} fit"
         )
-    if window_frames > level_product_db.size:
+    if window_frames > level_counts.size:
         raise ValueError(
             f"window_seconds={window_seconds} spans {window_frames} frames but the "
-            f"series has only {level_product_db.size}; refusing to shrink the window "
+            f"series has only {level_counts.size}; refusing to shrink the window "
             "silently, which would change the statistic without saying so"
         )
-    per_second = savgol_filter(level_product_db, window_length=window_frames,
+    per_second = savgol_filter(level_counts, window_length=window_frames,
                                polyorder=polyorder, deriv=1, delta=float(frame_seconds))
     return per_second * 60.0
