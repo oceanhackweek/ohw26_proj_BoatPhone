@@ -36,6 +36,7 @@ __all__ = [
     "WindowCoverage",
     "load_gate2_overpasses",
     "corpus_file_index",
+    "corpus_index_duplicates",
     "window_coverage",
     "coverage_summary",
 ]
@@ -127,11 +128,26 @@ def corpus_file_index(corpus_dir=None) -> list[tuple[_dt.datetime, _dt.datetime,
     90 files, while the files themselves are the thing being analysed. Where the
     two disagree, the disk wins.
 
-    Both containers are included. The corpus is permanently MIXED (`.fft.gz`
-    from the bulk pull, plain `.fft` from the live probe -- decisions 0022,
-    0024, 0025) and `fft_io.read_fft_gz` sniffs the container rather than
-    trusting the name, so both are equally readable here. `.sha256` sidecars are
-    skipped.
+    DEDUPLICATED BY (device, start_utc), PREFERRING `.fft.gz`. The corpus is
+    permanently MIXED (`.fft.gz` from the bulk pull, plain `.fft` from the live
+    probe -- decisions 0022, 0024, 0025), and 90 of the plain `.fft` files are
+    the SAME ACOUSTIC WINDOW as a `.gz` sibling, not extra data: measured
+    2026-08-27, all 90 stems have a `.gz` counterpart and the decompressed
+    payloads are byte-identical, on three dates (2025-07-15, 2025-07-16,
+    2025-08-12).
+
+    Returning both was a defect. Acquisition correctly treats them as two files
+    -- `acquire.resolve_corpus_files` still does, and must, because they are two
+    things on disk. ANALYSIS must treat them as one window: a duplicated window
+    is double-counted by every percentile, histogram, LTSA and event rate built
+    on this index, and 0.34% of the corpus silently triple-weighted on three
+    dates is exactly the kind of error that never announces itself.
+
+    The count of dropped duplicates is returned to the caller's log via
+    :func:`corpus_index_duplicates`, never discarded silently (CLAUDE.md
+    invariant 5).
+
+    `.sha256` sidecars are skipped.
     """
     if corpus_dir is None:
         corpus_dir = ONC_OVERPASS_CORPUS_DIR
@@ -141,14 +157,41 @@ def corpus_file_index(corpus_dir=None) -> list[tuple[_dt.datetime, _dt.datetime,
             f"no acoustic corpus directory at {corpus_dir}; it is produced by "
             "scripts/pull_overpass_corpus.py"
         )
-    index = []
+    by_start: dict = {}
+    duplicates: list = []
     for path in corpus_dir.iterdir():
         if path.suffix == ".sha256" or not path.is_file():
             continue
         start_utc, end_utc = parse_file_coverage(path.name)
-        index.append((start_utc, end_utc, path))
-    index.sort(key=lambda row: row[0])
+        existing = by_start.get(start_utc)
+        if existing is None:
+            by_start[start_utc] = (start_utc, end_utc, path)
+            continue
+        # Same window twice. Keep the .gz, drop the plain .fft -- an arbitrary
+        # but FIXED preference, so the index is deterministic across runs rather
+        # than depending on directory order.
+        keep, drop = ((existing, (start_utc, end_utc, path))
+                      if existing[2].suffix == ".gz"
+                      else ((start_utc, end_utc, path), existing))
+        by_start[start_utc] = keep
+        duplicates.append(drop[2])
+
+    index = sorted(by_start.values(), key=lambda row: row[0])
+    _LAST_INDEX_DUPLICATES.clear()
+    _LAST_INDEX_DUPLICATES.extend(sorted(duplicates))
     return index
+
+
+# Duplicates dropped by the most recent `corpus_file_index` call. Module state
+# rather than a second return value so the function's signature stays a plain
+# list for every existing caller, but the drop is RECOVERABLE -- silently
+# discarding 90 files would be the same class of error as double-counting them.
+_LAST_INDEX_DUPLICATES: list = []
+
+
+def corpus_index_duplicates() -> list:
+    """Files dropped as duplicate windows by the last `corpus_file_index` call."""
+    return list(_LAST_INDEX_DUPLICATES)
 
 
 @dataclasses.dataclass(frozen=True)

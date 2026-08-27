@@ -34,6 +34,7 @@ import numpy as np
 
 from .config import (
     FFT_B5_RELATIVE_CEILING_BIN,
+    FFT_FRAME_SECONDS,
     FFT_BAND_LEVEL_STATISTIC,
     FFT_BIN_WIDTH_HZ,
     FFT_DECIDECADE_MIN_CENTRE_HZ,
@@ -44,6 +45,13 @@ from .fft_io import band_limit_product, censoring_report
 
 __all__ = [
     "BandLevelSeries",
+    "per_bin_ambient_product_db",
+    "ambient_subtracted_product_db",
+    "robust_normalised_excess",
+    "rolling_median",
+    "level_slope_db_per_min",
+    "spectral_centroid_hz",
+    "percentile_spectra_product_db",
     "BandExcess",
     "UnrepresentableBandError",
     "relative_ceiling_hz",
@@ -319,3 +327,218 @@ def band_excess(series: BandLevelSeries, *, percentile: float = 10.0,
         n_bins_in_band=series.n_bins_in_band,
         decidecade_resolvable=series.decidecade_resolvable,
     )
+
+
+# --- Denoising, smoothing and shape statistics (display and diagnosis) ------
+#
+# EVERYTHING BELOW IS FOR LOOKING AT THE DATA, NOT FOR DETECTING ON IT. The
+# detector is `band_level_series` -> `band_excess` -> the event rule, and it runs
+# on the UNSMOOTHED, UNSUBTRACTED surface. That separation is deliberate:
+# smoothing and background subtraction both make a surface look cleaner, and a
+# threshold tuned on a cleaner surface is a threshold tuned on a processing
+# choice. If any of these ever feed the detector, the event rule must be
+# re-validated against the nulls in decision 0027, not inherited.
+
+
+def per_bin_ambient_product_db(levels_db, percentile: float = 10.0):
+    """Per-BIN ambient level across a window: the background to subtract.
+
+    One value per frequency bin, taken as a low percentile OVER TIME. Per-bin
+    rather than one broadband number because the thing being removed is
+    structured in frequency: the instrument's anti-alias roll-off, the ~37.6 kHz
+    echosounder, the undocumented low-frequency filtering ONC confirmed
+    (references/ONC_communication.txt), and the standing ambient shape. A single
+    scalar background would leave all of it in place.
+
+    A LOW percentile, not a mean or median: the mean is pulled up by the very
+    passes being isolated, and at 10% the estimate stays in ambient even when a
+    vessel occupies a large minority of the window.
+
+    THE LIMITATION THIS CANNOT ESCAPE, and it must travel with every figure made
+    from it: this removes whatever is PERSISTENT. A vessel present for the whole
+    window contributes to its own background and is subtracted away. Subtraction
+    sharpens passes and hides loiterers, so an ambient-subtracted view is
+    evidence about transients only, and a quiet subtracted image is NOT evidence
+    that the water was quiet.
+    """
+    levels_db = np.asarray(levels_db, dtype=float)
+    if levels_db.ndim != 2:
+        raise ValueError(f"expected (n_frames, n_bins), got shape {levels_db.shape}")
+    if not 0.0 < float(percentile) < 100.0:
+        raise ValueError(f"percentile must be in (0, 100), got {percentile}")
+    return np.percentile(levels_db, float(percentile), axis=0)
+
+
+def ambient_subtracted_product_db(levels_db, percentile: float = 10.0):
+    """Excess over the per-bin ambient, in the product's own dB-like units.
+
+    Returns ``(excess, ambient)``. Excess is NOT clipped at zero: bins quieter
+    than their own background go negative and that is information (a real
+    decrease, or the censoring floor moving), whereas clipping would draw a hard
+    edge at nothing and invite it to be read as a boundary.
+
+    Subtraction is done in the product's dB-like units, i.e. it is a RATIO in
+    whatever linear quantity that scale represents. Since the scale's absolute
+    meaning is unknown (decision 0027), this is a relative statement and nothing
+    more; it is comparable between bins of this window and to nothing outside it.
+    """
+    levels_db = np.asarray(levels_db, dtype=float)
+    ambient = per_bin_ambient_product_db(levels_db, percentile=percentile)
+    return levels_db - ambient[np.newaxis, :], ambient
+
+
+def robust_normalised_excess(levels_db, percentile: float = 10.0):
+    """Per-bin excess divided by that bin's own variability.
+
+    Returns ``(normalised, usable_mask)``. Answers a different question from
+    plain subtraction: not "how many dB above background" but "how unusual for
+    THIS bin". A 5 dB rise in a bin that never moves outranks the same rise in a
+    bin that swings 20 dB routinely, which plain subtraction cannot express.
+
+    The scale is the median absolute deviation about the median, the robust
+    counterpart of a standard deviation -- a vessel pass inside the window would
+    inflate an ordinary std and shrink its own score.
+
+    BINS WITH ZERO SPREAD ARE MASKED, NOT DIVIDED. A bin pinned at the censoring
+    floor for the whole window has MAD = 0; dividing would give infinity or a
+    silently substituted number, and either would draw the eye to exactly the
+    bins carrying no information. ``usable_mask`` is False there and those bins
+    are returned as NaN. Callers should report how many were unusable rather
+    than quietly plotting around them.
+    """
+    levels_db = np.asarray(levels_db, dtype=float)
+    excess, _ambient = ambient_subtracted_product_db(levels_db, percentile=percentile)
+    median = np.median(levels_db, axis=0)
+    mad = np.median(np.abs(levels_db - median[np.newaxis, :]), axis=0)
+    usable = mad > 0.0
+    normalised = np.full_like(excess, np.nan)
+    # 1.4826 puts MAD on the same footing as a standard deviation for Gaussian
+    # data; it is a scale convention, not a distributional claim about ambient.
+    normalised[:, usable] = excess[:, usable] / (1.4826 * mad[usable])[np.newaxis, :]
+    return normalised, usable
+
+
+def rolling_median(values, window_frames: int):
+    """Rolling median over a fixed number of frames. FOR DISPLAY ONLY.
+
+    Median rather than mean so an isolated spike is rejected instead of being
+    smeared across the window, and so the edges of a real pass stay where they
+    are instead of being pulled inward.
+
+    Never replaces the raw trace in a figure -- it is drawn over it. A smoothed
+    trace makes every excursion look like a tidy bump, including the ones that
+    are not, and a reviewer shown only the smoothed version cannot tell which is
+    which.
+    """
+    from scipy import ndimage
+    values = np.asarray(values, dtype=float)
+    window_frames = int(window_frames)
+    if window_frames < 1:
+        raise ValueError(f"window_frames must be >= 1, got {window_frames}")
+    if window_frames % 2 == 0:
+        window_frames += 1  # keep it centred; an even window biases by half a frame
+    return ndimage.median_filter(values, size=window_frames, mode="nearest")
+
+
+def spectral_centroid_hz(levels_db, freq_hz, band_hz, *, percentile: float = 10.0):
+    """Excess-power-weighted centroid frequency per frame, within a band.
+
+    A SHAPE statistic, not a level one, and it answers a question the band level
+    cannot: where inside the band the energy sits, and whether that moves. Two
+    windows can carry identical band levels with the centroid parked low in one
+    and sweeping in the other.
+
+    Weighted in POWER (``10 ** (dB / 10)``), matching the convention
+    ``fft_io.echosounder_centroid_bin`` already uses, so the project has ONE way
+    of taking a centroid on this surface (CLAUDE.md invariant 6). Weighting the
+    dB-like counts directly would weight quiet bins like loud ones.
+
+    Frames whose in-band excess is everywhere zero return NaN, never a number. A
+    centroid of no excess would be the band's own geometric centre wearing the
+    costume of a measurement -- the same failure ``echosounder_centroid_bin``
+    raises on.
+    """
+    levels_db = np.asarray(levels_db, dtype=float)
+    freq_hz = np.asarray(freq_hz, dtype=float)
+    assert_band_representable(band_hz, label="spectral_centroid_hz")
+
+    kept_freq_hz, _kept = band_limit_product(freq_hz, levels_db[0], band_hz)
+    in_band = np.isin(freq_hz, kept_freq_hz)
+
+    power = 10.0 ** (levels_db[:, in_band] / 10.0)
+    ambient_power = np.percentile(power, float(percentile), axis=0)
+    excess = np.clip(power - ambient_power[np.newaxis, :], 0.0, None)
+
+    total = excess.sum(axis=1)
+    centroid = np.full(levels_db.shape[0], np.nan)
+    nonzero = total > 0.0
+    centroid[nonzero] = (
+        (excess[nonzero] * freq_hz[in_band][np.newaxis, :]).sum(axis=1) / total[nonzero]
+    )
+    return centroid
+
+
+def percentile_spectra_product_db(levels_db, percentiles=(5, 25, 50, 75, 95)):
+    """Level at each frequency for a set of percentiles over time.
+
+    The standard passive-acoustics summary of a window: instead of one averaged
+    spectrum, the DISTRIBUTION of level at every frequency. The gap between a
+    low and a high percentile is where transient sources live -- a band that is
+    quiet at the 5th and loud at the 95th is intermittent, which is what a
+    passing vessel looks like and what steady ambient does not.
+
+    Returns ``{percentile: spectrum}``. Uncalibrated product dB throughout.
+    """
+    levels_db = np.asarray(levels_db, dtype=float)
+    return {int(p): np.percentile(levels_db, p, axis=0) for p in percentiles}
+
+
+def level_slope_db_per_min(level_product_db, window_seconds: float,
+                           frame_seconds: float | None = None):
+    """Rate of change of a band level, by local polynomial fit (Savitzky-Golay).
+
+    The slope through closest point of approach is a real analysis product, not
+    decoration: with the peak width and the CPA time it is what constrains range
+    and speed from a single hydrophone (`acoustics_plan_v2` SS5 B5).
+
+    A LOCAL QUADRATIC FIT, NOT A DIFFERENCE OF A SMOOTHED COPY. This product's
+    levels are integer-quantised, so:
+
+    * differencing the raw trace returns quantisation noise -- steps of one count
+      over 0.25 s are hundreds of dB/min;
+    * differencing a rolling MEDIAN is worse than it looks. A median of integers
+      is piecewise constant, so its derivative is a train of impulses separated
+      by exact zeros -- a staircase differentiated, which reads as structure and
+      is an artefact of the estimator.
+
+    Savitzky-Golay fits a low-order polynomial over the window and reports that
+    polynomial's derivative, which is defined and smooth regardless of
+    quantisation.
+
+    Returns dB per MINUTE (the product's dB-like units per minute -- relative,
+    like everything else here), so the numbers sit at a human scale for a
+    passage lasting minutes.
+    """
+    from scipy.signal import savgol_filter
+
+    if frame_seconds is None:
+        frame_seconds = FFT_FRAME_SECONDS
+    level_product_db = np.asarray(level_product_db, dtype=float)
+    window_frames = int(round(float(window_seconds) / float(frame_seconds)))
+    if window_frames % 2 == 0:
+        window_frames += 1
+    polyorder = 2
+    if window_frames <= polyorder:
+        raise ValueError(
+            f"window_seconds={window_seconds} gives {window_frames} frame(s) at "
+            f"{frame_seconds} s/frame, too few for a degree-{polyorder} fit"
+        )
+    if window_frames > level_product_db.size:
+        raise ValueError(
+            f"window_seconds={window_seconds} spans {window_frames} frames but the "
+            f"series has only {level_product_db.size}; refusing to shrink the window "
+            "silently, which would change the statistic without saying so"
+        )
+    per_second = savgol_filter(level_product_db, window_length=window_frames,
+                               polyorder=polyorder, deriv=1, delta=float(frame_seconds))
+    return per_second * 60.0

@@ -9688,6 +9688,48 @@ def check_b5_9_window_coverage_counts_overlap_not_start_containment():
 
 
 
+
+def check_b5_10_corpus_index_deduplicates_windows_present_in_both_containers():
+    """The same acoustic window in both containers must appear ONCE in the index.
+
+    The corpus is permanently mixed (decisions 0022/0024/0025), and 90 plain
+    `.fft` files are the same windows as `.gz` siblings with byte-identical
+    payloads -- measured on the real corpus, on three dates in 2025. Acquisition
+    must see two files, because there are two files on disk. ANALYSIS must see
+    one window: a duplicated window is double-counted by every percentile,
+    histogram, LTSA and event rate built on the index, and a corpus 0.34%
+    duplicated on three dates is an error that never announces itself.
+
+    Pins three things: the index holds one entry per start time; the survivor is
+    the `.gz`, deterministically, so the index does not depend on directory
+    order; and the drop is RECOVERABLE via `corpus_index_duplicates` rather than
+    silent (CLAUDE.md invariant 5).
+    """
+    _cfg, _features, _fft_io, overpasses = _b5_mods()
+    stem = "ICLISTENHF1266_20250715T161505.000Z.fft"
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = pathlib.Path(tmp)
+        (corpus / stem).write_text("plain", encoding="utf-8")
+        (corpus / f"{stem}.gz").write_bytes(b"\x1f\x8bgzip")
+        (corpus / f"{stem}.gz.sha256").write_text("deadbeef", encoding="utf-8")
+
+        index = overpasses.corpus_file_index(corpus)
+        assert len(index) == 1, (
+            f"two containers of ONE window produced {len(index)} index entries. "
+            "Every statistic built on this index would double-count that window"
+        )
+        assert index[0][2].name.endswith(".gz"), (
+            f"the surviving entry is {index[0][2].name!r}; the .gz must win so the "
+            "index is deterministic rather than dependent on directory order"
+        )
+        dropped = overpasses.corpus_index_duplicates()
+        assert [p.name for p in dropped] == [stem], (
+            f"the dropped duplicate was not reported: {[p.name for p in dropped]}. "
+            "Discarding 90 files silently is the same class of error as counting "
+            "them twice"
+        )
+
+
 CHECKS = [
     ("A0.1 paths import is dependency-free", check_a0_1_paths_import_is_dependency_free),
     ("A0.1 paths exports are pathlib.Path", check_a0_1_paths_exports_are_paths),
@@ -9872,6 +9914,7 @@ CHECKS = [
     ("B5 single-bin outlier cannot move the band level", check_b5_7_single_bin_outlier_cannot_move_the_band_level),
     ("B5 overpass loader refuses a timestamp with no UTC offset", check_b5_8_overpass_loader_refuses_a_timestamp_with_no_utc_offset),
     ("B5 window coverage counts overlap, not start containment", check_b5_9_window_coverage_counts_overlap_not_start_containment),
+    ("B5 corpus index deduplicates windows present in both containers", check_b5_10_corpus_index_deduplicates_windows_present_in_both_containers),
 ]
 
 

@@ -126,3 +126,60 @@ the only route to absolute calibrated levels if B6 is ever wanted (see "What sta
 * Every figure and number derived from this path must carry: the relative/uncalibrated unit
   (`level_product_db`, never dB re 1 uPa), the overpass count as the unit of analysis, and the
   sampling conditionality in `config.PLANET_SAMPLING_CONDITIONALITY_STATEMENT`.
+
+---
+
+## Amendment, 2026-08-27: the seasonal-threshold challenge, tested
+
+`references/hydrophone-methods-brief.md` §1.4/§1.5 raised the one objection to this record that
+could have changed its verdict, and named it as such: the gate scores events at a **fixed +10 dB
+excess**, while the 1-10 kHz band median moves ~8.5 counts across seasons — the same order as a
+vessel-pass excess — and the gate's 13 windows do not span the seasonal range. If that shift
+reached the detector, the same physical vessel would clear the threshold in one season and miss it
+in another, and the event rate would carry a seasonal artefact indistinguishable from a trend in
+traffic.
+
+**Tested, at the brief's own suggested design: 240 windows, 40 per season, 2020-2025, deduplicated
+index.**
+
+| Year | median baseline | events/window | median peak excess |
+|---|---|---|---|
+| 2020 | 38.5 | 0.07 | 17.0 |
+| 2021 | 39.0 | 0.12 | 17.5 |
+| 2022 | 38.0 | **0.62** | 22.0 |
+| 2023 | 36.0 | 0.10 | 18.0 |
+| 2024 | 35.0 | 0.05 | 18.0 |
+| 2025 | 36.5 | 0.12 | 17.0 |
+
+Correlation between a window's own baseline and its event count: **r = -0.021** (rank r = -0.037),
+n = 240.
+
+**The objection does not hold for this detector, for a reason the brief could not see from the
+outside: the threshold is not absolute.** `band_excess` measures +10 dB over *that window's own*
+10th-percentile baseline, recomputed per window, so a seasonal shift in ambient is subtracted
+before the threshold is applied. That is what the per-window baseline is for, and the near-zero
+correlation is the direct evidence that it works. At 40 files/season the seasonal spread of the
+median baseline is also **4.0 counts**, not 8.5 — consistent with the brief's own caveat that its
+8-30 files/season mixed seasonal variability with sampling noise.
+
+**What WOULD break it, and is not ruled out:** a change in the level scale's *gain* (counts per
+dB). A per-window baseline removes an additive offset, not a multiplicative one, so under a gain
+change "+10 counts" would mean different physical dB in different seasons. The evidence against
+that is the brief's own §1.4: the 51-102 kHz control band sits at ~5.0 in **every** year, and a
+gain change would have moved it too. Weak evidence, since that band sits near the floor where a
+gain change is hardest to see, and it should be revisited if absolute levels ever matter.
+
+**An unexplained finding this test surfaced, recorded rather than buried:** 2022's event rate is
+**0.62 events/window against 0.05-0.12 in every other season** — a five- to twelvefold difference
+that does NOT track the baseline (2022's baseline is mid-range). It is not a threshold artefact,
+and this gate cannot say whether it is real traffic, a propagation regime, or an instrument
+change. It is a flag for whoever builds the continuous estimate, not a result.
+
+Also fixed as a direct result of the brief (§1.1, §1.5 item 3): `overpasses.corpus_file_index`
+double-counted 90 windows present in both containers. Verified independently -- 90 duplicate start
+times, 12/12 tested pairs byte-identical, on 2025-07-15/16 and 2025-08-12. The index now
+deduplicates by start time preferring `.fft.gz`, reports the drops via
+`corpus_index_duplicates()`, and is pinned by
+`check_b5_10_corpus_index_deduplicates_windows_present_in_both_containers`. The 13/5/12 coverage
+split is unchanged (no scene falls on the affected dates), but any corpus-wide statistic built on
+the old index was 0.34% duplicated.
