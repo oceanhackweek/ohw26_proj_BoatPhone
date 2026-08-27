@@ -254,6 +254,29 @@ IN FLIGHT (this session, not yet committed):
     so the unit is COUNTS, not dB, and "+10 dB" overstates the physical
     quantity by roughly a factor of two. The detector is unaffected.
 
+POPULATION PASS LANDED (all 26,665 readable windows, ~20 min on 4 cores).
+Decision 0027 amendment 2. Three results a 180-window sample could not give:
+  - THE SEASONAL-THRESHOLD OBJECTION IS CLOSED. The 1-10 kHz band median moves
+    1.99 counts across six seasons at ~4,500 windows/season; the control band
+    moves 0.67. The methods brief measured 8.5 at 8-30 files/season and this
+    session measured 4.0 at 40 -- the effect shrinks monotonically with sample
+    size, which is noise, not a regime shift. Against a +10-count threshold that
+    is ~20% of one threshold, and the per-window baseline removes it first.
+  - The ~37.6 kHz echosounder is SEASONALLY ABSENT (flat across 33-40 kHz in
+    2021 where other seasons peak near 33 counts), inside a single deployment.
+    Does not touch the 1-10 kHz detection band.
+  - ONE CORPUS FILE IS EMPTY and the pull called it a success:
+    ICLISTENHF1266_20220825T184149.000Z.fft.gz, 0 bytes, HTTP 200, sha256 of the
+    empty string. Only one in the corpus, so present=26666 overstates usable
+    windows by one. A third category beside 0007 measured zeros and 0023
+    Error-96 absences. Tracked into b3-close-out-offline.md.
+
+Artefacts: data/derived/population/<run>/ -- population.npz (per-season EXACT
+integer histograms), seasonal_ambient.npz (per-season L95, the ambient a
+detector can subtract without a window subtracting its own vessel away), and
+figures P1 LTSA / P2 SPD / P3 seasonal spectra. Gitignored; regenerate with
+scripts/build_population_set.py then scripts/plot_population_set.py.
+
 STILL OPEN, TRACKED:
   1. Tonight, offline: docs/plans/b3-close-out-offline.md -- manifest schema
      migration WITHOUT the ~1h40m re-run, fix check_b3c_12, correct the

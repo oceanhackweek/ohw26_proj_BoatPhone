@@ -183,3 +183,62 @@ deduplicates by start time preferring `.fft.gz`, reports the drops via
 `check_b5_10_corpus_index_deduplicates_windows_present_in_both_containers`. The 13/5/12 coverage
 split is unchanged (no scene falls on the affected dates), but any corpus-wide statistic built on
 the old index was 0.34% duplicated.
+
+---
+
+## Amendment 2, 2026-08-27: the population pass settles the seasonal question
+
+The first amendment tested the seasonal-threshold objection on 240 windows and found the
+per-window baseline absorbed it. The full-population pass now measures the underlying quantity
+directly, over **all 26,665 readable windows** rather than the 180-window sample the objection
+was raised from.
+
+Per-season mean band level, ~4,500 windows per season:
+
+| Year | n | control (51-102 kHz) | small craft (1-10 kHz) | craft - control |
+|---|---|---|---|---|
+| 2020 | 4,513 | 6.59 | 43.03 | 36.44 |
+| 2021 | 4,574 | 6.70 | 42.79 | 36.09 |
+| 2022 | 4,422 | 6.59 | 43.27 | 36.68 |
+| 2023 | 4,026 | 6.10 | 42.26 | 36.16 |
+| 2024 | 4,576 | 6.77 | 44.23 | 37.46 |
+| 2025 | 4,554 | 6.35 | 42.23 | 35.88 |
+
+**Seasonal spread: control 0.67 counts, small craft 1.99 counts, and the two differenced
+1.57 counts.**
+
+**The 8.5-count seasonal spread was sampling error.** It measured 8.5 at 8-30 files/season
+(methods brief §1.4), 4.0 at 40 files/season (amendment 1), and **1.99 at ~4,500 files/season**.
+The effect shrinks monotonically with sample size, which is the signature of noise rather than
+of a real regime shift. Against a +10-count threshold the true seasonal variation is about 20%
+of one threshold — and the per-window baseline subtracts it before the threshold is applied
+anyway, so it never reaches the detector at all. **The objection is closed on both counts.**
+
+The control band earns its keep here for the first time: it moves 0.67 counts across six seasons
+while the craft band moves 1.99, so most of the craft-band variation is *not* instrumental. 2024
+is the high season in both bands (6.77 and 44.23), so part of its elevation is the instrument and
+part is not — which is exactly the discrimination this band was added to provide, and which no
+amount of staring at the craft band alone could have supplied.
+
+**Two further population findings, recorded because a sample could not have established either:**
+
+* **The ~37.6 kHz echosounder is seasonally absent, at population scale.** P3a shows 2021 flat
+  across 33-40 kHz where every other season peaks near 33 counts. This confirms the methods
+  brief's LTSA observation (absent 2021-2022) on 26,665 windows rather than 180, inside a single
+  deployment. It does not touch the 1-10 kHz detection band.
+* **One corpus file is empty, and the pull recorded it as a success.**
+  `ICLISTENHF1266_20220825T184149.000Z.fft.gz` has `bytes_downloaded: 0`, `http_status: 200`,
+  and sha256 `e3b0c442...` — the hash of the empty string. ONC served an empty body with a 200,
+  and `status` reads `"downloaded"`. It is the ONLY such file in the corpus (checked: exactly one
+  row with zero bytes, exactly one file under 100 bytes on disk). So the corpus holds **26,665
+  usable windows, not 26,666**, and the manifest's `present` count is off by one in the direction
+  of optimism. This is a third category alongside decision 0007's measured zeros and 0023's
+  Error-96 absences: a *listed, served, empty* file. The pull's absent/present accounting should
+  distinguish it, and that belongs with the manifest work in
+  `docs/plans/b3-close-out-offline.md`.
+
+Artefacts: `data/derived/population/<run>/` — `population.npz` (per-season exact integer
+histograms and per-window median spectra), `windows.json`, `seasonal_ambient.npz` (per-season
+L95, the ambient a detector can subtract without a window subtracting its own vessel away),
+and figures P1 (LTSA), P2 (SPD), P3 (seasonal spectra and ambient). Produced by
+`scripts/build_population_set.py` and `scripts/plot_population_set.py`.

@@ -80,6 +80,15 @@ New one-off script, `scripts/migrate_manifest_schema.py`, reading the complete r
 - add `disk_basename = os.path.basename(path)` per row (currently absent from all 26,666).
 - **validate, don't assume**: assert every `path` exists, that `disk_basename` matches the file on
   disk, and that `requested == present + absent` still holds (26689 = 26666 + 23).
+- **distinguish the one served-but-empty file from a present one.**
+  `ICLISTENHF1266_20220825T184149.000Z.fft.gz` has `bytes_downloaded: 0`,
+  `http_status: 200`, `status: "downloaded"`, and sha256 `e3b0c442...` -- the hash of the
+  empty string. ONC served an empty body with a 200. It is the only one in the corpus
+  (verified: exactly one zero-byte row, exactly one sub-100-byte file on disk), so
+  `present = 26666` overstates usable windows by one; **26,665 are readable**. This is a
+  THIRD category alongside decision 0007's measured zeros and 0023's Error-96 absences --
+  listed, served, empty -- and `requested == present + absent` currently counts it on the
+  wrong side. Found by the population pass, decision 0027 amendment 2.
 - reconcile the **90 orphan plain `.fft` probe files** on disk that appear in no manifest row —
   either add them with an explicit `status` marking them as probe artefacts, or record why they are
   excluded. Right now the corpus and the manifest silently disagree by 90 files, and segment D
