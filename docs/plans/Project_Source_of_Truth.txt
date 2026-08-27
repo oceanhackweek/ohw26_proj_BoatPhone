@@ -315,6 +315,66 @@ Neve (Aug 27, evening) -- Planet stack running; water mask was deleting the brig
 - Next: the two decisions, then section 5.4 unfitted on the paired scenes, then the eyeball pass
   that unlocks the Detector B sweep.
 
+Malachy (Aug 27, later) -- NEVE, TWO THINGS FROM READING mayrajeo/ship-detection AGAINST OUR §6.
+Both bear on why Detector A found only 4 hits in 100 km2. Sourcing caveat: these came from
+summarising fetches of the repo, not a line-by-line read, so confirm against scripts/
+predict_tile.py and scripts/train_models.py before anything irreversible rests on them.
+
+1. APPARENT OBJECT SCALE IS ~3.3x OFF, AND THE SWEEP GRID CANNOT TEST THE FIX.
+   Their training: 320 px patches at 10 m upsampled to 640, so a vessel of length L metres
+   arrives at network input as L/10 x 2 = L/5 px. A 20 m vessel = 4 px.
+   Ours at the default slice 320 -> imgsz 640: L/3 x 2 = L/1.5 px. The SAME 20 m vessel = 13.3 px.
+   That is 3.3x larger than anything the model was trained on, and train_models.py sets
+   scale=0.25, i.e. +/-25% scale augmentation -- so 3.3x is far outside what it ever saw.
+
+   §6.3 concludes we are "landing apparent object scale in the model's comfortable range". That
+   conclusion compares OUR 10 m boat (6.6 px) against THEIR 20 m boat (4 px) -- two different
+   vessels. Like for like, we are 3.3x out. The two numbers §6.3 quotes are each correct; only
+   the comparison between them is not.
+
+   Matching apparent scale needs imgsz/slice ~= 0.6. The sweep grid is slice {256,320,512} x
+   imgsz {640,1024}, whose ratios run 1.25x to 4x -- EVERY cell makes objects larger than
+   training, and the best available cell (512->640) is still ~2x out. If scale mismatch is what
+   is suppressing recall, the sweep as written can never reveal it.
+
+   I am NOT saying downsample to 5 m. More pixels carry more information and YOLO's FPN has real
+   scale tolerance, so the optimum may sit anywhere between parity and 3.3x. The point is that it
+   is an empirical question the current grid forbids asking. SUGGESTION: extend the grid to
+   include ratios below 1 (slice 1024 -> imgsz 640, slice 640 -> imgsz 640) and let recall against
+   your truth set decide. Not implemented -- §6 is yours.
+
+2. CHECK model.task BEFORE YOU BUILD ANY LENGTH PIPELINE. The HuggingFace card describes
+   yolo11s_tci.pt as a "fine-tuned instance segmentation model" with "instance segmentation
+   output", while scripts/train_models.py reads as plain detection. These cannot both be right.
+   vessel_detect.py only ever touches res.boxes, so if the checkpoint is a -seg variant we are
+   discarding res.masks. You already have the model loaded -- `print(model.task)` settles it.
+
+   It matters beyond tidiness. boxes_to_records() takes length = max(w_m, h_m) from an
+   AXIS-ALIGNED box. For a rotated L x W hull the axis-aligned extent is L|cos t| + W|sin t|:
+   correct at 0 deg, but at 45 deg a 24 x 4 m vessel measures 19.8 m, SHORT BY 17.5%. That pushes
+   12-24 m vessels down into 0-12 m -- the same bin-truncation failure decision 0016 exists to
+   prevent, and the same direction as the minAreaRect 1-px bug you fixed for Detector B. Detector
+   A still has it. A mask, or an oriented box, removes the bias and gives orientation directly,
+   which G4 (speed/heading) needs anyway. If the checkpoint is detection-only, the bias should be
+   stated in §13 rather than left implicit in the size-class numbers.
+
+RIDER, same theme: their predict_tile.py runs conf_th=0.001. Our CLI default is 0.25 and §6.4
+proposes 0.05-0.10 -- 50-100x above what the authors use. Their precision is recovered downstream
+by a heavy filter stack (sea/lake/river polygons, submerged and above-water rock layers,
+fisheries, beacons, wind turbines, a 750 m size cut), which is §6.4's own philosophy carried
+much further than we carry it. If 4 hits is the count at 0.25, the low-confidence tail is
+unexplored. Worth a cell in the same sweep.
+
+Related, for decision 0017's open question: you note islets under 2 ha will reach the human pass
+and suggest a shoreline vector if they dominate. The repo suggests a shoreline vector alone will
+not be enough -- they filter `vesikivikko` (submerged rocks) and `vesikivi` (above-water rocks)
+as datasets SEPARATE from the coastline. We have no Canadian equivalent to hand, but we do have
+26 co-registered scenes of the same 100 km2 over six years: a detection recurring at the same
+coordinates across multiple YEARS is a fixed object, not a boat. That is a persistence mask built
+from data we already own, and it complements your extent rule rather than replacing it -- yours
+separates island from boat by size within a scene, this separates rock from boat by recurrence
+across scenes.
+
 
 Project Goals:
 
