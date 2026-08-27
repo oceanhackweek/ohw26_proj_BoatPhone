@@ -8136,15 +8136,46 @@ def check_b3c_10_two_manifest_writes_in_the_same_dest_do_not_collide():
             json.loads(p.read_text())  # each must be independently valid, not a half-write
 
 
-def check_b3c_11_corpus_resolver_finds_fft_extension_only_and_raises_when_absent():
+def check_b3c_11_corpus_resolver_finds_fft_and_fft_gz_but_not_sidecars_and_raises_when_absent():
     """A SINGLE shared helper (e.g. `boatphone.acquire`) must resolve 'the
-    corpus files' -- not three notebook glob patterns (open item 3). It must:
-    (a) exist and be callable; (b) find files with `config.ARCHIVE_EXTENSION`
-    ('fft'), NOT `config.PRODUCT_EXTENSION` ('fft.gz') -- B3's corpus lands as
-    `*.fft` containing gzip bytes, and the handoff calls a `*.fft.gz` glob the
-    'trap' that finds ZERO files in the real pulled corpus; (c) raise clearly,
-    not silently return [], when the corpus directory/manifest is absent --
-    B5 must not read an empty corpus as 'zero vessels detected'.
+    corpus files' -- not three notebook glob patterns (open item 3).
+
+    AMENDED, not silently rewritten: this check originally pinned
+    `resolve_corpus_files` to match `*.<ARCHIVE_EXTENSION>` ('.fft') ONLY and
+    explicitly EXCLUDE anything ending '.fft.gz', on the theory that a
+    resolver globbing '.fft.gz' would find ZERO files in a corpus that lands
+    as plain '.fft'. `check_b3e_4`/`check_b3e_5` then showed that exclusion
+    was in direct tension with the bulk-pull compression contract (B3-E): the
+    bulk pull DOES compress on write, and a human decision (recorded
+    2026-08-27, no separate decision doc yet at time of writing -- flag this
+    as a candidate for one) settled the naming question the original docstring
+    left open: the compressed file is named `.fft.gz`, honestly stating the
+    container it holds. The exclusion is therefore obsolete and is REMOVED
+    here, not defended.
+
+    What the exclusion was actually protecting against is real and still
+    guarded, just by different mechanisms now: a notebook globbing
+    `*.fft.gz` in some OTHER, unscoped location could find zero files and
+    silently report 'no data' instead of failing. That trap's modern guard is
+    (a) the corpus lives in its own directory, `paths.ONC_OVERPASS_CORPUS_DIR`,
+    distinguishable from any other source of `.fft`-shaped files, and (b)
+    `resolve_corpus_files` is the ONE glob (invariant 6) and this check's
+    'raises rather than returning []' assertion below still holds -- so a
+    corpus with nothing matching still fails loudly rather than reporting
+    zero vessels.
+
+    This check now pins: (a) the resolver exists and is callable; (b) it
+    finds BOTH a `.fft` file and a `.fft.gz` file in the same corpus
+    directory -- the mixed corpus (90 already-pulled plain files that `data/`
+    immutability (invariant 2) forbids ever converting, plus all
+    future compressed bulk-pull files) is the expected STEADY STATE, not a
+    transitional oddity; (c) an unrelated extension in the same directory
+    (a stray `.txt` note and a `.sha256` integrity sidecar -- sidecars sit
+    alongside every real download) is NOT returned, so the resolver is not
+    just 'match anything'; (d) it still raises clearly, never silently
+    returns [], when the corpus directory is absent, and separately when the
+    directory exists but holds no `.fft`/`.fft.gz` file at all -- B5 must not
+    read an empty/absent corpus as 'zero vessels detected' (open item 3).
     """
     import boatphone.acquire as acq
     import boatphone.config as cfg
@@ -8164,6 +8195,7 @@ def check_b3c_11_corpus_resolver_finds_fft_extension_only_and_raises_when_absent
     )
     resolver = getattr(acq, resolver_name)
 
+    # (d) absent directory: must raise, never return [].
     with tempfile.TemporaryDirectory() as tmp:
         empty_dir = pathlib.Path(tmp) / "nothing_here"
         raised = None
@@ -8173,33 +8205,69 @@ def check_b3c_11_corpus_resolver_finds_fft_extension_only_and_raises_when_absent
         except Exception as exc:  # noqa: BLE001 -- the raise IS the expected outcome
             raised = exc
         assert raised is not None, (
-            f"{resolver_name}() on an absent/empty corpus location returned "
+            f"{resolver_name}() on an absent corpus location returned "
             f"{result!r} instead of raising -- B5 must not read an absent corpus as "
             "'zero vessels detected'; silently returning [] makes that mistake possible "
             "(open item 3)"
         )
 
+    # (d) existing directory, but nothing that matches: must also raise, not
+    # return [] -- distinct from the absent-directory case above, since a
+    # resolver could special-case "no such path" while still silently
+    # returning [] for "path exists but is empty/irrelevant".
+    with tempfile.TemporaryDirectory() as tmp:
+        present_but_empty = pathlib.Path(tmp) / "onc_raw" / "present_but_irrelevant"
+        present_but_empty.mkdir(parents=True)
+        (present_but_empty / "readme.txt").write_text("not a corpus file")
+        raised = None
+        result = None
+        try:
+            result = resolver(present_but_empty)
+        except Exception as exc:  # noqa: BLE001 -- the raise IS the expected outcome
+            raised = exc
+        assert raised is not None, (
+            f"{resolver_name}({present_but_empty}) held only an unrelated file and returned "
+            f"{result!r} instead of raising -- an existing-but-empty-of-matches corpus "
+            "directory must fail loudly, not be read as 'zero vessels detected'"
+        )
+
+    # (b) mixed corpus: both a plain .fft and a compressed .fft.gz must be
+    # found; (c) unrelated extensions and sidecars must not be.
     with tempfile.TemporaryDirectory() as tmp:
         corpus_dir = pathlib.Path(tmp) / "onc_raw"
         corpus_dir.mkdir(parents=True)
-        real_name = f"ICLISTENHF1266_20240715T000136.000Z.{cfg.ARCHIVE_EXTENSION}"
-        trap_name = f"ICLISTENHF1266_20240715T000636.000Z.{cfg.PRODUCT_EXTENSION}"
-        (corpus_dir / real_name).write_bytes(b"gzip-bytes-stand-in")
-        (corpus_dir / trap_name).write_bytes(b"gzip-bytes-stand-in")
+        plain_name = f"ICLISTENHF1266_20240715T000136.000Z.{cfg.ARCHIVE_EXTENSION}"
+        gzip_name = f"ICLISTENHF1266_20240715T000636.000Z.{cfg.PRODUCT_EXTENSION}"
+        sidecar_name = f"{gzip_name}.sha256"
+        stray_name = "README.txt"
+        (corpus_dir / plain_name).write_bytes(b"plain-ascii-stand-in")
+        (corpus_dir / gzip_name).write_bytes(b"gzip-bytes-stand-in")
+        (corpus_dir / sidecar_name).write_text("deadbeef  " + gzip_name)
+        (corpus_dir / stray_name).write_text("notes, not a corpus file")
 
         found = resolver(corpus_dir)
-        found_names = {pathlib.Path(f).name if not isinstance(f, str) else pathlib.Path(f).name
-                       for f in found}
-        assert real_name in found_names, (
-            f"{resolver_name}({corpus_dir}) did not find {real_name!r} (the "
-            f"config.ARCHIVE_EXTENSION={cfg.ARCHIVE_EXTENSION!r} file B3 actually pulls); "
+        found_names = {pathlib.Path(f).name for f in found}
+        assert plain_name in found_names, (
+            f"{resolver_name}({corpus_dir}) did not find {plain_name!r}, a "
+            f"config.ARCHIVE_EXTENSION={cfg.ARCHIVE_EXTENSION!r} file -- the 90 "
+            "already-pulled plain files that data/ immutability forbids converting must "
+            f"still resolve; got {found_names}"
+        )
+        assert gzip_name in found_names, (
+            f"{resolver_name}({corpus_dir}) did not find {gzip_name!r}, a "
+            f"config.PRODUCT_EXTENSION={cfg.PRODUCT_EXTENSION!r} file -- the bulk pull "
+            "compresses on write and names the result honestly as '.fft.gz'; the resolver "
+            f"must match it (this exclusion was REMOVED, see this check's docstring for why); "
             f"got {found_names}"
         )
-        assert trap_name not in found_names, (
-            f"{resolver_name}({corpus_dir}) found {trap_name!r}, a "
-            f"config.PRODUCT_EXTENSION={cfg.PRODUCT_EXTENSION!r} name -- the '.fft' vs "
-            "'.fft.gz' trap the handoff flags: B3's corpus lands as *.fft containing gzip "
-            "bytes, and a resolver that globs *.fft.gz finds ZERO files in the real corpus"
+        assert sidecar_name not in found_names, (
+            f"{resolver_name}({corpus_dir}) returned the '.sha256' integrity sidecar "
+            f"{sidecar_name!r} as if it were a corpus data file -- sidecars sit alongside "
+            "every real download and must not be mistaken for one"
+        )
+        assert stray_name not in found_names, (
+            f"{resolver_name}({corpus_dir}) returned an unrelated file {stray_name!r} that "
+            "matches neither the plain nor compressed corpus extension"
         )
 
 
@@ -8246,6 +8314,892 @@ def check_b3c_7_never_writes_under_the_real_data_dir_this_check_guards_the_guard
         f"scoped test run: {after_derived - before_derived} appeared. A manifest_dir "
         "argument must never be ignored (invariant 2)"
     )
+
+
+def check_b3d_1_fft_reader_accepts_plain_ascii_and_gzip_by_content_not_extension():
+    """FACT 1 (live-archive probe, 2026-08-27): ONC serves `.fft` as PLAIN ASCII,
+    not gzip -- 90 real files checked, none carry the `1f 8b` gzip magic, and
+    requesting a gzipped name (`.fft.gz`) 400s (no such object exists in the
+    archive). `read_fft_gz` currently does `gzip.open(path, "rt")`
+    unconditionally (boatphone/fft_io.py, ~line 258) and raises
+    `gzip.BadGzipFile: Not a gzipped file (b'0\\n')` on a plain-text payload --
+    which is exactly the container the live archive returns.
+
+    This check pins the CONTRACT, not the current implementation: the single
+    reader must accept BOTH containers and return byte-for-byte identical
+    arrays either way, and it must decide which container it is holding by
+    SNIFFING CONTENT (the gzip magic bytes `1f 8b`), never by trusting the
+    filename extension. Two fixtures hold the identical known payload -- one
+    plain-text, one gzip -- and a THIRD pair deliberately disagrees name vs.
+    container (a `.fft.gz`-named file holding plain text, and a `.fft`-named
+    file holding gzip), which fails any implementation that dispatches on the
+    extension alone. A small, exactly-shaped payload (2 frames x 3 bins) is
+    used so a silently-wrong reshape is caught too, not just a round-trip.
+
+    EXPECTED TO FAIL right now: current `read_fft_gz` raises `BadGzipFile` on
+    the plain-text fixture. That failure is the point of this check.
+    """
+    import gzip as _gzip
+    _cfg, fft_io = _b0_2a_fft_io()
+
+    # A small, KNOWN payload: 2 frames x 3 bins, values chosen so a transposed
+    # or mis-strided reshape would visibly scramble them (no repeats).
+    n_frames, n_bins = 2, 3
+    values = [0, 1, 2, 3, 4, 5]
+    expected = np.asarray(values, dtype=float).reshape(n_frames, n_bins)
+    payload_text = " ".join(str(v) for v in values) + "\n"
+
+    # A real filename each fixture must carry to satisfy parse_file_coverage
+    # (device code + a Z-stamped timestamp) -- borrowed verbatim from the
+    # existing B3-B fixture name so this check needs no new device constant.
+    base_stamp = "ICLISTENHF1266_20240715T000136.000Z"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = pathlib.Path(tmp)
+
+        # Fixture 1: name says plain (`.fft`), container IS plain ASCII.
+        plain_path = tmp / f"{base_stamp}.fft"
+        plain_path.write_text(payload_text, encoding="ascii")
+
+        # Fixture 2: name says gzip (`.fft.gz`), container IS gzip -- the
+        # historical (pre-live-probe) assumption, kept so the check also pins
+        # that the gzip path still works.
+        gz_path = tmp / f"{base_stamp}.fft.gz"
+        with _gzip.open(gz_path, "wt", encoding="ascii") as handle:
+            handle.write(payload_text)
+
+        # Fixture 3: name says gzip, container is actually PLAIN TEXT -- what
+        # the live archive would produce if a caller (wrongly) requested the
+        # `.fft.gz` name. Must FAIL an extension-dispatching reader.
+        #
+        # NOTE: this fixture must be a LEGAL ONC filename. `read_fft_gz` calls
+        # `parse_file_coverage(path.name)`, and that grammar allows an OPTIONAL
+        # SECOND UTC stamp -- a bare suffix token like "_mismatchA" landed
+        # exactly where that second stamp is expected and raised
+        # `FilenameParseError` before the container-sniffing contract was even
+        # exercised. Fixed by giving each mismatch fixture its own distinct,
+        # legal single-UTC-stamp name instead of a suffix token.
+        mismatch_gz_name_plain_body = tmp / "ICLISTENHF1266_20240715T001136.000Z.fft.gz"
+        mismatch_gz_name_plain_body.write_text(payload_text, encoding="ascii")
+
+        # Fixture 4: name says plain, container is actually GZIP -- the mirror
+        # case. Must also FAIL an extension-dispatching reader.
+        mismatch_plain_name_gz_body = tmp / "ICLISTENHF1266_20240715T001636.000Z.fft"
+        with _gzip.open(mismatch_plain_name_gz_body, "wt", encoding="ascii") as handle:
+            handle.write(payload_text)
+
+        results = {}
+        for label, path in (
+            ("plain_name_plain_body", plain_path),
+            ("gz_name_gz_body", gz_path),
+            ("gz_name_plain_body", mismatch_gz_name_plain_body),
+            ("plain_name_gz_body", mismatch_plain_name_gz_body),
+        ):
+            product = fft_io.read_fft_gz(
+                path, n_frames=n_frames, n_bins=n_bins,
+                bin_width_hz=_cfg.FFT_BIN_WIDTH_HZ, frame_seconds=_cfg.FFT_FRAME_SECONDS,
+                fs_hz=_cfg.FFT_PRODUCT_FS_HZ,
+            )
+            results[label] = product.levels_db
+
+        for label, levels_db in results.items():
+            assert levels_db.shape == expected.shape, (
+                f"{label}: read_fft_gz returned shape {levels_db.shape}, expected "
+                f"{expected.shape} ({n_frames} frames x {n_bins} bins) -- a silently "
+                "wrong reshape would otherwise pass a shape-blind equality check"
+            )
+            assert levels_db.dtype == expected.dtype, (
+                f"{label}: dtype {levels_db.dtype}, expected {expected.dtype}"
+            )
+            assert np.array_equal(levels_db, expected), (
+                f"{label}: read_fft_gz returned {levels_db.tolist()}, expected "
+                f"{expected.tolist()} -- the SAME logical payload, whichever container "
+                "it arrived in, must decode to the identical array (content-sniffed, "
+                "not extension-dispatched)"
+            )
+
+        # The two "container disagrees with name" fixtures must decode IDENTICALLY
+        # to the honestly-named ones -- this is what fails a filename-extension
+        # dispatch (which would try gzip.open on the plain-text-but-".fft.gz"
+        # fixture and raise BadGzipFile, or try plain-text parsing on the
+        # gzip-but-".fft" fixture and get garbage/empty tokens).
+        assert np.array_equal(results["gz_name_plain_body"], results["plain_name_plain_body"]), (
+            "a file named .fft.gz but holding PLAIN TEXT did not decode identically to an "
+            "honestly-named plain-text file; the reader must sniff content (gzip magic "
+            "bytes 1f 8b), not dispatch on the .gz extension -- this is exactly what the "
+            "live ONC archive does (Fact 1, 2026-08-27 probe)"
+        )
+        assert np.array_equal(results["plain_name_gz_body"], results["gz_name_gz_body"]), (
+            "a file named .fft but holding GZIP did not decode identically to an "
+            "honestly-named gzip file; the reader must sniff content, not the extension"
+        )
+
+
+def check_b3d_2_onc_400_no_file_could_be_found_is_absent_not_error_no_retry_storm():
+    """FACT 2 (live-archive probe, 2026-08-27): ONC answers a missing archive
+    file with `400 / API Error 96: No file could be found.` -- and that exact
+    string is NOT one of `_NO_DATA_POSSIBLE_MARKERS` (boatphone/onc_client.py),
+    which currently holds only "not during the provided time range" and "Start
+    Time is in the future". So today this 400 falls through to
+    `download_archive_file`'s generic 400 branch and raises `DownloadError`,
+    with NO retry (a 400 is not in `_RETRYABLE_STATUS_CODES`) but also with no
+    "absent" record -- segment D's absent-log would receive an ERROR row
+    instead of an ABSENT row for a file that plainly does not exist.
+
+    This check pins the CONTRACT: a fake transport returning this exact 400
+    body must be classified ABSENT -- a structured record with
+    `status == "absent"`, no raise, and `attempts` showing NO retry storm (a
+    single request, matching the real 404 case in check_b3b_6, since a 400
+    naming a missing file needs no backoff any more than a 404 does).
+
+    A companion assertion, so the fix cannot widen into swallowing real
+    failures (invariant 5): a genuine 500, and a 400 with an UNRELATED message,
+    must still RAISE `DownloadError` exactly as they do today.
+
+    GUESS FLAGGED: the target status for this outcome is asserted as
+    `"absent"` (matching the real-404 case's status string, per the task's
+    instruction to record it "as ABSENT" / "an absent row"), not a new
+    `"measured_zero"`-like status -- `_NO_DATA_POSSIBLE_MARKERS`'s existing
+    "measured_zero" status is reserved for D7's "no deployment / window not
+    yet elapsed" 400s, a different finding (there IS a deployment, ONC simply
+    has no file for this filename) -- but the exact literal is an
+    implementation choice, not observed fact, and is called out here rather
+    than hidden.
+
+    EXPECTED TO FAIL right now: current `download_archive_file` raises
+    `DownloadError` for this message (it matches neither
+    `_NO_DATA_POSSIBLE_MARKERS` entry), so `raised is None` below fails.
+    """
+    _cfg, onc = _b3b_mod()
+
+    no_file_could_be_found_filename = B3B_FAKE_FILENAME
+    unrelated_400_filename = "ICLISTENHF1266_20240716T000136.000Z.fft.gz"
+
+    class _NoFileFoundTransport(_B3BFakeTransport):
+        """Returns ONC's real Error-96 body for one filename, a 500 for
+        another, and an UNRELATED 400 message for a third -- so the check can
+        assert all three outcomes in one fixture without re-defining the base
+        transport."""
+
+        def get(self, filename, range_start=0):
+            self.calls.append((filename, range_start))
+            if filename == no_file_could_be_found_filename:
+                return _B3BFakeResponse(
+                    400, error_text="API Error 96: No file could be found."
+                )
+            if filename == "GENUINE-500-CASE":
+                return _B3BFakeResponse(500, error_text="simulated 500 (test fixture)")
+            if filename == unrelated_400_filename:
+                return _B3BFakeResponse(
+                    400, error_text="API Error 99: Some other, unrelated failure."
+                )
+            return super().get(filename, range_start=range_start)
+
+    # --- Part A: "No file could be found" must be ABSENT, not raised, and
+    # must not trigger a retry storm (one request, like the real-404 path). ---
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _NoFileFoundTransport({})
+
+        raised = None
+        result = None
+        try:
+            result = onc.download_archive_file(
+                client=None, filename=no_file_could_be_found_filename, dest_dir=dest_dir,
+                transport=transport, sleep=lambda _s: None,
+            )
+        except Exception as exc:  # noqa: BLE001 -- must NOT raise; caught to report clearly
+            raised = exc
+        assert raised is None, (
+            f"ONC's 'API Error 96: No file could be found.' 400 raised "
+            f"{type(raised).__name__ if raised else None}: {raised}; a missing archive "
+            "file is a measured ABSENCE, not a broken request, and must not raise "
+            "DownloadError -- over 918 dates this both mislabels the absent-log (which "
+            "segment D consumes) and burns a run on retries"
+        )
+        status = getattr(result, "status", None)
+        assert status is not None and str(status).lower() == "absent", (
+            f"expected status 'absent' for ONC Error 96 ('No file could be found'), got "
+            f"{status!r} from {result!r}"
+        )
+        attempts = getattr(result, "attempts", None)
+        assert attempts == 1, (
+            f"expected exactly 1 attempt (no retry storm) for a 'file does not exist' "
+            f"answer, got attempts={attempts!r} from {result!r} -- retrying a file ONC "
+            "has just said does not exist wastes an attempt budget across 918 dates for "
+            "no possible different outcome"
+        )
+        assert len(transport.calls) == 1, (
+            f"transport.get() was called {len(transport.calls)} time(s) for a single "
+            f"Error-96 answer; expected exactly 1 (calls={transport.calls!r})"
+        )
+        assert not (dest_dir / no_file_could_be_found_filename).exists(), (
+            "a file appeared at the final path for a filename ONC says cannot be found"
+        )
+
+    # --- Part B (companion, invariant 5): unrelated real failures still RAISE. ---
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _NoFileFoundTransport({})
+        try:
+            onc.download_archive_file(
+                client=None, filename="GENUINE-500-CASE", dest_dir=dest_dir,
+                transport=transport, sleep=lambda _s: None,
+            )
+        except onc.DownloadError:
+            pass
+        else:
+            raise AssertionError(
+                "a genuine 500 was not raised as DownloadError; the fix for Fact 2 must "
+                "not widen into swallowing real server failures (invariant 5)"
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _NoFileFoundTransport({})
+        try:
+            onc.download_archive_file(
+                client=None, filename=unrelated_400_filename, dest_dir=dest_dir,
+                transport=transport, sleep=lambda _s: None,
+            )
+        except onc.DownloadError:
+            pass
+        else:
+            raise AssertionError(
+                "a 400 with an UNRELATED message ('API Error 99: ...') was not raised as "
+                "DownloadError; only the exact 'No file could be found' family may be "
+                "absorbed as absent -- widening the match would swallow real failures "
+                "(invariant 5)"
+            )
+
+
+# ---------------------------------------------------------------------------
+# B3-E: the bulk pull compresses each file as it lands on disk.
+#
+# NEW CONTRACT under test (decision 0022 established the WIRE format is plain
+# ASCII; this segment is the follow-on decision that the LOCAL COPY of that
+# plain ASCII is gzip-compressed at write time, because the full corpus is
+# ~40 GB uncompressed and ~8 GB gzipped -- ASCII digits compress ~4.9x).
+#
+# `download_archive_file` as it stands (read above, ~line 1574) writes
+# whatever bytes `transport.get()` hands it, VERBATIM, to `<filename>.part`
+# and then to the final path. It does not compress anything, and its sha256
+# sidecar is computed over exactly the bytes written to disk (`_sha256_of_file`
+# on the FINAL path). So every check below is EXPECTED TO FAIL right now:
+# there is no gzip magic at the final path, and (once compression is added by
+# a naive implementation that just gzips-then-hashes-the-container) the
+# sidecar hash will be the WRONG thing to check against -- that is check 2's
+# whole point.
+#
+# DECIDED (2026-08-27, human decision -- was previously "GUESS FLAGGED, real
+# design fork, not resolved here"): the compressed file IS renamed/suffixed to
+# `....fft.gz` on write -- the name states the container it actually holds,
+# honestly, rather than leaving a `.fft`-named file holding gzip bytes.
+# `check_b3c_11` (this file) was AMENDED accordingly: it now pins that
+# `boatphone.acquire.resolve_corpus_files` matches BOTH `*.<ARCHIVE_EXTENSION>`
+# (`.fft`, the 90 already-pulled plain files data/ immutability forbids ever
+# converting) AND `*.<PRODUCT_EXTENSION>` (`.fft.gz`, every future bulk-pull
+# download) -- the previous exclusion of `.fft.gz` is gone, not defended. The
+# checks below still do NOT hardcode the name into their own fixtures where
+# avoidable -- they call `download_archive_file` and then ask where it
+# actually put the bytes -- but `check_b3e_4`/`check_b3e_5` below now assert
+# the `.fft.gz` name explicitly where that pins the decided contract more
+# strongly, rather than staying deliberately agnostic about a question that is
+# no longer open.
+# ---------------------------------------------------------------------------
+
+# A REALISTIC, REPETITIVE plain-ASCII payload standing in for a real `.fft`
+# product: real files are 614,400 whitespace-separated small integers (values
+# 0-92, decision 0022), which is exactly the kind of low-cardinality,
+# repetitive text gzip compresses well. This fixture is smaller (for test
+# speed) but keeps the same character: a few repeating digit tokens, tens of
+# thousands of times over. A tiny or random payload is NOT used for the
+# smaller-than-original assertion because gzip's own header/block overhead can
+# make a short or high-entropy input LARGER, not smaller -- that would be
+# testing gzip's known behaviour on a bad input, not this pipeline's contract.
+_B3E_PLAIN_ASCII_PAYLOAD = (
+    " ".join(str(v) for v in ([0, 1, 2, 4, 8, 16, 32, 64] * 20000)) + "\n"
+).encode("ascii")
+_B3E_FAKE_FILENAME = "ICLISTENHF1266_20240715T000136.000Z.fft"
+
+
+def _b3e_gzip_magic(data: bytes) -> bool:
+    return data[:2] == b"\x1f\x8b"
+
+
+def check_b3e_1_downloaded_bytes_land_gzip_compressed_and_round_trip_exactly():
+    """The on-disk copy of a downloaded `.fft` file is gzip-compressed, and
+    decompresses back to the EXACT wire bytes byte-for-byte.
+
+    A fake transport serves `_B3E_PLAIN_ASCII_PAYLOAD` (realistic, repetitive
+    plain ASCII, per decision 0022's measured contract) through
+    `download_archive_file`. Pins three things at once: (a) gzip magic bytes
+    `1f 8b` at the start of whatever file `download_archive_file` leaves
+    behind that holds the payload; (b) `gzip.decompress()` on that file
+    reproduces the payload byte-for-byte, not merely "close" or
+    length-matched; (c) the stored file is measurably SMALLER than the
+    payload -- meaningful here because the fixture is large and repetitive
+    (unlike a tiny/random payload, where gzip can legitimately expand the
+    input; that case is deliberately not asserted on).
+
+    EXPECTED TO FAIL right now: `download_archive_file` writes the transport's
+    bytes verbatim with no compression step, so the final file has no gzip
+    magic and is exactly `len(payload)` bytes, not smaller.
+    """
+    import gzip as _gzip
+    _cfg, onc = _b3b_mod()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _B3BFakeTransport({_B3E_FAKE_FILENAME: _B3E_PLAIN_ASCII_PAYLOAD})
+        record = onc.download_archive_file(
+            client=None, filename=_B3E_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=transport, sleep=lambda _s: None,
+        )
+        assert getattr(record, "status", None) == "downloaded", (
+            f"expected a fresh 'downloaded' record from a single-shot fake transport, "
+            f"got {record!r}"
+        )
+        path = getattr(record, "path", None)
+        assert path is not None and pathlib.Path(path).is_file(), (
+            f"download_archive_file returned status='downloaded' but {record!r}.path is not "
+            "a real file"
+        )
+        path = pathlib.Path(path)
+        on_disk = path.read_bytes()
+
+        assert _b3e_gzip_magic(on_disk), (
+            f"{path} does not start with the gzip magic bytes (1f 8b); its first two bytes "
+            f"are {on_disk[:2]!r}. The bulk-pull contract under test is that each file is "
+            "compressed as it is written to disk (the full corpus is ~40 GB uncompressed vs "
+            "~8 GB gzipped, decision 0022's follow-on) -- this is the not-yet-implemented "
+            "compression step"
+        )
+        decompressed = _gzip.decompress(on_disk)
+        assert decompressed == _B3E_PLAIN_ASCII_PAYLOAD, (
+            f"decompressing {path} gave {len(decompressed)} byte(s), not the original "
+            f"{len(_B3E_PLAIN_ASCII_PAYLOAD)}-byte wire payload byte-for-byte -- the round "
+            "trip must be exact, not merely the right length"
+        )
+        assert len(on_disk) < len(_B3E_PLAIN_ASCII_PAYLOAD), (
+            f"{path} is {len(on_disk)} byte(s) on disk, not smaller than the "
+            f"{len(_B3E_PLAIN_ASCII_PAYLOAD)}-byte payload it was compressed from. This "
+            "assertion is only meaningful because the fixture payload is large and "
+            "repetitive (ASCII digits compress ~4.9x per decision 0022) -- it is "
+            "deliberately not asserted for a tiny or random payload, where gzip's own "
+            "header/block overhead can legitimately make the output larger"
+        )
+
+
+def check_b3e_2_sha256_sidecar_hashes_the_wire_bytes_not_the_compressed_container():
+    """The `.sha256` sidecar records `sha256(plain wire payload)`, NEVER
+    `sha256(the gzip container written to disk)`.
+
+    This is the subtle contract, and the reason it is checked separately from
+    check_b3e_1: decision 0018 defines the local sha256 as the integrity
+    record of WHAT WAS RECEIVED. If compression is bolted on by hashing the
+    compressed bytes instead, the existing cache-hit re-verification keeps
+    passing -- nothing observably breaks -- but the number it is now checking
+    means something different, and gzip's own container is not even a stable
+    thing to hash: gzip is not deterministic across zlib versions, mtime
+    embedding, or compresslevel, so a hash of compressed bytes is not
+    reproducible the way a hash of the plain payload is.
+
+    Both directions are asserted so this cannot pass vacuously: the recorded
+    hash MUST equal `sha256(plain payload)`, and MUST NOT equal
+    `sha256(on-disk compressed bytes)` -- the two are asserted unequal first,
+    so a future accidental collision could never make this check meaningless.
+
+    EXPECTED TO FAIL right now for the boring reason (no compression exists
+    yet, so on-disk bytes ARE the plain bytes and the two hashes coincide) --
+    and expected to keep failing, for the real reason, against a naive
+    "gzip then hash the container" implementation.
+    """
+    import hashlib as _hashlib
+    _cfg, onc = _b3b_mod()
+
+    plain_sha = _hashlib.sha256(_B3E_PLAIN_ASCII_PAYLOAD).hexdigest()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _B3BFakeTransport({_B3E_FAKE_FILENAME: _B3E_PLAIN_ASCII_PAYLOAD})
+        record = onc.download_archive_file(
+            client=None, filename=_B3E_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=transport, sleep=lambda _s: None,
+        )
+        path = pathlib.Path(record.path)
+        on_disk = path.read_bytes()
+        on_disk_sha = _hashlib.sha256(on_disk).hexdigest()
+
+        # Requires compression to actually exist first: if it does not (today),
+        # on_disk_sha == plain_sha and the "must differ" assertion below would
+        # be checking a fact that is true for the wrong reason. That state is
+        # exactly check_b3e_1's failure, so it is named here rather than
+        # silently letting this check "pass" on an unrelated technicality.
+        assert _b3e_gzip_magic(on_disk), (
+            f"{path} is not gzip-compressed (no magic bytes) -- the compression step under "
+            "test does not exist yet (see check_b3e_1). Without it, on-disk bytes ARE the "
+            "plain bytes and the 'sha differs from container hash' assertion below would be "
+            "checking a coincidence, not the real contract"
+        )
+
+        recorded_sha = getattr(record, "sha256", None)
+        assert recorded_sha is not None, (
+            f"download_archive_file's DownloadRecord carries no sha256: {record!r}"
+        )
+        assert recorded_sha == plain_sha, (
+            f"recorded sha256 ({recorded_sha}) does not equal sha256(plain wire payload) "
+            f"({plain_sha}) -- decision 0018's local sha256 is the integrity record of what "
+            "was RECEIVED, and it must survive a compression step applied only to the "
+            "on-disk representation"
+        )
+        assert recorded_sha != on_disk_sha, (
+            f"recorded sha256 ({recorded_sha}) equals sha256(on-disk compressed bytes) "
+            f"({on_disk_sha}) -- gzip is not deterministic across zlib versions, mtime "
+            "embedding, or compresslevel, so a hash of the compressed CONTAINER is not even "
+            "a stable value to store, on top of being the wrong thing to hash"
+        )
+
+
+def check_b3e_3_cache_hit_reverifies_a_compressed_file_and_catches_corruption():
+    """Re-running against an already-downloaded COMPRESSED file is a clean
+    cache hit (no re-download), verified by decompressing and hashing the
+    PLAIN bytes -- and a corrupted compressed file is caught, not accepted.
+
+    Two runs share one fake transport and one `dest_dir`. The first run
+    performs the (not-yet-implemented) compressed download. The second run
+    must: (a) issue ZERO further transport calls (`len(transport.calls)`
+    unchanged) -- a "cache hit" that silently re-downloads defeats the whole
+    point of resumability at 918-date scale; (b) return `status == "cached"`.
+
+    The corruption half then mutates the stored file's DECOMPRESSED content
+    (by writing a fresh gzip container over different bytes, so the file
+    still carries valid gzip magic and opens fine -- only its content is
+    wrong) and re-runs: this MUST be detected (a raise, per
+    `download_archive_file`'s existing "cached hash mismatch never silently
+    overwritten" contract, CLAUDE.md invariant 2) rather than silently
+    accepted as another clean cache hit.
+
+    EXPECTED TO FAIL right now: no compression exists, so there is nothing
+    to decompress on a cache hit, and today's cache-hit path already hashes
+    the on-disk bytes directly -- which happens to catch this PARTICULAR
+    corruption fixture today (a real 200), but check_b3e_2 above shows why
+    that coincidence does not survive compression being added.
+    """
+    import gzip as _gzip
+    _cfg, onc = _b3b_mod()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _B3BFakeTransport({_B3E_FAKE_FILENAME: _B3E_PLAIN_ASCII_PAYLOAD})
+
+        first = onc.download_archive_file(
+            client=None, filename=_B3E_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=transport, sleep=lambda _s: None,
+        )
+        assert first.status == "downloaded", f"expected a fresh download, got {first!r}"
+        path = pathlib.Path(first.path)
+        assert _b3e_gzip_magic(path.read_bytes()), (
+            f"{path} is not gzip-compressed after the first download (no magic bytes) -- "
+            "the compression step under test does not exist yet (see check_b3e_1)"
+        )
+        calls_after_first = len(transport.calls)
+
+        second = onc.download_archive_file(
+            client=None, filename=_B3E_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=transport, sleep=lambda _s: None,
+        )
+        assert len(transport.calls) == calls_after_first, (
+            f"a cache-hit re-run against an already-downloaded compressed file issued "
+            f"{len(transport.calls) - calls_after_first} MORE transport call(s) -- a cache "
+            "hit must never re-download"
+        )
+        assert second.status == "cached", (
+            f"expected status='cached' on the second run against an already-downloaded "
+            f"compressed file, got {second!r}"
+        )
+
+        # Corrupt: overwrite the stored file with a VALID gzip container that
+        # decompresses to DIFFERENT content, so a naive "does this open as
+        # gzip" check would pass while the actual content is wrong.
+        wrong_payload = b"CORRUPTED-NOT-THE-REAL-PAYLOAD " * 100
+        with open(path, "wb") as handle:
+            handle.write(_gzip.compress(wrong_payload))
+
+        raised = None
+        try:
+            onc.download_archive_file(
+                client=None, filename=_B3E_FAKE_FILENAME, dest_dir=dest_dir,
+                transport=transport, sleep=lambda _s: None,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the raise IS the expected outcome
+            raised = exc
+        assert raised is not None, (
+            f"download_archive_file silently accepted a compressed file whose DECOMPRESSED "
+            f"content no longer matches its recorded sha256 sidecar -- corruption of a "
+            f"compressed cache entry must be detected (CLAUDE.md invariant 2: a cached file "
+            "is never silently trusted after it fails its integrity check), exactly as an "
+            "uncompressed mismatch already raises today"
+        )
+
+
+def check_b3e_4_the_one_reader_opens_the_compressed_corpus_and_the_resolver_still_finds_it():
+    """After a compressed file lands, `fft_io.read_fft_gz` reads it AND
+    `acquire.resolve_corpus_files` still resolves it, under its actual
+    on-disk name.
+
+    DECIDED (2026-08-27, was previously "deliberately does not hardcode the
+    name, real design fork"): the compressed file's name IS
+    `config.PRODUCT_EXTENSION` (`.fft.gz`), stating the container honestly.
+    This check now pins that name explicitly rather than staying agnostic --
+    `download_archive_file` is called with a `.fft`-suffixed input filename
+    (`config.ARCHIVE_EXTENSION`, what the real archive registers under), and
+    the landed file is asserted to end `.fft.gz`, not merely "whatever it
+    ended up being". `check_b3c_11` was amended (see its docstring) to match
+    `.fft.gz` rather than exclude it, so the two checks are no longer in
+    tension -- this check now also serves as evidence they agree.
+
+    EXPECTED TO FAIL right now: no compression exists (check_b3e_1), and
+    `read_fft_gz` unconditionally `gzip.open()`s its input (module docstring,
+    boatphone/fft_io.py ~line 258) -- decision 0022 already establishes that
+    is wrong for the current PLAIN-text wire format, so this needs whatever
+    fix lands for check_b3d_1 as well, not a second reader.
+    """
+    from boatphone import acquire, fft_io, config as cfg
+    _cfg_onc, onc = _b3b_mod()
+
+    n_frames, n_bins = 2, 3
+    values = [0, 1, 2, 3, 4, 5]
+    expected = np.asarray(values, dtype=float).reshape(n_frames, n_bins)
+    payload_text = (" ".join(str(v) for v in values) + "\n").encode("ascii")
+    stamp_filename = f"ICLISTENHF1266_20240715T000136.000Z.{cfg.ARCHIVE_EXTENSION}"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc_raw" / "overpass_window_corpus"
+        transport = _B3BFakeTransport({stamp_filename: payload_text})
+        record = onc.download_archive_file(
+            client=None, filename=stamp_filename, dest_dir=dest_dir,
+            transport=transport, sleep=lambda _s: None,
+        )
+        landed_path = pathlib.Path(record.path)
+        assert landed_path.is_file(), f"no file at {landed_path} after download"
+        assert _b3e_gzip_magic(landed_path.read_bytes()), (
+            f"{landed_path} is not gzip-compressed -- the compression step under test does "
+            "not exist yet (see check_b3e_1); the reader/resolver agreement asserted below "
+            "cannot be meaningfully checked without it"
+        )
+        assert landed_path.name.endswith(f".{cfg.PRODUCT_EXTENSION}"), (
+            f"{landed_path.name!r} does not end '.{cfg.PRODUCT_EXTENSION}' -- the decided "
+            "contract (2026-08-27) is that the compressed file is named '.fft.gz', stating "
+            f"the container it holds honestly; got {landed_path.name!r}"
+        )
+
+        found = acquire.resolve_corpus_files(dest_dir)
+        found_names = {pathlib.Path(f).name for f in found}
+        assert landed_path.name in found_names, (
+            f"resolve_corpus_files({dest_dir}) did not find the compressed download at "
+            f"{landed_path.name!r} (found {found_names!r}) -- resolve_corpus_files must match "
+            "'.fft.gz' names (check_b3c_11 pins this; the prior exclusion was removed)"
+        )
+
+        product = fft_io.read_fft_gz(
+            landed_path, n_frames=n_frames, n_bins=n_bins,
+            bin_width_hz=cfg.FFT_BIN_WIDTH_HZ, frame_seconds=cfg.FFT_FRAME_SECONDS,
+            fs_hz=cfg.FFT_PRODUCT_FS_HZ,
+        )
+        assert np.array_equal(product.levels_db, expected), (
+            f"read_fft_gz({landed_path}) returned {product.levels_db.tolist()}, expected "
+            f"{expected.tolist()} -- the ONE reader must open the compressed corpus that "
+            "the bulk pull actually produces, not just the hand-delivered sample's format"
+        )
+
+
+def check_b3e_5_mixed_corpus_of_already_pulled_plain_text_and_new_gzip_files_both_work():
+    """A corpus mixing the 90 already-pulled PLAIN-TEXT probe files (real,
+    under `data/raw/onc/overpass_window_corpus/`, immutable, never re-pulled)
+    with newly-bulk-pulled GZIP-compressed files must resolve and read
+    correctly for BOTH kinds at once.
+
+    Uses SYNTHETIC fixtures standing in for the real 90 files -- `data/` is
+    never touched, read, or written by this check (test-author brief; CLAUDE.md
+    invariant 2). The two synthetic files share one directory: one plain-ASCII
+    `.fft` (mimicking the already-pulled probe corpus, decision 0022) and one
+    gzip-compressed file (mimicking a fresh bulk-pull download, built through
+    the same `download_archive_file` path check_b3e_1 exercises, not a
+    hand-rolled gzip.compress -- so this check exercises the real write path,
+    not a stand-in for it). DECIDED (2026-08-27): the landed compressed file
+    must be named `.fft.gz` (`config.PRODUCT_EXTENSION`), asserted explicitly
+    below, not just "some name the resolver happens to accept" -- this is the
+    mixed steady state the corpus is expected to be in from now on.
+
+    EXPECTED TO FAIL right now for TWO independent reasons, either of which is
+    sufficient: (1) no compression exists yet (check_b3e_1), so there is only
+    one kind of file to mix; (2) even once there is, `read_fft_gz` does not
+    yet sniff content over trusting the extension (check_b3d_1's contract),
+    so a plain-text `.fft` file raises `BadGzipFile` today.
+    """
+    from boatphone import acquire, fft_io, config as cfg
+    _cfg_onc, onc = _b3b_mod()
+
+    n_frames, n_bins = 1, 4
+    plain_values = [10, 20, 30, 40]
+    gzip_values = [50, 60, 70, 80]
+    plain_expected = np.asarray(plain_values, dtype=float).reshape(n_frames, n_bins)
+    gzip_expected = np.asarray(gzip_values, dtype=float).reshape(n_frames, n_bins)
+
+    plain_stamp = f"ICLISTENHF1266_20240715T000136.000Z.{cfg.ARCHIVE_EXTENSION}"
+    gzip_stamp = f"ICLISTENHF1266_20240715T000636.000Z.{cfg.ARCHIVE_EXTENSION}"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = pathlib.Path(tmp) / "onc_raw" / "overpass_window_corpus"
+        corpus_dir.mkdir(parents=True)
+
+        # Stand-in for an already-pulled probe file: written directly as
+        # plain ASCII, exactly what the 90 real files under
+        # data/raw/onc/overpass_window_corpus/ are (decision 0022) -- no
+        # download_archive_file call needed for this half since it predates
+        # the compression feature under test.
+        plain_text = (" ".join(str(v) for v in plain_values) + "\n").encode("ascii")
+        (corpus_dir / plain_stamp).write_bytes(plain_text)
+
+        # Stand-in for a freshly bulk-pulled file: through the REAL
+        # download_archive_file path, so this exercises the actual write
+        # behaviour rather than a hand-built gzip fixture.
+        gzip_text = (" ".join(str(v) for v in gzip_values) + "\n").encode("ascii")
+        transport = _B3BFakeTransport({gzip_stamp: gzip_text})
+        record = onc.download_archive_file(
+            client=None, filename=gzip_stamp, dest_dir=corpus_dir,
+            transport=transport, sleep=lambda _s: None,
+        )
+        gzip_path = pathlib.Path(record.path)
+        assert _b3e_gzip_magic(gzip_path.read_bytes()), (
+            f"{gzip_path} is not gzip-compressed -- the compression step under test does not "
+            "exist yet (see check_b3e_1)"
+        )
+        assert gzip_path.name.endswith(f".{cfg.PRODUCT_EXTENSION}"), (
+            f"{gzip_path.name!r} does not end '.{cfg.PRODUCT_EXTENSION}' -- the decided "
+            "contract (2026-08-27) is that the compressed file is named '.fft.gz'; got "
+            f"{gzip_path.name!r}"
+        )
+
+        found = acquire.resolve_corpus_files(corpus_dir)
+        found_names = {pathlib.Path(f).name for f in found}
+        assert plain_stamp in found_names, (
+            f"resolve_corpus_files({corpus_dir}) did not find the plain-text probe-style "
+            f"file {plain_stamp!r} in a MIXED corpus; got {found_names!r}"
+        )
+        assert gzip_path.name in found_names, (
+            f"resolve_corpus_files({corpus_dir}) did not find the gzip-compressed bulk-pull "
+            f"file {gzip_path.name!r} in a MIXED corpus; got {found_names!r}"
+        )
+
+        plain_product = fft_io.read_fft_gz(
+            corpus_dir / plain_stamp, n_frames=n_frames, n_bins=n_bins,
+            bin_width_hz=cfg.FFT_BIN_WIDTH_HZ, frame_seconds=cfg.FFT_FRAME_SECONDS,
+            fs_hz=cfg.FFT_PRODUCT_FS_HZ,
+        )
+        assert np.array_equal(plain_product.levels_db, plain_expected), (
+            f"read_fft_gz on the plain-text probe-style file returned "
+            f"{plain_product.levels_db.tolist()}, expected {plain_expected.tolist()}"
+        )
+
+        gzip_product = fft_io.read_fft_gz(
+            gzip_path, n_frames=n_frames, n_bins=n_bins,
+            bin_width_hz=cfg.FFT_BIN_WIDTH_HZ, frame_seconds=cfg.FFT_FRAME_SECONDS,
+            fs_hz=cfg.FFT_PRODUCT_FS_HZ,
+        )
+        assert np.array_equal(gzip_product.levels_db, gzip_expected), (
+            f"read_fft_gz on the gzip-compressed bulk-pull file returned "
+            f"{gzip_product.levels_db.tolist()}, expected {gzip_expected.tolist()}"
+        )
+
+
+def check_b3e_6_compressed_resume_offset_is_wire_bytes_not_compressed_part_size():
+    """Resuming a COMPRESSED (`.fft.gz`, compress-on-write) download must ask
+    the server to resume at the next WIRE (plain, decompressed) byte -- never
+    at the on-disk COMPRESSED size of the `.part`.
+
+    This pins a bug the coder actually hit and fixed (`_wire_bytes_on_disk` in
+    `boatphone/onc_client.py`): with compress-on-write, the bytes on disk are
+    NOT the bytes received. Using `.part.stat().st_size` (compressed) as
+    `range_start` asks the server -- which serves plain wire bytes and knows
+    nothing about local compression -- to resume at a number smaller than the
+    plain bytes actually already held. The response is then measured against
+    `response.total_size` (also stated in plain/wire bytes), which the
+    resumed leg can never reach: `got_size < expected_total` forever, an
+    infinite short-body retry loop that never promotes the file.
+
+    A fake transport records the `range_start` it is asked for on the resumed
+    (206) leg, AND independently snapshots the `.part` file on disk at the
+    exact instant that resumed request is issued (via `dest_dir.rglob`, not
+    by trusting the implementation's own idea of the offset). From that
+    snapshot the check recomputes, itself, what the WIRE offset should be by
+    decompressing the snapshot -- so this does not just re-run the function
+    under test's own arithmetic back at it. The fixture payload
+    (`_B3E_PLAIN_ASCII_PAYLOAD`, repetitive ASCII, ~4.9x compressible per
+    decision 0022) is chosen so the compressed and plain byte counts of that
+    same snapshot are asserted UNEQUAL first -- the two candidate offsets
+    (wire vs. compressed) must actually differ, or an implementation reading
+    the wrong one would pass by coincidence and this check would be vacuous.
+
+    Outcome coverage, not just the mid-flight offset: the file finally
+    promoted to the final path must decompress to the complete, exact
+    original payload, and its `.sha256` sidecar (decision 0024) must equal
+    `sha256(plain wire payload)` -- not `sha256(compressed bytes)` -- mirroring
+    check_b3e_2's contract but now via a resumed transfer specifically, since
+    a resume that reads or writes the wrong byte count could plausibly still
+    self-correct into a right final hash and a wrong one is worth separately
+    ruling out.
+
+    GUARDING A BRANCH NOT CURRENTLY REACHABLE IN PRODUCTION, stated so a later
+    reader does not mistake this for observed live behaviour: decision 0018
+    records that ONC ignores the `Range` header in practice and always
+    answers with a bare 200, so the 206-honoured resume path this check
+    drives is real code, exercised here, but not a path the live ONC archive
+    currently takes.
+
+    Per the coder's own account this is ALREADY FIXED (`_wire_bytes_on_disk`
+    reads via `gzip.open(...).read()` in chunks rather than `st_size`), so
+    this check is expected to PASS immediately -- it is written to PIN that
+    fix against a future regression (e.g. a "simplify away the decompress
+    loop" refactor that quietly goes back to `st_size`), not to demonstrate a
+    currently-broken implementation.
+    """
+    import gzip as _gzip
+    import hashlib as _hashlib
+    _cfg, onc = _b3b_mod()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        class _CompressedResumeTransport(_B3BFakeTransport):
+            """206-honouring resume transport (as `_B3BFakeTransport206OnResume`)
+            that ALSO snapshots whatever `.part` file exists on disk at the
+            instant each resumed (`range_start > 0`) request is issued, so the
+            check can independently recompute the WIRE-byte offset a correct
+            implementation must ask for -- rather than trusting the value the
+            implementation itself passes as `range_start`.
+            """
+
+            def __init__(self, content_by_name):
+                super().__init__(content_by_name)
+                self.part_snapshots_at_resume = []
+
+            def get(self, filename, range_start=0):
+                if range_start > 0:
+                    part_files = list(dest_dir.rglob("*.part"))
+                    assert part_files, (
+                        "resume was attempted (range_start > 0) but no .part sidecar "
+                        f"exists under {dest_dir} -- nothing to resume from"
+                    )
+                    assert len(part_files) == 1, (
+                        f"expected exactly one .part file at resume time, found {part_files}"
+                    )
+                    self.part_snapshots_at_resume.append(part_files[0].read_bytes())
+                self.calls.append((filename, range_start))
+                full = self.content_by_name[filename]
+                if range_start > 0:
+                    return _B3BFakeResponse(206, body=full[range_start:], total_size=len(full))
+                interrupt_after = None
+                if self.interrupt_once_after is not None:
+                    interrupt_after = self.interrupt_once_after
+                    self.interrupt_once_after = None  # only the FIRST attempt is interrupted
+                return _B3BFakeResponse(
+                    200, body=full, total_size=len(full), interrupt_after=interrupt_after
+                )
+
+        transport = _CompressedResumeTransport({_B3E_FAKE_FILENAME: _B3E_PLAIN_ASCII_PAYLOAD})
+        # Plain (wire) bytes served before the simulated drop. Small relative
+        # to chunk_bytes below so the interrupt lands after several whole
+        # chunks, giving the .part real partial content to snapshot.
+        transport.interrupt_once_after = 4096
+
+        result = onc.download_archive_file(
+            client=None, filename=_B3E_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=transport, sleep=lambda _s: None, chunk_bytes=512,
+        )
+
+        range_starts = [rs for (_fn, rs) in transport.calls]
+        resumed_offsets = [rs for rs in range_starts if rs > 0]
+        assert resumed_offsets, (
+            f"transport.get() was never called with a partial range_start ({range_starts!r}) "
+            "-- the interrupted-then-resumed leg this check depends on never happened, so "
+            "nothing about the resume offset was exercised"
+        )
+        assert len(resumed_offsets) == len(transport.part_snapshots_at_resume), (
+            "resumed range_start calls and .part snapshots are out of step "
+            f"({len(resumed_offsets)} vs {len(transport.part_snapshots_at_resume)}) -- "
+            "the fixture's own bookkeeping is broken, not the code under test"
+        )
+        requested_offset = resumed_offsets[0]
+        part_snapshot = transport.part_snapshots_at_resume[0]
+
+        compressed_len = len(part_snapshot)
+        decompressed_len = len(_gzip.decompress(part_snapshot))
+
+        assert decompressed_len != compressed_len, (
+            f"the .part snapshot decompresses to {decompressed_len} byte(s) but is "
+            f"{compressed_len} byte(s) on disk -- these must be UNEQUAL for the fixture "
+            "payload (repetitive ASCII, ~4.9x compressible), or wire-bytes-vs-compressed-"
+            "bytes cannot be distinguished and this check would pass no matter which one "
+            "the implementation used"
+        )
+        assert requested_offset == decompressed_len, (
+            f"resume requested range_start={requested_offset}, but the .part file on disk "
+            f"at that moment held {compressed_len} compressed byte(s) decompressing to "
+            f"{decompressed_len} WIRE byte(s). "
+            + (
+                "The implementation is reading the on-disk (COMPRESSED) size as the resume "
+                "offset -- this asks the server (which serves plain wire bytes and knows "
+                "nothing of local compression) to resume too early, and the response can "
+                "never reach response.total_size (stated in wire bytes): an infinite "
+                "short-body retry loop that never promotes the file."
+                if requested_offset == compressed_len else
+                "The requested offset matches neither the compressed nor the decompressed "
+                "size of the .part snapshot -- something else is wrong with the resume "
+                "offset calculation."
+            )
+        )
+
+        final_path = getattr(result, "path", None)
+        assert final_path is not None and pathlib.Path(final_path).is_file(), (
+            f"download_archive_file did not promote a final file after the resumed transfer "
+            f"completed: {result!r}"
+        )
+        final_path = pathlib.Path(final_path)
+        on_disk = final_path.read_bytes()
+        assert _b3e_gzip_magic(on_disk), (
+            f"{final_path} does not carry the gzip magic bytes after a compressed resumed "
+            "download"
+        )
+        decompressed_final = _gzip.decompress(on_disk)
+        assert decompressed_final == _B3E_PLAIN_ASCII_PAYLOAD, (
+            f"the promoted file decompresses to {len(decompressed_final)} byte(s), not the "
+            f"original {len(_B3E_PLAIN_ASCII_PAYLOAD)}-byte payload byte-for-byte, after a "
+            "compressed resumed download -- concatenated gzip members (one per resumed leg) "
+            "must decompress to the exact concatenation of the plain bytes"
+        )
+
+        sha_path = final_path.with_name(final_path.name + ".sha256")
+        assert sha_path.is_file(), (
+            f"no .sha256 sidecar written at {sha_path} after a compressed resumed download "
+            "completed (decision 0024)"
+        )
+        recorded_sha = sha_path.read_text(encoding="utf-8").strip()
+        plain_sha = _hashlib.sha256(_B3E_PLAIN_ASCII_PAYLOAD).hexdigest()
+        on_disk_sha = _hashlib.sha256(on_disk).hexdigest()
+        assert recorded_sha == plain_sha, (
+            f"the .sha256 sidecar records {recorded_sha}, not sha256(plain wire payload) "
+            f"({plain_sha}) -- decision 0024's sidecar must hash the WIRE bytes, and a "
+            "resumed transfer is exactly where compressed-vs-wire byte confusion would show "
+            "up in the hash too, not only in the resume offset"
+        )
+        assert recorded_sha != on_disk_sha, (
+            f"the .sha256 sidecar ({recorded_sha}) equals sha256(on-disk compressed "
+            f"container) ({on_disk_sha}) -- gzip output is not byte-stable, so hashing the "
+            "container is both the wrong thing and not even reproducible"
+        )
 
 
 CHECKS = [
@@ -8413,7 +9367,15 @@ CHECKS = [
     ("B3-C absent_log rows carry bin identity via parse_file_coverage", check_b3c_8_absent_log_rows_carry_bin_identity_via_parse_file_coverage),
     ("B3-C provenance names endpoint/absent-def/dest_dir/season/year-span/checksum caveat", check_b3c_9_provenance_names_endpoint_absent_definition_dest_dir_season_and_checksum_caveat),
     ("B3-C two manifest writes in the same dest do not collide", check_b3c_10_two_manifest_writes_in_the_same_dest_do_not_collide),
-    ("B3-C ONE shared corpus resolver finds *.fft (not *.fft.gz), raises when absent", check_b3c_11_corpus_resolver_finds_fft_extension_only_and_raises_when_absent),
+    ("B3-C ONE shared corpus resolver finds *.fft AND *.fft.gz, excludes sidecars, raises when absent", check_b3c_11_corpus_resolver_finds_fft_and_fft_gz_but_not_sidecars_and_raises_when_absent),
+    ("B3-D FACT1: read_fft_gz accepts plain-ASCII and gzip by CONTENT, not extension", check_b3d_1_fft_reader_accepts_plain_ascii_and_gzip_by_content_not_extension),
+    ("B3-D FACT2: ONC 400 'No file could be found' is ABSENT, not raised, no retry storm", check_b3d_2_onc_400_no_file_could_be_found_is_absent_not_error_no_retry_storm),
+    ("B3-E downloaded bytes land gzip-compressed and round-trip exactly", check_b3e_1_downloaded_bytes_land_gzip_compressed_and_round_trip_exactly),
+    ("B3-E sha256 sidecar hashes the WIRE bytes, not the compressed container", check_b3e_2_sha256_sidecar_hashes_the_wire_bytes_not_the_compressed_container),
+    ("B3-E cache-hit re-verifies a compressed file and catches corruption", check_b3e_3_cache_hit_reverifies_a_compressed_file_and_catches_corruption),
+    ("B3-E the ONE reader opens the compressed corpus and the resolver still finds it", check_b3e_4_the_one_reader_opens_the_compressed_corpus_and_the_resolver_still_finds_it),
+    ("B3-E compressed resume offset is WIRE bytes, not compressed .part size", check_b3e_6_compressed_resume_offset_is_wire_bytes_not_compressed_part_size),
+    ("B3-E mixed corpus of already-pulled plain-text and new gzip files both work", check_b3e_5_mixed_corpus_of_already_pulled_plain_text_and_new_gzip_files_both_work),
 ]
 
 

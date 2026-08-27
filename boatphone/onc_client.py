@@ -41,17 +41,22 @@ Units: `BIN_SECONDS` and all interval arithmetic are in seconds; timestamps are
 seconds since the UTC epoch.
 """
 
+import contextlib
 import csv
+import gzip
 import hashlib
 import random
 import re
 import time
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from boatphone.paths import ensure_dir
 from boatphone.config import (
     ARCHIVE_EXTENSION,
+    GZIP_CONTAINER_SUFFIX,
+    GZIP_MAGIC_BYTES,
     BIN_SECONDS,
     DEVICE_CATEGORY_CODE,
     DEVICE_CODE,
@@ -330,6 +335,29 @@ _LISTING_METHODS = ("getArchivefileByLocation", "getListByLocation")
 _NO_DATA_POSSIBLE_MARKERS = (
     "not during the provided time range",   # API Error 127: no deployment
     "Start Time is in the future",          # API Error 25: window not yet elapsed
+)
+
+# A 400 whose body carries this marker means ONC has looked for the named
+# archive file and does not have it -- an ABSENT file, the same evidentiary
+# status a real 404 gets, not a broken request (decision 0023, measured
+# 2026-08-27 by probing a deliberately non-existent filename against
+# archivefile/download: `400, API Error 96: No file could be found.`).
+#
+# DELIBERATELY SEPARATE from _NO_DATA_POSSIBLE_MARKERS above, not appended to
+# it. Those markers mean "no data CAN exist here" (no deployment, window not
+# elapsed) and download_archive_file reports them as status "measured_zero",
+# which decision 0007 and check_b3b_7 reserve for exactly that finding. This is
+# a different finding -- there IS a deployment, ONC simply has no file of that
+# name -- and it is reported as "absent". Folding the two together would put a
+# missing file into the D7 measured-zero bucket that segment D reads as a
+# positive statement about the instrument.
+#
+# NARROW ON PURPOSE (invariant 5): every other 400 body and every 5xx still
+# raises DownloadError. Whether "API Error 96" is the only 400 ONC returns for
+# a missing file is NOT established -- checked once, by name, against one
+# request (decision 0023).
+_FILE_DOES_NOT_EXIST_MARKERS = (
+    "API Error 96",   # "No file could be found."
 )
 
 
@@ -1546,6 +1574,80 @@ class DownloadRecord:
         )
 
 
+def _holds_gzip_container(path: Path) -> bool:
+    """True if the FIRST BYTES of `path` are gzip's, whatever the file is named.
+
+    Content, never extension: the local corpus is permanently MIXED (decision
+    0024) and name and container can disagree in both directions. The identical
+    sniff lives in `boatphone.fft_io.read_fft_gz` on the read side; both key on
+    the one `config.GZIP_MAGIC_BYTES` constant rather than restating `1f 8b`.
+    """
+    with open(path, "rb") as handle:
+        return handle.read(len(GZIP_MAGIC_BYTES)) == GZIP_MAGIC_BYTES
+
+
+def _sha256_of_wire_bytes(path: Path) -> str:
+    """sha256 of the PLAIN payload as ONC sent it, whatever container holds it.
+
+    Decision 0018 defines the local sha256 as the record of WHAT WAS RECEIVED,
+    and decision 0024 compresses the local copy on write. Those two only stay
+    compatible if the hash is taken over the wire bytes: hashing the gzip
+    container instead would keep every check passing while silently meaning
+    "what we wrote", and gzip output is not byte-stable across zlib versions,
+    compression levels or embedded mtimes, so it is not even a reproducible
+    thing to store.
+
+    Streamed, never loaded whole. A file that carries gzip magic but does not
+    decompress is a CORRUPT cache entry, and raises `DownloadError` rather than
+    escaping as a bare `BadGzipFile`/`zlib.error` from an integrity check.
+    """
+    if not _holds_gzip_container(path):
+        return _sha256_of_file(path)
+    hasher = hashlib.sha256()
+    decompress_failure = None
+    try:
+        with gzip.open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(_HASH_CHUNK_BYTES)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+    except (OSError, EOFError, zlib.error) as exc:
+        # gzip.BadGzipFile subclasses OSError. Built here, raised outside the
+        # except (like _client_call) so nothing chains onto it.
+        decompress_failure = f"{type(exc).__name__}: {exc}"
+    if decompress_failure is not None:
+        raise DownloadError(
+            f"{path} starts with the gzip magic bytes but does not decompress "
+            f"({decompress_failure}); its wire-byte sha256 cannot be computed, so it "
+            "cannot be verified against its sidecar. The file is left in place for "
+            "inspection -- a cache entry that fails its integrity check is never "
+            "silently overwritten (CLAUDE.md invariant 2)"
+        )
+    return hasher.hexdigest()
+
+
+def _wire_bytes_on_disk(path: Path) -> int:
+    """How many WIRE bytes `path` already holds -- decompressed length if gzipped.
+
+    This is the resume offset, and it must be stated in wire bytes: the server
+    counts in the bytes it sent, not in the bytes we chose to store. Using
+    `st_size` on a compressed `.part` would ask for a Range starting at the
+    COMPRESSED length -- a smaller number -- and then measure the result against
+    the server's advertised total, which would never be reached.
+    """
+    if not _holds_gzip_container(path):
+        return path.stat().st_size
+    total = 0
+    with gzip.open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(_HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+    return total
+
+
 def _sha256_of_file(path: Path) -> str:
     """Local sha256 of a file on disk, streamed -- never loaded whole into memory."""
     hasher = hashlib.sha256()
@@ -1587,7 +1689,14 @@ def download_archive_file(client, filename, *, dest_dir, transport,
       `boatphone.paths.ensure_dir()` if absent -- the ONE place a directory
       is created as a side effect of calling this, never of importing this
       module (decision 0005).
-    * **Atomicity**: bytes land in `<filename>.part` and are renamed to the
+    * **Compression (decision 0024)**: the body is gzip-compressed as it is
+      written and stored as `<filename>.gz`, unless `filename` already ends
+      `.gz`, in which case it is stored verbatim under its own name. The
+      `.sha256` sidecar always records the hash of the WIRE bytes -- the plain
+      payload as received -- never of the gzip container, so decision 0018's
+      "the sha256 records what was received" survives compression and does not
+      depend on gzip output being byte-stable (it is not).
+    * **Atomicity**: bytes land in `<local name>.part` and are renamed to the
       final path only once the transfer is verified complete and hashed.
       `Path.rename` is atomic on the same filesystem, so a file observed at
       the final path is, by construction, complete (decision 0005 §1).
@@ -1604,8 +1713,9 @@ def download_archive_file(client, filename, *, dest_dir, transport,
       against a small fixture body must pass a small value explicitly, or the
       whole body arrives in one chunk and there is no partial state to resume
       from.
-    * **Cache**: if the final path already exists, its LOCAL sha256 is
-      recomputed and checked against the `.sha256` sidecar written at
+    * **Cache**: if the final path already exists, the LOCAL sha256 of its
+      WIRE bytes is recomputed -- decompressing first if the stored copy is a
+      gzip container -- and checked against the `.sha256` sidecar written at
       download time (or `expected_sha256` if the caller supplied one and no
       sidecar exists yet). A match is a zero-byte-transferred "cached" record.
       A mismatch RAISES `DownloadError` -- it is never silently overwritten
@@ -1618,7 +1728,10 @@ def download_archive_file(client, filename, *, dest_dir, transport,
       on for listing) returns a "measured_zero" record and does not raise --
       no instrument was deployed, or the window has not elapsed, so there is
       nothing to fetch. Nothing is written at the final path.
-    * **Absent (a real 404)**: returns an "absent" record and does not raise
+    * **Absent (a real 404, or a 400 carrying `_FILE_DOES_NOT_EXIST_MARKERS`
+      -- ONC's "API Error 96: No file could be found.", decision 0023)**:
+      returns an "absent" record on the FIRST answer, with no retry and no
+      raise
       -- segment C's absent-file log is the stated consumer. Nothing is
       written at the final path.
     * **Anything else** (an unexpected status code, a transfer that never
@@ -1644,12 +1757,32 @@ def download_archive_file(client, filename, *, dest_dir, transport,
     response that stated no length at all.
     """
     dest_dir = ensure_dir(dest_dir)
-    final_path = dest_dir / filename
-    part_path = dest_dir / f"{filename}{_PART_SUFFIX}"
-    sha_path = dest_dir / f"{filename}{_SHA256_SUFFIX}"
+    # COMPRESS-ON-WRITE (decision 0024), and the one place the local name is
+    # decided. ONC serves the `.fft` product as plain ASCII (decision 0022);
+    # gzipping it as it is written takes the projected corpus from ~40 GB to
+    # ~8 GB at negligible CPU against 11.1 s/date of network time. The stored
+    # file is named with `config.GZIP_CONTAINER_SUFFIX` appended, so the name
+    # states the container honestly -- `X.fft` lands as `X.fft.gz`, which is
+    # what `boatphone.acquire.resolve_corpus_files` matches.
+    #
+    # A filename that ALREADY ends `.gz` is stored VERBATIM and not renamed:
+    # its name asserts it is already a gzip container, and re-compressing would
+    # double-wrap it and change what "the file ONC sent" means on disk. Note
+    # this is a decision about NAMING ONLY -- the reader never trusts it, it
+    # sniffs (see `boatphone.fft_io.read_fft_gz`), so a `.gz`-named file that
+    # turns out to hold plain text still reads correctly.
+    compress_on_write = not filename.endswith(GZIP_CONTAINER_SUFFIX)
+    local_name = (
+        f"{filename}{GZIP_CONTAINER_SUFFIX}" if compress_on_write else filename
+    )
+    final_path = dest_dir / local_name
+    part_path = dest_dir / f"{local_name}{_PART_SUFFIX}"
+    sha_path = dest_dir / f"{local_name}{_SHA256_SUFFIX}"
 
     if final_path.exists():
-        on_disk_sha = _sha256_of_file(final_path)
+        # The WIRE bytes, decompressed first if the stored copy is compressed --
+        # never the container's own bytes (decision 0024 §1).
+        on_disk_sha = _sha256_of_wire_bytes(final_path)
         recorded_sha = None
         if sha_path.exists():
             recorded_sha = sha_path.read_text(encoding="utf-8").strip()
@@ -1692,7 +1825,8 @@ def download_archive_file(client, filename, *, dest_dir, transport,
                 "response. A partial file, if any, remains at "
                 f"{part_path} for a future resume"
             )
-        range_start = part_path.stat().st_size if part_path.exists() else 0
+        # In WIRE bytes, not bytes-on-disk: see _wire_bytes_on_disk.
+        range_start = _wire_bytes_on_disk(part_path) if part_path.exists() else 0
         # INSIDE the retried region. A ConnectionError/Timeout at CONNECT time
         # is the single most common failure of a multi-thousand-file overnight
         # pull; with this call above the `try` it was never caught, never
@@ -1736,6 +1870,17 @@ def download_archive_file(client, filename, *, dest_dir, transport,
                 )
                 return DownloadRecord(
                     filename=filename, status="measured_zero", path=None,
+                    http_status=status_code, attempts=attempt,
+                )
+            if any(marker in message for marker in _FILE_DOES_NOT_EXIST_MARKERS):
+                print(
+                    f"download_archive_file: ONC has no archive file named {filename} "
+                    f"(HTTP 400, {message}); recorded as ABSENT -- a measured negative, "
+                    "not an error, and not retried: ONC has already given a definitive "
+                    "answer (decision 0023)"
+                )
+                return DownloadRecord(
+                    filename=filename, status="absent", path=None,
                     http_status=status_code, attempts=attempt,
                 )
             raise DownloadError(f"{filename}: request failed with 400: {message}")
@@ -1784,10 +1929,27 @@ def download_archive_file(client, filename, *, dest_dir, transport,
         mode = "ab" if range_start > 0 else "wb"
         interrupted = None
         retained = 0
+        # Counted here rather than read back off disk, because with
+        # compress_on_write the bytes on disk are not the bytes received.
+        received_wire_bytes = range_start
         try:
-            with open(part_path, mode) as handle:
-                for chunk in response.iter_bytes(chunk_size=chunk_bytes):
-                    handle.write(chunk)
+            with open(part_path, mode) as raw_handle:
+                # `mtime=0`: the timestamp gzip would otherwise embed is a
+                # nondeterminism in the container, and (per decision 0024) a
+                # reason the container is not the thing hashed. Appending on a
+                # 206 resume writes a NEW gzip MEMBER; concatenated members are
+                # a valid gzip file and decompress to the concatenated payload
+                # (RFC 1952 s2.2), so resume and compression compose.
+                # `with` on both handles matters on the interrupt path: exiting
+                # closes the GzipFile, which flushes the compressor and writes
+                # the member trailer, so the retained .part stays readable and
+                # resumable rather than being a truncated member.
+                with (gzip.GzipFile(fileobj=raw_handle, mode="wb", mtime=0)
+                      if compress_on_write
+                      else contextlib.nullcontext(raw_handle)) as handle:
+                    for chunk in response.iter_bytes(chunk_size=chunk_bytes):
+                        handle.write(chunk)
+                        received_wire_bytes += len(chunk)
         except (OSError, ConnectionError) as exc:
             # A dropped connection mid-stream: the bytes already written stay on
             # disk under the .part sidecar, and the loop retries with a resumed
@@ -1796,20 +1958,21 @@ def download_archive_file(client, filename, *, dest_dir, transport,
             # `_redact`, not str(exc): a transport error carries the request URL,
             # and that URL carries the token (invariant 7).
             interrupted = f"{type(exc).__name__}: {_redact(str(exc))}"
-            retained = part_path.stat().st_size if part_path.exists() else 0
+            retained = _wire_bytes_on_disk(part_path) if part_path.exists() else 0
         if interrupted is not None:
             sleep_seconds = _backoff_sleep_seconds(backoff_index)
             backoff_index += 1
             print(
                 f"download_archive_file: {filename} interrupted mid-transfer "
-                f"({interrupted}); {retained} byte(s) retained, sleeping "
+                f"({interrupted}); {retained} wire byte(s) retained, sleeping "
                 f"{sleep_seconds:.2f}s then resuming on the next attempt"
             )
             sleep(sleep_seconds)
             continue
 
         expected_total = getattr(response, "total_size", None)
-        got_size = part_path.stat().st_size
+        # WIRE bytes received, which is what `total_size` is stated in.
+        got_size = received_wire_bytes
         if expected_total is None:
             # NOT promoted. Nothing states how long this body should have been
             # (no Content-Range, no Content-Length -- what chunked transfer
@@ -1840,7 +2003,7 @@ def download_archive_file(client, filename, *, dest_dir, transport,
             sleep(sleep_seconds)
             continue
 
-        final_sha = _sha256_of_file(part_path)
+        final_sha = _sha256_of_wire_bytes(part_path)
         if expected_sha256 is not None and final_sha != expected_sha256:
             raise DownloadError(
                 f"{filename}: freshly downloaded content's sha256 ({final_sha}) does not "

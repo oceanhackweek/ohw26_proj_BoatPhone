@@ -25,24 +25,34 @@ complete. It does **not** and cannot catch **server-side truncation** -- if ONC 
 file on the *first* download, the sha256 sidecar records the hash of the truncated bytes as
 correct, and every future cache-hit check will agree.
 
-**A related, still-open question this record does not settle:** `download_archive_file`
+**Amendment, 2026-08-27 (B3 live probe, 3 in-season 2025 dates, 90 files): the open question below
+is now CLOSED.** ONC **ignores the `Range` header**. A request sent with
+`Range: bytes=357398-` against a partially-downloaded file returned **HTTP 200**, not 206 -- with
+`Content-Length` equal to the *whole* file (1,429,592 bytes) and no `Content-Range` header at all.
+The bare-200 branch below fired as designed: the 357,398-byte partial was discarded and the
+download restarted from byte zero. The result was byte-identical to a fresh, unresumed pull of the
+same file. This is a resumability cost, not a correctness bug: an interrupted large file now
+always costs its full re-download rather than a resumed tail, because ONC never takes the 206
+branch. The local-sha256-only integrity limitation stated above is unchanged by this finding.
+
+~~A related, still-open question this record does not settle:~~ `download_archive_file`
 implements resumable download via HTTP `Range` requests, with both response branches handled --
 a `206 Partial Content` response causes the partial file to be appended to, and a bare `200 OK`
 response (meaning the server ignored the `Range` header) causes the partial file to be discarded
 and the download restarted from zero. Which branch the live ONC endpoint actually takes is
-**unverified** -- ONC's own client library never sends a `Range` header, so there is no existing
-evidence either way. The code logs which branch it took on any given request.
+~~**unverified**~~ **now verified: always the bare-200 branch** -- ONC's own client library never
+sends a `Range` header, so there was no prior evidence either way. The code logs which branch it
+took on any given request.
 
 ## Consequences
 
 * Do not read a cache-hit sha256 match as proof the file is what ONC intended to serve -- it only
   proves the file matches what was written to disk on first download.
-* The first real resumed download against the live endpoint (i.e. the first case where a partial
-  file already exists locally and the pull is retried) answers the 206-vs-200 question. That log
-  line should be captured and recorded (e.g. folded into a future decision record or the B3
-  manifest) the first time it fires, rather than left to be re-discovered.
-* If ONC is later found to answer `200` on every `Range` request, resumability degrades to
-  restart-from-zero on every retry -- correct but slow -- and is not a correctness bug given the
-  discard-and-restart branch is implemented. If it is later found ONC serves truncated files on
-  first request under some condition, that failure is invisible to this integrity scheme and would
-  need a different signal (e.g. a length check against a listing-reported size) to catch.
+* ~~The first real resumed download against the live endpoint...~~ **Done, 2026-08-27**: ONC
+  answers every `Range` request with a bare 200 and the full `Content-Length`, so resumability
+  degrades to restart-from-zero on every retry -- correct but slow, and not a correctness bug,
+  given the discard-and-restart branch is implemented and was the branch observed. This finding is
+  now the record, not a future one to capture.
+* If ONC is later found to serve truncated files on first request under some condition, that
+  failure is invisible to this integrity scheme and would need a different signal (e.g. a length
+  check against a listing-reported size) to catch. That risk is unchanged by this amendment.

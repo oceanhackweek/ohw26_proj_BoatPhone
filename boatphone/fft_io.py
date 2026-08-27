@@ -18,7 +18,8 @@ Time base
 
 Where the start time comes from
     THE FILENAME, parsed by :func:`boatphone.onc_client.parse_file_coverage`.
-    The `.fft.gz` payload is a bare gzipped ASCII grid of integers: 614,400
+    The payload -- gzipped or plain, see :func:`read_fft_gz` -- is a bare ASCII
+    grid of integers and nothing else: 614,400
     whitespace-separated values and nothing else -- no header, no timestamp, no
     sample rate. So the filename stamp is not merely the convenient source, it
     is the ONLY source in the file. It is trustworthy to the extent that ONC's
@@ -79,6 +80,7 @@ import numpy as np
 
 from . import models
 from .config import (
+    GZIP_MAGIC_BYTES,
     FFT_AXIS_CONVENTION,
     FFT_AXIS_OFFSET_UNCERTAINTY_HZ,
     FFT_BIN_WIDTH_HZ,
@@ -230,8 +232,21 @@ def read_fft_gz(path, *,
                 fs_hz: float = FFT_PRODUCT_FS_HZ) -> FftProduct:
     """Read one ONC `.fft.gz` into an :class:`FftProduct` with named axes.
 
-    The payload is gzipped ASCII: whitespace-separated integer levels, ROW-MAJOR
-    (frames vary slowest, bins fastest). The row-major reading is the verified
+    CONTAINER IS SNIFFED, NEVER INFERRED FROM THE NAME. The first two bytes are
+    compared against ``config.GZIP_MAGIC_BYTES`` (``1f 8b``): a match is read
+    through ``gzip.open``, anything else as plain ASCII. The extension is not
+    consulted, because it is not reliable here and the corpus is permanently
+    MIXED (decision 0024): ONC's archive serves the product as plain ASCII under
+    a ``.fft`` name (decision 0022), the bulk pull writes gzip under a ``.fft.gz``
+    name, the hand-delivered sample is gzip under ``.fft.gz``, and decision 0001
+    forbids ever normalising the 90 already-pulled plain files. Both
+    disagreements (``.fft.gz`` holding plain text, ``.fft`` holding gzip) decode
+    identically here. This is ONE reader with ONE code path -- a second,
+    format-specific reader is what invariant 6 forbids. The function name is a
+    misnomer under 0022/0024 and renaming it is deferred there, not here.
+
+    The payload either way is ASCII: whitespace-separated integer levels,
+    ROW-MAJOR (frames vary slowest, bins fastest). The row-major reading is the verified
     one -- the column-major reading scatters ~90,000 nonzero values through the
     documented all-but-zero 419-511 block, the row-major reading leaves 74.
 
@@ -255,7 +270,11 @@ def read_fft_gz(path, *,
 
     start_utc, _end_utc = parse_file_coverage(path.name)
 
-    with gzip.open(path, "rt") as handle:
+    with open(path, "rb") as probe:
+        first_bytes = probe.read(len(GZIP_MAGIC_BYTES))
+    is_gzip = first_bytes == GZIP_MAGIC_BYTES
+    opener = gzip.open if is_gzip else open
+    with opener(path, "rt", encoding="ascii") as handle:
         tokens = handle.read().split()
     expected = int(n_frames) * int(n_bins)
     if len(tokens) != expected:

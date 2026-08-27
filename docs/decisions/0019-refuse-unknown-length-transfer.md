@@ -27,13 +27,23 @@ unknown length is never written to the cache as complete, sha256 sidecar or not.
 
 * This is deliberately a hard failure over a silent one, per invariant 5. A run that hits this
   condition stops rather than producing a corpus with an undetectable truncated file buried in it.
-* **This is untested against the live ONC endpoint and is a known unknown, not a settled
-  question.** If ONC serves `Transfer-Encoding: chunked` for archive file downloads (which
-  reports no `Content-Length` up front), **every single file in the corpus pull would raise**, and
-  a six-season, 918-date run would stop on the first file rather than complete. That is the
-  intended failure direction if it happens -- loud and immediate, not 918 dates of undetectable
-  truncation risk -- but it has not been checked against the live endpoint's actual header
-  behaviour, and if it fires, the fix is not "catch and continue" but finding another way to know
-  the transfer completed (e.g. a listing-reported size to check the received byte count against).
+* **Amendment, 2026-08-27 (B3 live probe, 3 in-season 2025 dates, 90 files): now VERIFIED SAFE
+  against the live endpoint, not untested.** ONC sends a real, explicit `Content-Length` on every
+  observed response (e.g. `1429592`) and **no `Transfer-Encoding` header at all** -- chunked
+  transfer was not observed. `total_size_known` was `True` on all 90 rows of the probe, and the
+  refusal guard never fired. The risk described below -- "if ONC serves chunked, every file
+  raises and the run dies" -- did **not** materialize against the archive endpoint this project
+  pulls from. The guard is kept as-is; it remains correct and cheap insurance even though the
+  probe found no case where it triggers.
+* ~~This is untested against the live ONC endpoint and is a known unknown, not a settled
+  question.~~ Retained for the record of what was unknown before the probe: if ONC serves
+  `Transfer-Encoding: chunked` for archive file downloads (reporting no `Content-Length` up
+  front), every file in a pull would raise, and a six-season, 918-date run would stop on the
+  first file rather than complete. That was the intended failure direction if it happened -- loud
+  and immediate, not 918 dates of undetectable truncation risk. It has now been checked against
+  the live endpoint's actual header behaviour for 90 files across 3 in-season 2025 dates and did
+  not occur; if it is ever observed, the fix is not "catch and continue" but finding another way
+  to know the transfer completed (e.g. a listing-reported size to check the received byte count
+  against).
 * The handoff explicitly calls this the first thing to check on the first few real files of a
-  bulk pull, before letting a long unattended run proceed.
+  bulk pull, before letting a long unattended run proceed -- that check has now been done.

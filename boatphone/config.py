@@ -75,6 +75,19 @@ PRODUCT_EXTENSION = "fft.gz"
 # has 289 files under "fft".
 ARCHIVE_EXTENSION = "fft"
 
+# The gzip container, named once (invariant 6). Two independent consumers:
+# (a) boatphone.onc_client.download_archive_file appends this suffix to the
+#     archive name when it gzip-compresses a file on write (decision 0024), so
+#     "<name>.fft" lands as "<name>.fft.gz" -- the name states the container;
+# (b) boatphone.fft_io.read_fft_gz SNIFFS these magic bytes rather than trusting
+#     any extension, because the corpus is permanently MIXED: 90 already-pulled
+#     plain-ASCII ".fft" files (decision 0022, immutable per decision 0001) plus
+#     every future compressed ".fft.gz" download, and name and container can
+#     disagree in both directions.
+# Source: RFC 1952 section 2.3.1 (gzip member header ID1=0x1f, ID2=0x8b).
+GZIP_CONTAINER_SUFFIX = ".gz"
+GZIP_MAGIC_BYTES = b"\x1f\x8b"
+
 # ONC device-category code for the hydrophone, used to scope an archive listing
 # at a location. Source: ONC deployment metadata for DEVICE_CODE
 # (deviceCategoryCode == "HYDROPHONE").

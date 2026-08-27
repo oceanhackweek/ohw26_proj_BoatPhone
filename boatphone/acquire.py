@@ -129,13 +129,25 @@ def resolve_corpus_files(corpus_dir=None):
     three (CLAUDE.md invariant 6). Two facts it centralises, both of which are
     silent-wrong-answer generators if a caller re-derives them:
 
-    * **Extension.** The pulled corpus lands as `*.<config.ARCHIVE_EXTENSION>`
-      -- `.fft` -- because that is the name the ONC archive index registers and
-      serves, even though the bytes inside are gzip. `config.PRODUCT_EXTENSION`
-      (`.fft.gz`) is the HAND-DELIVERED sample's name only. A notebook globbing
-      `*.fft.gz` finds ZERO files in the pulled corpus and reports "no data"
-      when the truth is "wrong glob" (invariant 9). This function matches the
-      archive extension and deliberately does NOT match the product extension.
+    * **Extension -- BOTH of them.** The corpus is permanently MIXED
+      (decision 0024) and this function matches `*.<config.ARCHIVE_EXTENSION>`
+      (`.fft`) AND `*.<config.PRODUCT_EXTENSION>` (`.fft.gz`):
+
+      - `.fft` is what the ONC archive index registers and serves, as PLAIN
+        ASCII (decision 0022). The 90 files already pulled by the B3 live probe
+        are on disk under that name, and decision 0001 forbids ever converting
+        or renaming them -- so this is the steady state, not a transitional one.
+      - `.fft.gz` is what the bulk pull now writes: it gzip-compresses each file
+        on write and names it for the container it actually holds (decision
+        0024), and it is also the hand-delivered sample's name.
+
+      Matching only one of the two would silently return HALF the corpus, which
+      is why this stays the ONE sanctioned glob (invariant 6). What the earlier
+      `.fft.gz` EXCLUSION guarded -- a notebook reporting "no data" when it
+      really had the wrong glob (invariant 9) -- is guarded instead by the
+      corpus having its own directory and by this function raising rather than
+      returning `[]`. Integrity sidecars (`.sha256`) and in-flight `.part` files
+      end in neither extension and are therefore not returned.
     * **Location.** The default is `paths.ONC_OVERPASS_CORPUS_DIR`, the
       subdirectory that marks the corpus as overpass-window-only on disk
       (decision 0020) rather than only inside a manifest.
@@ -167,27 +179,19 @@ def resolve_corpus_files(corpus_dir=None):
     corpus_dir = pathlib.Path(corpus_dir) if corpus_dir is not None else paths.ONC_OVERPASS_CORPUS_DIR
     paths.require_path(corpus_dir)
 
-    suffix = "." + config.ARCHIVE_EXTENSION
-    product_suffix = "." + config.PRODUCT_EXTENSION
+    suffixes = ("." + config.ARCHIVE_EXTENSION, "." + config.PRODUCT_EXTENSION)
     found = sorted(
         (entry for entry in corpus_dir.iterdir()
-         if entry.is_file()
-         and entry.name.endswith(suffix)
-         and not entry.name.endswith(product_suffix)),
+         if entry.is_file() and entry.name.endswith(suffixes)),
         key=lambda entry: entry.name,
     )
     if not found:
-        n_product = sum(
-            1 for entry in corpus_dir.iterdir()
-            if entry.is_file() and entry.name.endswith(product_suffix)
-        )
         raise FileNotFoundError(
-            f"no {suffix!r} files in {corpus_dir} -- the B3 overpass-window corpus is "
-            f"absent, which is NOT the same as an acoustically quiet corpus "
-            f"(CLAUDE.md invariant 9). "
-            + (f"({n_product} {product_suffix!r} file(s) ARE present: those are the "
-               "hand-delivered sample's naming, not the pulled archive's.) "
-               if n_product else "")
-            + "How to obtain: run `python3 scripts/pull_overpass_corpus.py`."
+            f"no {suffixes[0]!r} or {suffixes[1]!r} files in {corpus_dir} -- the B3 "
+            f"overpass-window corpus is absent, which is NOT the same as an acoustically "
+            f"quiet corpus (CLAUDE.md invariant 9). "
+            f"({sum(1 for e in corpus_dir.iterdir() if e.is_file())} file(s) of other "
+            "kinds are present, e.g. '.sha256' sidecars or an interrupted '.part'.) "
+            "How to obtain: run `python3 scripts/pull_overpass_corpus.py`."
         )
     return found
