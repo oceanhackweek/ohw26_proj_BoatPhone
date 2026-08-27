@@ -47,11 +47,17 @@ CEIL_BIN = config.FFT_B5_RELATIVE_CEILING_BIN
 def exact_percentile_from_hist(hist, q):
     """Percentile per bin, read off the cumulative integer histogram.
 
+    THE ESTIMATOR IS ``inverted_cdf`` (numpy's name for it): the smallest level
+    whose cumulative count reaches q% of the total. Named explicitly because the
+    choice is not free -- it disagrees with numpy's ``lower`` by one rank at
+    q=95 and with the default ``linear`` almost everywhere, and a percentile
+    quoted without its estimator is ambiguous at exactly the resolution these
+    figures are read at. Pinned by
+    ``check_b5_13_exact_percentile_from_histogram_matches_direct_percentile``.
+
     EXACT, not interpolated. `hist[b, l]` counts frames at level `l` in bin `b`,
-    and the levels are integers, so the q-th percentile is simply the first
-    level at which the cumulative count crosses q% -- there is no fractional
-    level to interpolate toward and inventing one would be a fabrication at
-    finer resolution than the data has.
+    and the levels are integers, so there is no fractional level to interpolate
+    toward; inventing one would fabricate resolution the data does not have.
     """
     total = hist.sum(axis=1, keepdims=True)
     if not np.all(total > 0):

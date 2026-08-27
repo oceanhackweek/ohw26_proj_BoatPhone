@@ -9835,6 +9835,68 @@ def check_b5_12_fast_reader_matches_the_reference_parse():
             )
 
 
+
+def check_b5_13_exact_percentile_from_histogram_matches_direct_percentile():
+    """Percentiles read off the integer histogram must equal the direct ones.
+
+    Every population figure -- the SPD's L05/L50/L95 lines, the per-season L95
+    ambient the detector consumes as a second baseline -- is read off a
+    cumulative per-bin integer histogram rather than from the raw values, which
+    were never held in memory all at once. That is only legitimate if the two
+    agree exactly, and the levels being integers is what makes it so: there is no
+    fractional level to interpolate toward.
+
+    Compared against numpy's ``inverted_cdf``, which is EXACTLY the estimator
+    this implements: the smallest level whose cumulative count reaches q% of the
+    total. Naming the estimator matters -- against numpy's ``lower`` this
+    disagrees by one rank at q=95 (verified), and against the default ``linear``
+    it would disagree almost everywhere. Neither disagreement would be a bug;
+    they would be different definitions, and a check that did not say which one
+    it meant would be measuring the wrong thing convincingly.
+    """
+    import numpy as np
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    scripts_dir = REPO_ROOT / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        import plot_population_set as pp
+    except ImportError as exc:
+        raise SkipCheck(f"plot_population_set not importable: {exc}") from exc
+
+    rng = np.random.default_rng(13)
+    n_bins, n_frames, axis_max = 24, 977, 120   # odd frame count on purpose
+    values = rng.integers(0, axis_max, (n_frames, n_bins))
+
+    hist = np.zeros((n_bins, axis_max), dtype=np.int64)
+    for b in range(n_bins):
+        hist[b] = np.bincount(values[:, b], minlength=axis_max)
+
+    for q in (5, 25, 50, 75, 95):
+        from_hist = pp.exact_percentile_from_hist(hist, q)
+        direct = np.percentile(values, q, axis=0, method="inverted_cdf")
+        assert np.array_equal(from_hist, direct), (
+            f"histogram percentile disagrees with the direct one at q={q}: "
+            f"{int((from_hist != direct).sum())} of {n_bins} bins differ. Every "
+            "SPD line and the seasonal ambient baseline are read this way"
+        )
+
+    # A bin with no counts at all must RAISE, not return a silent zero: an empty
+    # bin means the pass covered nothing there, and 0 is a level.
+    empty = np.zeros((3, axis_max), dtype=np.int64)
+    try:
+        pp.exact_percentile_from_hist(empty, 50)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(
+            "a histogram with an empty frequency bin returned a percentile "
+            "instead of raising. Level 0 is a real level, so a silent zero here "
+            "is indistinguishable from a measured quiet bin"
+        )
+
+
 CHECKS = [
     ("A0.1 paths import is dependency-free", check_a0_1_paths_import_is_dependency_free),
     ("A0.1 paths exports are pathlib.Path", check_a0_1_paths_exports_are_paths),
@@ -10022,6 +10084,7 @@ CHECKS = [
     ("B5 corpus index deduplicates windows present in both containers", check_b5_10_corpus_index_deduplicates_windows_present_in_both_containers),
     ("B5 population histogram vectorisation matches the per-bin loop", check_b5_11_population_histogram_vectorisation_matches_the_per_bin_loop),
     ("B5 fast reader matches the reference parse", check_b5_12_fast_reader_matches_the_reference_parse),
+    ("B5 exact percentile from histogram matches the direct percentile", check_b5_13_exact_percentile_from_histogram_matches_direct_percentile),
 ]
 
 
