@@ -285,3 +285,84 @@ ONC_MODEL_INPUT_TDIM: int = 512
 # see docs/decisions/0002-time-alignment-and-units.md.
 ONC_MODEL_DATASET_MEAN: float = 51.506817
 ONC_MODEL_DATASET_STD: float = 13.638703
+
+
+# ---------------------------------------------------------------------------
+# B0-2a: the .fft.gz product's frequency and time axes.
+# ---------------------------------------------------------------------------
+# ONE definition of the axis facts (CLAUDE.md invariant 6). boatphone/fft_io.py
+# and every notebook import them FROM HERE; they are not restated anywhere else.
+#
+# The product is a gzipped ASCII grid of whitespace-separated integer levels,
+# row-major, frames-then-bins. VERIFIED on both local fixtures: each file holds
+# exactly 614,400 values == 1200 x 512, and only the row-major (C-order)
+# reshape reproduces the documented structural zeros and the documented
+# anti-alias shoulder onset (the column-major reading puts 90,543 nonzero
+# values inside the 419-511 "zero" block instead of 74).
+
+# Frames per file and bins per frame. Source: acoustics_plan_v2 SS3 ("1200 x 512")
+# and a direct value count of both fixtures under data/Folger Deep Hydrophone
+# Data Sample/ (614400 == 1200 * 512, with no header line).
+FFT_N_FRAMES: int = 1200
+FFT_N_BINS: int = 512
+
+# Hz per FFT bin. Source: acoustics_plan_v2 SS3 -- 1024-pt FFT at 256 kHz gives
+# 512 one-sided bins over 0-128 kHz, i.e. 250 Hz/bin, with bin 1 at 250 Hz.
+# Three independent confirmations are recorded in accoutics_plan.md (v1)
+# SS"What changed since rev. 3"; the anti-alias shoulder onset near bin 408
+# (408 * 250 Hz = 102 kHz = 0.4 * 256 kHz) is reproduced on both fixtures here.
+FFT_BIN_WIDTH_HZ: float = 250.0
+
+# Duration of one frame, in seconds. Source: acoustics_plan_v2 SS3 -- 1200 frames
+# span one 300 s product file, so 300 / 1200 = 0.25 s. Consistent with
+# FFT_FILE_SECONDS above by construction, asserted at import below.
+FFT_FRAME_SECONDS: float = 0.25
+
+# Sample rate the product was computed at, in Hz. DERIVED from the bin grid
+# (2 * n_bins * bin_width = 256000), not assumed: the .fft.gz carries no header
+# and no sample-rate field, so this is the only statement of it available, and
+# it is the number decision 0002 requires be named rather than assumed. Any
+# absolute level compared across instruments must be traced back to this value.
+FFT_PRODUCT_FS_HZ: float = 2.0 * FFT_N_BINS * FFT_BIN_WIDTH_HZ
+
+# Columns ONC's product generation leaves structurally empty: column 0 (DC) and
+# columns 419-511 (above the anti-alias shoulder, where there is no content).
+# Source: acoustics_plan_v2 SS3 verification table ("zeros at col 0 and 419-511").
+#
+# MEASURED CAVEAT, recorded here rather than buried: on the two local fixtures
+# these columns are *almost* but not exactly zero. Column 0 has 14 and 8 nonzero
+# frames respectively (of 1200), and the 419-511 block has 74 and ~70 nonzero
+# cells (of 111,600), all of value 1-5 and all crowded into columns 419-424 --
+# i.e. the tail of the roll-off, not a scattering across the block. Treat these
+# columns as carrying no usable signal; do NOT assert exact zero on real data.
+FFT_STRUCTURAL_ZERO_COL0: int = 0
+FFT_STRUCTURAL_ZERO_COLS_HIGH: tuple[int, int] = (419, 511)  # inclusive
+
+# Bin where the 38 kHz echosounder line is expected: 38000 / 250 = 152.
+# Source: acoustics_plan_v2 SS3 verification table ("Line at bin 152 +/- 1").
+#
+# MEASURED CAVEAT: on both local fixtures the line's observed centre is bin
+# 150-151, not 152. Mean-over-frames argmax is 150 and 149; per-bin temporal
+# std argmax is 150 and 151; the ping-excess power centroid (mean of the 61
+# loudest frames minus the mean of the rest) is 150.8 and 151.0. The feature is
+# a ~5 kHz-wide hump spanning bins ~140-162, not a single-bin line, so "the peak
+# bin" is only defined to about +/- 1. See the B0-2a report: this needs a
+# decision record before FFT_38KHZ_LINE_BIN_TOL is relied on as an axis check.
+FFT_38KHZ_LINE_BIN: int = 152
+FFT_38KHZ_LINE_BIN_TOL: int = 1
+
+# Bins the pre-deployment calibration file actually covers, inclusive: it spans
+# 10 Hz - 51.2 kHz, and 51200 / 250 = 204.8 -> bin 205 is the last bin the
+# calibration reaches. Bins 206-417 carry signal but CANNOT be turned into an
+# absolute dB re 1 uPa level. Source: acoustics_plan_v2 SS3 / SS7 and
+# ICLISTENHF1266_...-hydrophonePreDeploymentCalibration.txt in the sample.
+FFT_CALIBRATED_BIN_RANGE: tuple[int, int] = (0, 205)
+
+# The two axis facts must agree with the file-cadence fact above; a silent
+# disagreement here would put every frame timestamp on the wrong grid.
+if FFT_N_FRAMES * FFT_FRAME_SECONDS != FFT_FILE_SECONDS:
+    raise ValueError(
+        f"config inconsistency: FFT_N_FRAMES ({FFT_N_FRAMES}) * FFT_FRAME_SECONDS "
+        f"({FFT_FRAME_SECONDS}) = {FFT_N_FRAMES * FFT_FRAME_SECONDS} s, which is not "
+        f"FFT_FILE_SECONDS ({FFT_FILE_SECONDS} s)"
+    )

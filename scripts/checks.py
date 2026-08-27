@@ -5389,6 +5389,499 @@ def check_b0_1_external_not_staged_or_untracked_in_git():
     )
 
 
+
+# ===========================================================================
+# B0-2a: the frequency/time axis gate for boatphone/fft_io.py.
+#
+# fft_io.py DOES NOT EXIST YET. Every check_b0_2a_* below except the two
+# config-constants checks is expected to FAIL with an ImportError/AttributeError
+# naming that fact -- see check_b0_2a_module_exists, ordered first so the real
+# cause is reported instead of an opaque traceback from a later check.
+#
+# CONTRACT ASSUMED BY THESE CHECKS (a GUESS at fft_io's API surface -- no plan
+# or existing module pins these names; flagged here rather than hidden):
+#   fft_io.frequency_axis_hz(n_bins=..., bin_width_hz=...) -> ndarray[n_bins]
+#       one-sided centre-frequency axis in Hz, DERIVED from bin_width_hz, not
+#       a baked-in 512-length array (see the anti-hardcoding half of the check).
+#   fft_io.time_axis_utc_s(frame_start_utc_s, n_frames=..., frame_seconds=...)
+#       -> ndarray[n_frames] of ABSOLUTE UTC epoch seconds. MUST RAISE if
+#       frame_start_utc_s is None/absent -- a bare relative 0.0, 0.25, 0.5, ...
+#       axis wearing the name t_utc_s is exactly what decision 0002 forbids.
+#   fft_io.read_fft_gz(path) -> object with .levels_db [n_frames, n_bins],
+#       .freq_hz [n_bins], .t_utc_s [n_frames], .fs_hz.
+#   fft_io.calibrated_band_hz() -> (lo_hz, hi_hz) matching bins 0-205.
+#   fft_io.assert_calibratable(band_hz) -> raises if band_hz reaches outside
+#       the calibratable support.
+#   fft_io.assert_tone_at(levels_db, freq_hz, t_utc_s, *, expected_freq_hz,
+#       expected_t_utc_s, freq_tol_hz, time_tol_s, expected_level_db=None,
+#       level_tol_db=None) -> None if the array's peak (within tolerance) is
+#       at the expected freq/time/level; RAISES otherwise. This is the single
+#       "push a tone through the axis mapping" primitive the brief asks for;
+#       its exact name/shape is a GUESS the implementer is free to rename, in
+#       which case these checks should be updated to match, not weakened.
+#
+# Settled facts (transcribed BY HAND from the B0-2a task brief / acoustics_plan_v2
+# SS3, an INDEPENDENT second reading -- see check_b0_2a_config_constants_match_
+# settled_facts for why this must never import the same values it is checking):
+B0_2A_N_FRAMES = 1200
+B0_2A_N_BINS = 512
+B0_2A_BIN_WIDTH_HZ = 250.0
+B0_2A_FRAME_SECONDS = 0.25
+B0_2A_STRUCTURAL_ZERO_COL0 = 0
+B0_2A_STRUCTURAL_ZERO_COLS_HIGH = (419, 511)  # inclusive
+B0_2A_38KHZ_LINE_BIN = 152
+B0_2A_38KHZ_LINE_BIN_TOL = 1
+B0_2A_CALIBRATED_BIN_RANGE = (0, 205)  # inclusive; 10 Hz - 51.2 kHz
+
+# Names this segment expects boatphone/config.py to define. A GUESS at naming;
+# flagged, not hidden -- see the module note above.
+_B0_2A_CONFIG_NAMES = (
+    "FFT_N_FRAMES", "FFT_N_BINS", "FFT_BIN_WIDTH_HZ", "FFT_FRAME_SECONDS",
+    "FFT_STRUCTURAL_ZERO_COL0", "FFT_STRUCTURAL_ZERO_COLS_HIGH",
+    "FFT_38KHZ_LINE_BIN", "FFT_38KHZ_LINE_BIN_TOL", "FFT_CALIBRATED_BIN_RANGE",
+)
+
+# Tolerances, named and justified (CLAUDE.md invariant 3 -- explicit, with a reason).
+B0_2A_FREQ_TOL_BINS = 1                          # brief: "within one bin"
+B0_2A_FREQ_TOL_HZ = B0_2A_FREQ_TOL_BINS * B0_2A_BIN_WIDTH_HZ
+B0_2A_TIME_TOL_S = B0_2A_FRAME_SECONDS           # brief: "within one frame, 0.25 s"
+# A synthetic tone is inserted at an EXACT level; the round trip through a pure
+# axis mapping (no resampling, no windowing re-applied) should differ only by
+# float/log rounding. 0.5 dB is generous for that, and still tight enough to
+# catch a real scaling-convention bug (power-vs-amplitude dB is a factor of 2,
+# i.e. ~6 dB; a one-sided/two-sided Parseval slip is ~3 dB) -- this tolerance
+# is NOT a real-world noise-floor margin.
+B0_2A_LEVEL_TOL_DB = 0.5
+
+# "Deliberately offset by one bin" (brief's own words) sits EXACTLY AT the
+# freq_tol_bins=1 boundary and would not unambiguously fail a <= comparison --
+# an ambiguity in the brief, resolved here by using a 2-bin offset (still a
+# small, physically tiny 500 Hz shift) as the negative control. Flagged, not
+# silently chosen.
+B0_2A_WRONG_BIN_OFFSET = 2
+B0_2A_WRONG_TIME_OFFSET_S = 3600.0  # the brief's own example, verbatim (invariant 4)
+
+
+def _b0_2a_cfg():
+    """Import boatphone.config. ImportError here is a real failure (config.py exists)."""
+    import importlib
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    return importlib.import_module("boatphone.config")
+
+
+def _b0_2a_fft_io():
+    """Import boatphone.config and boatphone.fft_io.
+
+    ImportError/AttributeError on boatphone.fft_io IS the expected failure for
+    every B0-2a check below except the two config-constants checks: the module
+    does not exist yet.
+    """
+    import importlib
+    cfg = _b0_2a_cfg()
+    fft_io = importlib.import_module("boatphone.fft_io")
+    return cfg, fft_io
+
+
+def check_b0_2a_config_constants_exist():
+    """boatphone/config.py names the B0-2a axis constants -- ONE definition (invariant 6).
+
+    Does not hardcode values into fft_io or into this file; only asserts
+    config.py carries them, so fft_io.py (and any notebook) has exactly one
+    place to import them from.
+    """
+    cfg = _b0_2a_cfg()
+    missing = [n for n in _B0_2A_CONFIG_NAMES if not hasattr(cfg, n)]
+    assert not missing, (
+        f"boatphone.config is missing B0-2a axis constant(s) {missing}; the "
+        "1200x512 frame/bin shape, 250 Hz bin width, 0.25 s frame duration, "
+        "structural-zero columns, 38 kHz line bin, and the 0-205 calibratable "
+        "bin range are project-wide facts (acoustics_plan_v2 SS3) and must have "
+        "exactly one definition, in boatphone/config.py -- not a second one in "
+        "boatphone/fft_io.py or scripts/checks.py (CLAUDE.md invariant 6)"
+    )
+
+
+def check_b0_2a_config_constants_match_settled_facts():
+    """Those constants, once present, must equal the SETTLED FACTS from the brief.
+
+    Only asserts on names that are actually present, so this adds information
+    beyond check_b0_2a_config_constants_exist (which already fails on any
+    missing name) rather than duplicating its failure verbatim.
+    """
+    cfg = _b0_2a_cfg()
+    expected = {
+        "FFT_N_FRAMES": B0_2A_N_FRAMES,
+        "FFT_N_BINS": B0_2A_N_BINS,
+        "FFT_BIN_WIDTH_HZ": B0_2A_BIN_WIDTH_HZ,
+        "FFT_FRAME_SECONDS": B0_2A_FRAME_SECONDS,
+        "FFT_STRUCTURAL_ZERO_COL0": B0_2A_STRUCTURAL_ZERO_COL0,
+        "FFT_STRUCTURAL_ZERO_COLS_HIGH": B0_2A_STRUCTURAL_ZERO_COLS_HIGH,
+        "FFT_38KHZ_LINE_BIN": B0_2A_38KHZ_LINE_BIN,
+        "FFT_38KHZ_LINE_BIN_TOL": B0_2A_38KHZ_LINE_BIN_TOL,
+        "FFT_CALIBRATED_BIN_RANGE": B0_2A_CALIBRATED_BIN_RANGE,
+    }
+    present = {k: v for k, v in expected.items() if hasattr(cfg, k)}
+    if not present:
+        raise SkipCheck(
+            "no B0-2a config constants present yet -- see check_b0_2a_config_constants_exist"
+        )
+    mismatched = [(k, getattr(cfg, k), v) for k, v in present.items() if getattr(cfg, k) != v]
+    assert not mismatched, (
+        "boatphone.config constant(s) present but WRONG vs the B0-2a settled facts "
+        f"(name, got, expected): {mismatched}"
+    )
+
+
+def check_b0_2a_module_exists():
+    """boatphone/fft_io.py exists at all.
+
+    Expected to FAIL right now -- the module is not written. Every other
+    check_b0_2a_* below (except the config-constants pair above) fails for the
+    same reason until it exists; this one is ordered first so the real cause
+    is named instead of an opaque ImportError from deeper in the file.
+    """
+    path = REPO_ROOT / "boatphone" / "fft_io.py"
+    assert path.is_file(), (
+        f"{path} does not exist yet -- B0-2a (the frequency/time axis gate) has "
+        "not been implemented. That is the point: a check that has never failed "
+        "has not been shown to check anything."
+    )
+
+
+def check_b0_2a_frequency_axis_bin_width_and_bin1():
+    """frequency_axis_hz() is DERIVED from bin width, not hardcoded.
+
+    Bin 1 centre must be exactly 250 Hz (settled fact); a fabricated bin width
+    passed as an argument must move the axis (anti-hardcoding, same shape as
+    A8b's common_support_moves_with_vtuad_input check) -- otherwise this check
+    and the tone checks below could all pass against a fft_io.py that returns a
+    baked-in array regardless of its arguments.
+    """
+    cfg, fft_io = _b0_2a_fft_io()
+    freq_hz = np.asarray(fft_io.frequency_axis_hz(), dtype=float)
+    assert freq_hz.shape == (B0_2A_N_BINS,), (
+        f"frequency_axis_hz() returned shape {freq_hz.shape}, expected "
+        f"({B0_2A_N_BINS},) -- one centre frequency per FFT bin"
+    )
+    assert freq_hz[0] == 0.0, (
+        f"bin 0 centre is {freq_hz[0]} Hz, expected 0.0 Hz (bin 0 is DC and a "
+        "structural zero, but its FREQUENCY axis value is still 0 Hz)"
+    )
+    assert abs(freq_hz[1] - B0_2A_BIN_WIDTH_HZ) < 1e-9, (
+        f"bin 1 centre is {freq_hz[1]} Hz, expected exactly {B0_2A_BIN_WIDTH_HZ} Hz "
+        "(settled fact: 250 Hz/bin, 1024-pt FFT at 256 kHz, 512 bins over 0-128 kHz)"
+    )
+    widths = np.diff(freq_hz)
+    assert np.allclose(widths, B0_2A_BIN_WIDTH_HZ), (
+        f"frequency_axis_hz() is not uniformly spaced at {B0_2A_BIN_WIDTH_HZ} Hz "
+        f"(observed widths range {widths.min()}..{widths.max()} Hz)"
+    )
+
+    fabricated_hz = np.asarray(fft_io.frequency_axis_hz(n_bins=8, bin_width_hz=37.0), dtype=float)
+    assert fabricated_hz.shape == (8,), (
+        f"frequency_axis_hz(n_bins=8, bin_width_hz=37.0) returned shape "
+        f"{fabricated_hz.shape}, expected (8,) -- n_bins is not read from its argument"
+    )
+    assert abs(fabricated_hz[1] - 37.0) < 1e-9, (
+        f"frequency_axis_hz(n_bins=8, bin_width_hz=37.0)[1] == {fabricated_hz[1]}, "
+        "expected 37.0 -- the axis is not derived from bin_width_hz; it looks "
+        "hardcoded to the real 250 Hz product regardless of its argument"
+    )
+
+
+def check_b0_2a_time_axis_is_absolute_utc_not_bare_relative():
+    """time_axis_utc_s() returns ABSOLUTE UTC epoch seconds, and REFUSES to run without one.
+
+    Positive half: given a known absolute UTC start, every sample equals
+    start + frame_index * frame_seconds exactly (integer arithmetic on a stated
+    grid -- zero tolerance, there is no float error to absorb).
+    Negative half: calling it with no absolute start (frame_start_utc_s=None)
+    must RAISE rather than silently falling back to a bare relative
+    0.0, 0.25, 0.5, ... axis returned under the t_utc_s name -- exactly the
+    thing CLAUDE.md's naming convention and decision 0002 forbid.
+    """
+    cfg, fft_io = _b0_2a_fft_io()
+    start_utc_s = 1_700_000_000.0  # an arbitrary but FIXED absolute UTC epoch instant
+    t_utc_s = np.asarray(
+        fft_io.time_axis_utc_s(start_utc_s, n_frames=B0_2A_N_FRAMES,
+                                frame_seconds=B0_2A_FRAME_SECONDS),
+        dtype=float,
+    )
+    assert t_utc_s.shape == (B0_2A_N_FRAMES,), (
+        f"time_axis_utc_s() returned shape {t_utc_s.shape}, expected ({B0_2A_N_FRAMES},)"
+    )
+    expected = start_utc_s + np.arange(B0_2A_N_FRAMES) * B0_2A_FRAME_SECONDS
+    assert np.allclose(t_utc_s, expected, atol=1e-6), (
+        "time_axis_utc_s() != start + frame_index*frame_seconds "
+        f"(max abs diff {np.max(np.abs(t_utc_s - expected))} s)"
+    )
+    assert t_utc_s[0] == start_utc_s, (
+        f"t_utc_s[0] = {t_utc_s[0]}, expected the ABSOLUTE start {start_utc_s} -- "
+        "an axis starting at 0.0 would be a bare relative axis wearing the "
+        "t_utc_s name"
+    )
+
+    try:
+        fft_io.time_axis_utc_s(None, n_frames=B0_2A_N_FRAMES, frame_seconds=B0_2A_FRAME_SECONDS)
+    except Exception:
+        pass
+    else:
+        raise AssertionError(
+            "time_axis_utc_s(None, ...) returned without raising; a bare relative "
+            "axis with no absolute UTC anchor must never be produced silently"
+        )
+
+
+def check_b0_2a_assert_tone_at_signature_names_conventions():
+    """fft_io.assert_tone_at()'s signature names freq_hz/t_utc_s/levels_db (decision 0002 SS4,
+    the same rule A8b's band_limit signature check pins)."""
+    cfg, fft_io = _b0_2a_fft_io()
+    params = set(inspect.signature(fft_io.assert_tone_at).parameters)
+    required = {"levels_db", "freq_hz", "t_utc_s", "expected_freq_hz", "expected_t_utc_s"}
+    missing = sorted(required - params)
+    assert not missing, (
+        f"fft_io.assert_tone_at's signature is missing named parameter(s) {missing} "
+        f"(got {sorted(params)}) -- a frequency/time/level parameter must be named "
+        "freq_hz/t_utc_s/*_db, not f/t/x (decision 0002 SS4)"
+    )
+
+
+def _b0_2a_synthetic_product(fft_io, *, true_bin=300, true_frame=400,
+                              level_true_db=-20.0, floor_db=-90.0,
+                              start_utc_s=1_700_000_000.0):
+    """Build one in-memory synthetic tone array plus its axes, via fft_io itself."""
+    levels_db = np.full((B0_2A_N_FRAMES, B0_2A_N_BINS), floor_db, dtype=float)
+    levels_db[true_frame, true_bin] = level_true_db
+    freq_hz = np.asarray(fft_io.frequency_axis_hz(), dtype=float)
+    t_utc_s = np.asarray(
+        fft_io.time_axis_utc_s(start_utc_s, n_frames=B0_2A_N_FRAMES,
+                                frame_seconds=B0_2A_FRAME_SECONDS),
+        dtype=float,
+    )
+    return levels_db, freq_hz, t_utc_s
+
+
+def check_b0_2a_synthetic_tone_positive_control_survives_axis_mapping():
+    """POSITIVE CONTROL: a synthetic tone of known freq/time/level, pushed through
+    fft_io's real axis mapping, must be accepted at the correct bin (within one
+    bin), the correct frame (within 0.25 s), and the correct level (within the
+    stated dB tolerance). This is the strongest check available (method note:
+    "the strongest check ... is a signal you built ... coming back out at the
+    right level, the right frequency, and the right time")."""
+    cfg, fft_io = _b0_2a_fft_io()
+    true_bin, true_frame, level_true_db = 300, 400, -20.0
+    levels_db, freq_hz, t_utc_s = _b0_2a_synthetic_product(
+        fft_io, true_bin=true_bin, true_frame=true_frame, level_true_db=level_true_db,
+    )
+    try:
+        fft_io.assert_tone_at(
+            levels_db, freq_hz, t_utc_s,
+            expected_freq_hz=freq_hz[true_bin], expected_t_utc_s=t_utc_s[true_frame],
+            freq_tol_hz=B0_2A_FREQ_TOL_HZ, time_tol_s=B0_2A_TIME_TOL_S,
+            expected_level_db=level_true_db, level_tol_db=B0_2A_LEVEL_TOL_DB,
+        )
+    except Exception as exc:
+        raise AssertionError(
+            "assert_tone_at() raised for a tone at its OWN true bin/frame/level "
+            f"({type(exc).__name__}: {exc}); the positive control must pass"
+        ) from exc
+
+
+def check_b0_2a_synthetic_tone_wrong_bin_offset_is_rejected():
+    """NEGATIVE CONTROL: a tone claimed to be B0_2A_WRONG_BIN_OFFSET bins away from
+    where it actually is must be REJECTED, not silently accepted.
+
+    Proves the positive control's tolerance has discriminating power -- a
+    tolerance loose enough to accept any bin would make the positive control
+    above pass for a broken mapping too.
+    """
+    cfg, fft_io = _b0_2a_fft_io()
+    true_bin, true_frame, level_true_db = 300, 400, -20.0
+    levels_db, freq_hz, t_utc_s = _b0_2a_synthetic_product(
+        fft_io, true_bin=true_bin, true_frame=true_frame, level_true_db=level_true_db,
+    )
+    wrong_bin = true_bin + B0_2A_WRONG_BIN_OFFSET
+    try:
+        fft_io.assert_tone_at(
+            levels_db, freq_hz, t_utc_s,
+            expected_freq_hz=freq_hz[wrong_bin], expected_t_utc_s=t_utc_s[true_frame],
+            freq_tol_hz=B0_2A_FREQ_TOL_HZ, time_tol_s=B0_2A_TIME_TOL_S,
+        )
+    except Exception:
+        pass
+    else:
+        raise AssertionError(
+            f"assert_tone_at() ACCEPTED a claim {B0_2A_WRONG_BIN_OFFSET} bins "
+            f"({B0_2A_WRONG_BIN_OFFSET * B0_2A_BIN_WIDTH_HZ} Hz) away from the tone's "
+            f"true bin {true_bin}; a mapping that cannot tell these apart is not "
+            "verifying the frequency axis at all"
+        )
+
+
+def check_b0_2a_synthetic_tone_wrong_hour_offset_is_rejected():
+    """NEGATIVE CONTROL, the invariant-4 case verbatim: a tone claimed to have
+    started one hour later (or earlier) than it actually did must be REJECTED.
+
+    A mapping that ACCEPTS a one-hour-shifted claim is exactly the
+    time-alignment bug CLAUDE.md invariant 4 warns produces a clean-looking but
+    wrong correlation.
+    """
+    cfg, fft_io = _b0_2a_fft_io()
+    true_bin, true_frame, level_true_db = 300, 400, -20.0
+    levels_db, freq_hz, t_utc_s = _b0_2a_synthetic_product(
+        fft_io, true_bin=true_bin, true_frame=true_frame, level_true_db=level_true_db,
+    )
+    wrong_claimed_utc_s = t_utc_s[true_frame] + B0_2A_WRONG_TIME_OFFSET_S
+    try:
+        fft_io.assert_tone_at(
+            levels_db, freq_hz, t_utc_s,
+            expected_freq_hz=freq_hz[true_bin], expected_t_utc_s=wrong_claimed_utc_s,
+            freq_tol_hz=B0_2A_FREQ_TOL_HZ, time_tol_s=B0_2A_TIME_TOL_S,
+        )
+    except Exception:
+        pass
+    else:
+        raise AssertionError(
+            f"assert_tone_at() ACCEPTED a claim {B0_2A_WRONG_TIME_OFFSET_S} s "
+            f"(one hour) away from the tone's true onset {t_utc_s[true_frame]}; "
+            "this is precisely the false-positive shape CLAUDE.md invariant 4 warns "
+            "a shuffled/shifted time base can produce"
+        )
+
+
+def check_b0_2a_real_fixture_shape_and_structural_zeros():
+    """Data-dependent: a REAL .fft.gz from the local sample is 1200x512, with the
+    documented structural zeros (column 0, columns 419-511), and t_utc_s[0]
+    is an absolute UTC instant, not a relative offset."""
+    sample = REPO_ROOT / "data" / SAMPLE_DIR_NAME
+    if not sample.is_dir():
+        raise SkipCheck(f"acquisition directory absent: {sample}")
+    missing = [n for n in FIXTURE_FFT_NAMES if not (sample / n).is_file()]
+    if missing:
+        raise SkipCheck(f"fixture .fft.gz files absent from {sample}: {missing}")
+
+    cfg, fft_io = _b0_2a_fft_io()
+    path = sample / FIXTURE_FFT_NAMES[0]
+    product = fft_io.read_fft_gz(path)
+    levels = np.asarray(product.levels_db)
+    assert levels.shape == (B0_2A_N_FRAMES, B0_2A_N_BINS), (
+        f"{path.name}: read_fft_gz().levels_db has shape {levels.shape}, expected "
+        f"({B0_2A_N_FRAMES}, {B0_2A_N_BINS}) (frames x bins, settled fact)"
+    )
+    assert np.all(levels[:, B0_2A_STRUCTURAL_ZERO_COL0] == 0), (
+        f"{path.name}: column {B0_2A_STRUCTURAL_ZERO_COL0} is not all-zero "
+        f"(structural zero, settled fact); nonzero count "
+        f"{np.count_nonzero(levels[:, B0_2A_STRUCTURAL_ZERO_COL0])}"
+    )
+    lo, hi = B0_2A_STRUCTURAL_ZERO_COLS_HIGH
+    block = levels[:, lo:hi + 1]
+    assert np.all(block == 0), (
+        f"{path.name}: columns {lo}-{hi} are not all-zero (structural zero, "
+        f"settled fact); nonzero count {np.count_nonzero(block)}"
+    )
+
+    freq_hz = np.asarray(product.freq_hz, dtype=float)
+    t_utc_s = np.asarray(product.t_utc_s, dtype=float)
+    assert freq_hz.shape == (B0_2A_N_BINS,), (
+        f"{path.name}: freq_hz shape {freq_hz.shape}, expected ({B0_2A_N_BINS},)"
+    )
+    assert t_utc_s.shape == (B0_2A_N_FRAMES,), (
+        f"{path.name}: t_utc_s shape {t_utc_s.shape}, expected ({B0_2A_N_FRAMES},)"
+    )
+    # A relative axis would start at 0.0; a real 2026 UTC instant is >> 1e9.
+    assert t_utc_s[0] > 1_000_000_000.0, (
+        f"{path.name}: t_utc_s[0] = {t_utc_s[0]} looks like a relative offset, "
+        "not an absolute UTC epoch second"
+    )
+
+
+def check_b0_2a_real_fixture_38khz_line_lands_in_expected_bin():
+    """Data-dependent: the known 38 kHz echosounder line lands at bin 152 +/- 1
+    in the real fixture -- an independent, real-data confirmation of the
+    frequency axis, beyond the synthetic-tone checks above."""
+    sample = REPO_ROOT / "data" / SAMPLE_DIR_NAME
+    if not sample.is_dir():
+        raise SkipCheck(f"acquisition directory absent: {sample}")
+    missing = [n for n in FIXTURE_FFT_NAMES if not (sample / n).is_file()]
+    if missing:
+        raise SkipCheck(f"fixture .fft.gz files absent from {sample}: {missing}")
+
+    cfg, fft_io = _b0_2a_fft_io()
+    path = sample / FIXTURE_FFT_NAMES[0]
+    product = fft_io.read_fft_gz(path)
+    levels = np.asarray(product.levels_db)
+    mean_spectrum = levels.mean(axis=0)
+    lo_bin = max(0, B0_2A_38KHZ_LINE_BIN - 5)
+    hi_bin = min(B0_2A_N_BINS, B0_2A_38KHZ_LINE_BIN + 6)
+    window = mean_spectrum[lo_bin:hi_bin]
+    peak_bin = lo_bin + int(np.argmax(window))
+    assert abs(peak_bin - B0_2A_38KHZ_LINE_BIN) <= B0_2A_38KHZ_LINE_BIN_TOL, (
+        f"{path.name}: mean-spectrum peak in the 38 kHz search window is at bin "
+        f"{peak_bin}, expected {B0_2A_38KHZ_LINE_BIN} +/- {B0_2A_38KHZ_LINE_BIN_TOL} "
+        "(the documented 38 kHz echosounder line, acoustics_plan_v2 SS3)"
+    )
+
+
+def check_b0_2a_calibratable_band_matches_bin_range_and_assert_calibratable_rejects_beyond():
+    """Bins 0-205 are the calibratable set; fft_io.assert_calibratable() REJECTS a
+    band reaching outside it, reusing boatphone/models.py's own band vocabulary
+    (assert_band_matched) rather than a second, independently-invented comparator
+    (CLAUDE.md invariant 6) -- fft_io is only asked to STATE the calibratable
+    band, not to reimplement how a spectrum gets checked against one.
+    """
+    cfg, fft_io = _b0_2a_fft_io()
+    import boatphone.models as bm
+
+    lo_bin, hi_bin = B0_2A_CALIBRATED_BIN_RANGE
+    freq_hz = np.asarray(fft_io.frequency_axis_hz(), dtype=float)
+    calibrated_band_hz = fft_io.calibrated_band_hz()
+    exp_lo_hz, exp_hi_hz = freq_hz[lo_bin], freq_hz[hi_bin]
+    got_lo_hz, got_hi_hz = calibrated_band_hz
+    assert abs(got_lo_hz - exp_lo_hz) < 1e-6 and abs(got_hi_hz - exp_hi_hz) < 1e-6, (
+        f"fft_io.calibrated_band_hz() = {calibrated_band_hz}, expected "
+        f"({exp_lo_hz}, {exp_hi_hz}) Hz -- bins {lo_bin}-{hi_bin} inclusive "
+        "(settled fact: the calibration file covers 10 Hz - 51.2 kHz)"
+    )
+
+    # In-range request: assert_band_matched-style acceptance -- must NOT raise.
+    try:
+        fft_io.assert_calibratable(calibrated_band_hz)
+    except Exception as exc:
+        raise AssertionError(
+            f"fft_io.assert_calibratable({calibrated_band_hz}) raised "
+            f"{type(exc).__name__}: {exc} for the band it ITSELF just reported "
+            "as calibrated_band_hz(); a self-consistent band must be accepted"
+        ) from exc
+
+    # Out-of-range request (reaches past bin 205, i.e. past 51.2 kHz): MUST raise.
+    beyond_hz = (exp_lo_hz, exp_hi_hz + 10 * B0_2A_BIN_WIDTH_HZ)
+    try:
+        fft_io.assert_calibratable(beyond_hz)
+    except Exception:
+        pass
+    else:
+        raise AssertionError(
+            f"fft_io.assert_calibratable({beyond_hz}) returned without raising; "
+            f"that band reaches past the calibratable support {calibrated_band_hz} Hz "
+            "(bins 0-205 only -- an absolute level requested beyond bin 205 has no "
+            "calibration applied to it and must not be silently permitted)"
+        )
+    # And boatphone.models is genuinely reusable here, not merely importable:
+    # assert_band_matched must still draw the same true/false line given the
+    # SAME two bands, independent of fft_io's own wording.
+    try:
+        bm.assert_band_matched(beyond_hz, calibrated_band_hz, label="requested")
+    except bm.BandMatchError:
+        pass
+    else:
+        raise AssertionError(
+            f"boatphone.models.assert_band_matched({beyond_hz}, {calibrated_band_hz}) "
+            "did not raise BandMatchError -- the two bands genuinely differ, so "
+            "models.py's own band vocabulary should also flag this mismatch"
+        )
+
+
 CHECKS = [
     ("A0.1 paths import is dependency-free", check_a0_1_paths_import_is_dependency_free),
     ("A0.1 paths exports are pathlib.Path", check_a0_1_paths_exports_are_paths),
@@ -5510,6 +6003,18 @@ CHECKS = [
     ("B0.1 recorded sha256 verifies against disk (data-dependent)", check_b0_1_recorded_hashes_verify_against_disk),
     ("B0.1 data/ untouched by this step (invariant 2)", check_b0_1_data_dir_untouched_by_this_step),
     ("B0.1 external/ never staged/untracked in git", check_b0_1_external_not_staged_or_untracked_in_git),
+    ("B0-2a boatphone.config axis constants exist", check_b0_2a_config_constants_exist),
+    ("B0-2a config axis constants match settled facts", check_b0_2a_config_constants_match_settled_facts),
+    ("B0-2a boatphone/fft_io.py exists", check_b0_2a_module_exists),
+    ("B0-2a frequency_axis_hz: bin width + bin1==250Hz, not hardcoded", check_b0_2a_frequency_axis_bin_width_and_bin1),
+    ("B0-2a time_axis_utc_s: absolute UTC, None start RAISES", check_b0_2a_time_axis_is_absolute_utc_not_bare_relative),
+    ("B0-2a assert_tone_at signature names freq_hz/t_utc_s/levels_db", check_b0_2a_assert_tone_at_signature_names_conventions),
+    ("B0-2a SYNTHETIC TONE positive control (freq+time+level)", check_b0_2a_synthetic_tone_positive_control_survives_axis_mapping),
+    ("B0-2a WRONG-BIN-FAILS: offset tone claim is rejected", check_b0_2a_synthetic_tone_wrong_bin_offset_is_rejected),
+    ("B0-2a WRONG-TIME-FAILS: +1h shifted claim is rejected", check_b0_2a_synthetic_tone_wrong_hour_offset_is_rejected),
+    ("B0-2a real fixture: shape 1200x512 + structural zeros (data-dependent)", check_b0_2a_real_fixture_shape_and_structural_zeros),
+    ("B0-2a real fixture: 38 kHz line at bin 152+/-1 (data-dependent)", check_b0_2a_real_fixture_38khz_line_lands_in_expected_bin),
+    ("B0-2a calibratable band == bins 0-205; assert_calibratable rejects beyond (reuses models.py)", check_b0_2a_calibratable_band_matches_bin_range_and_assert_calibratable_rejects_beyond),
 ]
 
 
