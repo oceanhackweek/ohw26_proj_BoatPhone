@@ -31,6 +31,7 @@ claim at all (decision 0010 SS3).
 from __future__ import annotations
 
 import dataclasses
+import pathlib
 
 import numpy as np
 
@@ -55,6 +56,8 @@ __all__ = [
     "spectral_centroid_hz",
     "percentile_spectra_counts",
     "band_baseline_from_per_bin_ambient",
+    "load_seasonal_ambient_counts",
+    "CORPUS_AMBIENT_UTC_HOURS",
     "BandExcess",
     "UnrepresentableBandError",
     "relative_ceiling_hz",
@@ -582,4 +585,64 @@ def band_baseline_from_per_bin_ambient(freq_hz, ambient_per_bin, band_hz):
     if not in_band.any():
         raise UnrepresentableBandError(
             f"band {tuple(float(b) for b in band_hz)} Hz kept no bins")
-    return float(np.median(ambient_per_bin[in_band]))
+    in_band_values = ambient_per_bin[in_band]
+    if not np.all(np.isfinite(in_band_values)):
+        n_bad = int((~np.isfinite(in_band_values)).sum())
+        raise ValueError(
+            f"the ambient has {n_bad} non-finite value(s) inside band "
+            f"{tuple(float(b) for b in band_hz)} Hz. A NaN marks a bin the "
+            "population pass did not cover, and taking a median across it would "
+            "either poison the result or silently drop those bins -- both of "
+            "which report a baseline over a band that was never measured"
+        )
+    return float(np.median(in_band_values))
+
+
+# The UTC hours the bulk corpus actually spans, measured over all 26,666 windows:
+# {16: 8030, 17: 10699, 18: 8027} and nothing else. The seasonal ambient is
+# therefore an ambient FOR THAT HOUR BAND, not for the day.
+CORPUS_AMBIENT_UTC_HOURS = frozenset({16, 17, 18})
+
+
+def load_seasonal_ambient_counts(path, year, n_bins=None):
+    """Per-bin L95 ambient for one season, padded to the full frequency axis.
+
+    Reads `seasonal_ambient.npz` as written by `scripts/plot_population_set.py`:
+    the level exceeded 95% of the time in each frequency bin, over every window
+    of that season (~4,500 of them). That is the quiet-time floor, estimated
+    across the population rather than from any one window.
+
+    RETURNED AT FULL LENGTH WITH NaN OUTSIDE THE COVERED BINS, not trimmed. The
+    stored array covers bins 1..408 only -- bin 0 is DC and everything above 408
+    is instrument response (decision 0014). Returning a short array would let a
+    caller index it against the 512-bin frequency axis and silently read the
+    wrong frequency for every bin; NaN makes the uncovered region announce
+    itself at the first statistic that touches it.
+
+    Raises if the season is absent rather than falling back to a neighbouring
+    year: ambient is estimated per season precisely because seasons differ, so
+    substituting one for another would import the difference as signal.
+    """
+    path = pathlib.Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"no seasonal ambient at {path}. Produce it by running "
+            "scripts/build_population_set.py then scripts/plot_population_set.py."
+        )
+    with np.load(path) as data:
+        key = f"l95_{int(year)}"
+        if key not in data:
+            available = sorted(int(k[4:]) for k in data.files if k.startswith("l95_"))
+            raise KeyError(
+                f"no ambient for season {year}; the population pass covered "
+                f"{available}. Refusing to substitute another season: ambient is "
+                "estimated per season because seasons differ, so a substitution "
+                "would import that difference as signal."
+            )
+        stored = np.asarray(data[key], dtype=float)
+        lo_bin = int(data["lo_bin"])
+        total_bins = int(n_bins) if n_bins else int(np.asarray(data["freq_hz"]).size)
+
+    full = np.full(total_bins, np.nan, dtype=float)
+    full[lo_bin: lo_bin + stored.size] = stored
+    return full

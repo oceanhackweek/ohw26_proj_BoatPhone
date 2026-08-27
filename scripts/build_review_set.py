@@ -280,8 +280,21 @@ def _window_diagnostics(band_results, t0):
     return out
 
 
-def _plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz):
-    """Ambient-subtracted and per-bin-normalised views of the same surface."""
+def _plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz,
+                   season_ambient=None, ambient_note=None):
+    """Three denoisings of the same surface, and they do not agree by design.
+
+    Panel A subtracts the window's OWN per-bin ambient; panel B subtracts the
+    SEASON's, measured across ~4,500 windows; panel C is the difference between
+    the two baselines, which is the part panel A silently removed.
+
+    Panel A cannot see a window that was loud throughout -- the vessel, or the
+    weather, or the distant traffic sets its own floor and is subtracted away.
+    Panel B can, because no single window moves a population estimate. Panel B
+    in exchange assumes this window is drawn from that population, which is
+    false for an off-strip window at a different hour of day. Neither is the
+    right answer; the pair is.
+    """
     t0 = cov.overpass.acquired_utc.timestamp()
     t_min = (t_utc_s - t0) / 60.0
     lo_bin = 1
@@ -294,8 +307,12 @@ def _plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz):
         levels, percentile=AMBIENT_PERCENTILE)
     n_unusable = int((~usable[lo_bin: top_bin + 1]).sum())
 
-    fig, (ax_a, ax_b) = plt.subplots(2, 1, figsize=(13, 9), sharex=True,
-                                     gridspec_kw={"hspace": 0.13})
+    have_pop = season_ambient is not None
+    n_panels = 3 if have_pop else 2
+    fig, axes = plt.subplots(n_panels, 1, figsize=(13, 4.5 * n_panels), sharex=True,
+                             gridspec_kw={"hspace": 0.16})
+    ax_a, ax_b = axes[0], axes[1] if not have_pop else axes[2]
+    ax_pop = axes[1] if have_pop else None
 
     m1 = ax_a.pcolormesh(t_min, f_khz, excess[:, lo_bin: top_bin + 1].T,
                          shading="nearest", cmap="inferno", vmin=0.0,
@@ -315,17 +332,44 @@ def _plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz):
         f"bin outranks the same rise in a noisy one   ({n_unusable} bin(s) masked: no spread)",
         fontsize=10)
 
-    for ax in (ax_a, ax_b):
+    if have_pop:
+        pop_excess = levels - season_ambient[np.newaxis, :]
+        seg = pop_excess[:, lo_bin: top_bin + 1]
+        m3 = ax_pop.pcolormesh(t_min, f_khz, seg.T, shading="nearest", cmap="inferno",
+                               vmin=0.0, vmax=float(np.nanpercentile(seg, 99.8)))
+        fig.colorbar(m3, ax=ax_pop, pad=0.01).set_label(
+            "excess over the SEASON's ambient (counts)")
+        # Report the shift BOTH across the whole plotted range and inside the
+        # detection band. They differ a lot -- most bins above ~10 kHz sit at the
+        # season floor, so the full-range median is diluted toward zero while the
+        # 1-10 kHz band carries the actual elevation. Quoting only the full-range
+        # number next to a per-band table would look like a contradiction.
+        own_ambient = np.percentile(levels, AMBIENT_PERCENTILE, axis=0)
+        diff = own_ambient - season_ambient
+        full_shift = float(np.nanmedian(diff[lo_bin: top_bin + 1]))
+        craft_lo, craft_hi = config.FFT_B5_SMALL_CRAFT_BAND_HZ
+        craft_bins = np.where((freq_hz >= craft_lo) & (freq_hz <= craft_hi))[0]
+        craft_shift = float(np.nanmedian(diff[craft_bins]))
+        ax_pop.set_title(
+            "POPULATION-AMBIENT SUBTRACTED -- each bin minus the L95 quiet floor for this "
+            f"SEASON (~4,500 windows). This window's own floor sits {craft_shift:+.1f} counts "
+            f"above the season's in 1-10 kHz ({full_shift:+.1f} across the whole plotted "
+            "range). Positive means it was elevated THROUGHOUT -- which panel A subtracts "
+            "away and cannot show.", fontsize=9.5, wrap=True)
+
+    for ax in [a for a in (ax_a, ax_pop, ax_b) if a is not None]:
         ax.set_yscale("log")
         ax.set_ylim(f_khz[0], f_khz[-1])
         ax.set_ylabel("frequency (kHz)")
         ax.axvline(0.0, color="cyan", lw=1.6)
     ax_b.set_xlabel("minutes relative to scene acquisition")
 
-    fig.suptitle(
-        f"{cov.overpass.scene_id}   |   SUBTRACTION REMOVES WHAT IS PERSISTENT: a vessel "
-        "present for the whole window subtracts itself away. Evidence about transients only.",
-        y=0.955, fontsize=9.5)
+    caption = (f"{cov.overpass.scene_id}   |   PANEL A SUBTRACTION REMOVES WHAT IS "
+               "PERSISTENT: a source present for the whole window subtracts itself away. "
+               "The population panel does not have that blind spot.")
+    if ambient_note:
+        caption += f"\n{ambient_note}"
+    fig.suptitle(caption, y=1.0, fontsize=9.0)
     fig.savefig(scene_dir / "denoised.png", dpi=115, bbox_inches="tight")
     plt.close(fig)
     return {"n_bins_masked_no_spread": n_unusable}
@@ -470,6 +514,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--max-windows", type=int, default=None)
+    parser.add_argument("--population-dir", default=None,
+                        help="run dir holding seasonal_ambient.npz; default: latest")
     args = parser.parse_args(argv)
 
     run_id = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -479,6 +525,19 @@ def main(argv=None):
 
     overpass_list = ov.load_gate2_overpasses()
     labels = ov.load_optical_labels()
+
+    # The POPULATION ambient, if a pass has been run. Optional: the review set
+    # must still build before anyone has run one.
+    if args.population_dir:
+        ambient_path = pathlib.Path(args.population_dir) / "seasonal_ambient.npz"
+    else:
+        found = sorted((DERIVED_DIR / "population").glob("*/seasonal_ambient.npz"))
+        ambient_path = found[-1] if found else None
+    if ambient_path is not None:
+        print(f"population ambient: {ambient_path}")
+    else:
+        print("no population ambient found -- per-window baselines only. Produce "
+              "one with build_population_set.py then plot_population_set.py.")
 
     # BOTH landing zones. The bulk corpus holds the 09:15-11:45 local strip; the
     # top-up zone holds windows pulled for a specific labelled scene, which are
@@ -535,7 +594,36 @@ def main(argv=None):
         levels, t_utc_s, freq_hz = _load_window_surface(cov.paths)
         t0 = scene.acquired_utc.timestamp()
 
+        # Per-season population ambient for THIS window's year, if available.
+        season_ambient = None
+        ambient_note = None
+        if ambient_path is not None:
+            try:
+                season_ambient = features.load_seasonal_ambient_counts(
+                    ambient_path, scene.acquired_utc.year, n_bins=levels.shape[1])
+            except KeyError as exc:
+                ambient_note = f"no population ambient for this season: {exc}"
+            # THE AMBIENT IS CONDITIONED ON TIME OF DAY, and this is not a
+            # footnote. It is built from the bulk corpus, which spans only
+            # 16:00-18:59 UTC. A window outside that band is being compared
+            # against a quiet floor measured at a DIFFERENT HOUR, and any
+            # diurnal difference in traffic or sea state lands in the excess
+            # looking exactly like signal. The off-strip windows are precisely
+            # the labelled ones, so this bites where it matters most.
+            window_hour = cov.window_start_utc.hour
+            if window_hour not in features.CORPUS_AMBIENT_UTC_HOURS:
+                ambient_note = (
+                    f"WINDOW IS OFF-STRIP: it starts at {window_hour:02d}:xx UTC, "
+                    f"outside the {sorted(features.CORPUS_AMBIENT_UTC_HOURS)} UTC "
+                    "hours the population ambient was measured over. Excess "
+                    "against that ambient confounds any time-of-day difference "
+                    "with signal. The per-window baseline does not have this "
+                    "problem; the population one does not have the "
+                    "occupied-window problem. Read both."
+                )
+
         band_results = {}
+        pop_failures = []
         for band_name, band_hz in bands.items():
             series = features.band_level_series(
                 fft_io.FftProduct(levels_db=levels, freq_hz=freq_hz, t_utc_s=t_utc_s,
@@ -543,7 +631,33 @@ def main(argv=None):
                                   start_utc=cov.window_start_utc, path=cov.paths[0]),
                 band_hz)
             found = run_b5_gate.find_events(series.t_utc_s, series.level_counts)
+
+            # The SECOND baseline. The per-window one above is the 10th
+            # percentile of this window's own trace, which is blind to a window
+            # a vessel occupies throughout: the vessel raises the baseline and
+            # subtracts itself away. A population ambient cannot be moved by one
+            # pass. Where the two disagree is the diagnostic, so both are kept
+            # and neither replaces the other.
+            pop_baseline = None
+            pop_excess = None
+            if season_ambient is not None:
+                try:
+                    pop_baseline = features.band_baseline_from_per_bin_ambient(
+                        freq_hz, season_ambient, band_hz)
+                    pop_excess = float(np.max(series.level_counts) - pop_baseline)
+                except (ValueError, features.UnrepresentableBandError) as exc:
+                    # RECORDED, not swallowed. An earlier version discarded this
+                    # and every population baseline silently read None, which
+                    # looked exactly like "no population pass has been run".
+                    pop_baseline = None
+                    pop_failures.append(f"{band_name}: {type(exc).__name__}: {exc}")
+
             band_results[band_name] = {
+                "population_baseline_counts": pop_baseline,
+                "population_peak_excess_counts": pop_excess,
+                "baseline_shift_counts": (
+                    None if pop_baseline is None
+                    else round(found["baseline_counts"] - pop_baseline, 2)),
                 "band_hz": band_hz,
                 "t_min": (series.t_utc_s - t0) / 60.0,
                 "level": series.level_counts,
@@ -578,6 +692,11 @@ def main(argv=None):
                     "reviewer_notes": "",
                 })
 
+        if pop_failures:
+            print(f"    population baseline unavailable: {'; '.join(pop_failures)}")
+            ambient_note = ((ambient_note + " | " if ambient_note else "")
+                            + "population baseline failed: " + "; ".join(pop_failures))
+
         # Diagnostics, computed once per window from the bands above.
         diag = _window_diagnostics(band_results, t0)
         label = labels.get(scene.scene_id)
@@ -585,7 +704,9 @@ def main(argv=None):
         _plot_window(scene_dir, cov, levels, t_utc_s, freq_hz, band_results,
                      diag=diag, label=label)
         extra = {}
-        extra.update(_plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz))
+        extra.update(_plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz,
+                                    season_ambient=season_ambient,
+                                    ambient_note=ambient_note))
         extra.update(_plot_band_detail(
             scene_dir, cov, levels, t_utc_s, freq_hz, band_results))
         extra.update(_plot_spectra(
@@ -630,8 +751,27 @@ def main(argv=None):
                             "larger.")}
                 if label is not None else None),
             "diagnostics": diag,
+            "population_ambient": {
+                "source": str(ambient_path) if ambient_path else None,
+                "season": scene.acquired_utc.year,
+                "note": ambient_note,
+                "what_a_positive_baseline_shift_means": (
+                    "The window's own baseline sits ABOVE the season's quiet floor, "
+                    "i.e. it was elevated for its whole duration. The per-window "
+                    "baseline subtracts that away and cannot see it; this is the "
+                    "far-field diagnostic acoustics_plan_v2 SS5 B5 asks for."
+                ),
+            },
             "bands": {k: {"band_hz": list(v["band_hz"]),
                           "baseline_counts": v["baseline"],
+                          # BOTH baselines, always. The per-window one is blind
+                          # to a window elevated throughout; the population one
+                          # is blind to a time-of-day mismatch. A summary
+                          # carrying only one of them would hide whichever
+                          # failure applies (see population_ambient.note).
+                          "population_baseline_counts": v["population_baseline_counts"],
+                          "population_peak_excess_counts": v["population_peak_excess_counts"],
+                          "baseline_shift_counts": v["baseline_shift_counts"],
                           "threshold_counts": v["threshold"],
                           "n_events": len(v["events"]),
                           "n_bins_in_band": v["n_bins"],
