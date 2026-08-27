@@ -30,6 +30,11 @@ data/processed/
 
 **/.DS_Store
 
+# B0.1: third-party model code/checkpoints (ONC selfsupervision_anomalies_onc clone,
+# merileo/* Hugging Face checkpoints). Not ours, not in data/ -- see boatphone/paths.py
+# EXTERNAL_DIR. Provenance is tracked separately at docs/derived/b0_external_provenance.json.
+external/
+
 # Python bytecode
 __pycache__/
 *.py[cod]

@@ -5057,6 +5057,338 @@ def check_a1e_5_a_no_data_marker_on_page_2_must_RAISE_not_truncate():
     )
 
 
+# ---------------------------------------------------------------------------
+# B0.1 -- acquire and pin external artefacts (ONC selfsupervision_anomalies_onc)
+#
+# Contract (segment B0-1, milestone1/b0-model-viability). These artefacts are
+# NOT acquisitions in the data/ sense -- they are third-party model code and
+# checkpoints, immutable to us but not ours, and CLAUDE.md invariant 2 (data/
+# immutability) does not apply to them. They must live OUTSIDE data/ entirely:
+#
+#   external/onc_ssamba/      -- clone of the ONC repo (git commit SHA pinned)
+#   external/checkpoints/     -- HF Hub artefacts (merileo/*: cnn_baseline/
+#                                 cnn_best.pt, args.pkl, a labelled eval .h5)
+#
+# `external/` is a new top-level entry in .gitignore -- large third-party
+# binaries do not belong in git any more than bulk ONC downloads do.
+#
+# Provenance is the deliverable this step is actually graded on: a TRACKED
+# JSON at docs/derived/b0_external_provenance.json, one entry per artefact,
+# each carrying: url, revision (git commit SHA or HF revision), sha256 (of
+# every file used), size_bytes, downloaded_utc (UTC ISO-8601), licence.
+# Without this, "we used the ONC model" is a claim no one can audit six
+# months from now when the HF repo has moved on to a new revision.
+#
+# Path constants belong in boatphone/paths.py ONLY (invariant 6: one
+# definition, source in a comment) -- EXTERNAL_DIR, ONC_MODEL_DIR,
+# CHECKPOINT_DIR. Not in a notebook, not in scripts/.
+#
+# CONTRACT RESOLUTIONS I HAD TO MAKE (flagged, not hidden):
+#   (a) The provenance JSON's exact shape (top-level list vs dict-keyed-by-
+#       artefact-name) is not specified in the brief. I assume a JSON object
+#       whose values are per-artefact dicts (or a JSON array of such dicts) --
+#       check_b0_1_provenance_fields walks whichever shape it finds and
+#       requires every leaf artefact dict to carry the six fields. If the
+#       coder picks a different shape (e.g. nested one level deeper for
+#       per-file sha256 under a single revision-level record), the field
+#       walker may need to change: this is a genuine ambiguity, not just a
+#       test detail.
+#   (b) "sha256 of every file used" is read as: at minimum, cnn_best.pt,
+#       args.pkl, and the labelled eval .h5 each get an entry (or the
+#       provenance record for the checkpoint artefact carries a mapping of
+#       filename -> sha256 covering all three). check_b0_1_hashes_verify
+#       recurses to find every (path, sha256) pair the JSON asserts and
+#       verifies each independently, so it does not care which shape wins.
+#   (c) "byte size" is assumed reported per FILE, matching the hash
+#       granularity above -- if the coder reports one aggregate size per
+#       artefact instead, this check does not verify size at all (byte size
+#       is not required by the brief's assertion list), only sha256.
+# ---------------------------------------------------------------------------
+
+PROVENANCE_JSON_RELPATH = os.path.join("docs", "derived", "b0_external_provenance.json")
+
+# Required per-artefact provenance fields, source: B0-1 brief.
+B0_PROVENANCE_REQUIRED_FIELDS = ("url", "sha256", "size_bytes", "downloaded_utc", "licence")
+# Exactly one of these two must be present per artefact (git clone vs HF pull).
+B0_PROVENANCE_REVISION_FIELDS = ("revision", "git_commit_sha", "commit", "hf_revision")
+
+
+def _b0_external_dir():
+    import boatphone.paths as p
+    return p
+
+
+def check_b0_1_paths_constants_exist_and_are_correct():
+    """boatphone.paths exposes EXTERNAL_DIR/ONC_MODEL_DIR/CHECKPOINT_DIR, inside the repo."""
+    out = _child_ok(_run_child("""
+        import pathlib
+        import boatphone.paths as p
+        names = ["EXTERNAL_DIR", "ONC_MODEL_DIR", "CHECKPOINT_DIR"]
+        missing = [n for n in names if not hasattr(p, n)]
+        assert not missing, "boatphone.paths is missing exports: " + repr(missing)
+        bad = [n for n in names if not isinstance(getattr(p, n), pathlib.Path)]
+        assert not bad, "not pathlib.Path: " + repr(bad)
+        assert p.REPO_ROOT in p.EXTERNAL_DIR.parents or p.EXTERNAL_DIR == p.REPO_ROOT, (
+            "EXTERNAL_DIR is not inside REPO_ROOT: " + str(p.EXTERNAL_DIR)
+        )
+        assert p.EXTERNAL_DIR.name == "external" and p.EXTERNAL_DIR.parent == p.REPO_ROOT, (
+            "EXTERNAL_DIR is expected to be <repo root>/external, got " + str(p.EXTERNAL_DIR)
+        )
+        assert p.ONC_MODEL_DIR == p.EXTERNAL_DIR / "onc_ssamba", (
+            "ONC_MODEL_DIR != EXTERNAL_DIR/'onc_ssamba', got " + str(p.ONC_MODEL_DIR)
+        )
+        assert p.CHECKPOINT_DIR == p.EXTERNAL_DIR / "checkpoints", (
+            "CHECKPOINT_DIR != EXTERNAL_DIR/'checkpoints', got " + str(p.CHECKPOINT_DIR)
+        )
+        print("OK")
+    """), "boatphone.paths B0 exports")
+    assert out.strip().endswith("OK")
+
+
+def check_b0_1_external_dir_is_gitignored():
+    """external/ is a NEW top-level .gitignore entry (not swept in by an existing rule)."""
+    assert _git_check_ignore("external/probe-file.bin") == 0, (
+        "external/ is not gitignored -- a clone or checkpoint dropped there would be "
+        "committable, which is exactly what B0-1 forbids for third-party binaries"
+    )
+    assert _git_check_ignore("external/onc_ssamba/probe.py") == 0, (
+        "external/onc_ssamba/ is not gitignored"
+    )
+    assert _git_check_ignore("external/checkpoints/cnn_best.pt") == 0, (
+        "external/checkpoints/ is not gitignored"
+    )
+
+
+def check_b0_1_provenance_json_exists_and_parses():
+    """docs/derived/b0_external_provenance.json exists, is tracked, and parses as JSON."""
+    import json
+    path = REPO_ROOT / PROVENANCE_JSON_RELPATH
+    if not path.is_file():
+        raise AssertionError(
+            f"{PROVENANCE_JSON_RELPATH} is missing; B0-1 requires a TRACKED provenance record "
+            "of every external artefact acquired (source url, revision/commit, sha256, size, "
+            "download timestamp, licence) -- this is not optional and not deferrable to a notebook"
+        )
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"{PROVENANCE_JSON_RELPATH} does not parse as JSON: {exc}") from exc
+    assert doc, f"{PROVENANCE_JSON_RELPATH} parsed to an empty document"
+    # Tracked, not gitignored: a provenance record that git itself would refuse to
+    # commit is worthless six months from now.
+    assert _git_check_ignore(PROVENANCE_JSON_RELPATH) != 0, (
+        f"{PROVENANCE_JSON_RELPATH} is gitignored; provenance must be TRACKED, not derived scratch"
+    )
+
+
+def _b0_iter_artefact_records(doc):
+    """Yield (label, record-dict) for whichever top-level shape the provenance JSON uses.
+
+    Accepts a dict keyed by artefact name, or a list of records each carrying a
+    'name'/'artefact' key. See the "CONTRACT RESOLUTIONS" note above this section:
+    the exact shape is not pinned by the brief, so this walks either.
+    """
+    if isinstance(doc, dict):
+        for name, record in doc.items():
+            if isinstance(record, dict):
+                yield name, record
+    elif isinstance(doc, list):
+        for i, record in enumerate(doc):
+            if isinstance(record, dict):
+                label = record.get("name") or record.get("artefact") or f"[{i}]"
+                yield label, record
+    else:
+        raise AssertionError(
+            f"{PROVENANCE_JSON_RELPATH} top level is neither a JSON object nor an array"
+        )
+
+
+def check_b0_1_provenance_fields_complete():
+    """Every provenance entry carries url, revision/sha, sha256, size, downloaded_utc, licence."""
+    import json
+    from datetime import datetime, timezone
+    path = REPO_ROOT / PROVENANCE_JSON_RELPATH
+    if not path.is_file():
+        raise SkipCheck(f"{PROVENANCE_JSON_RELPATH} absent -- see check_b0_1_provenance_json_exists_and_parses")
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    records = list(_b0_iter_artefact_records(doc))
+    assert records, f"{PROVENANCE_JSON_RELPATH} contains no artefact records"
+
+    # We expect at least the two artefacts named in the brief.
+    labels = {str(name).lower() for name, _ in records}
+    expected_substrings = ("onc_ssamba", "checkpoint")
+    for want in expected_substrings:
+        assert any(want in label for label in labels), (
+            f"no provenance record's key/name contains {want!r}; got labels {sorted(labels)} -- "
+            "expected at least one entry each for the repo clone and the HF checkpoints"
+        )
+
+    problems = []
+    for name, record in records:
+        empty = [f for f in B0_PROVENANCE_REQUIRED_FIELDS
+                  if record.get(f) in (None, "", [], {})]
+        if empty:
+            problems.append(f"{name}: missing/empty field(s) {empty}")
+        has_revision = any(record.get(f) for f in B0_PROVENANCE_REVISION_FIELDS)
+        if not has_revision:
+            problems.append(
+                f"{name}: no revision/commit field present (expected one of "
+                f"{B0_PROVENANCE_REVISION_FIELDS})"
+            )
+        ts = record.get("downloaded_utc")
+        if ts:
+            try:
+                parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            except ValueError:
+                problems.append(f"{name}: downloaded_utc {ts!r} does not parse as ISO-8601")
+            else:
+                if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(None):
+                    problems.append(f"{name}: downloaded_utc {ts!r} is not explicit UTC")
+    assert not problems, "provenance field problems:\n  " + "\n  ".join(problems)
+
+
+def _b0_iter_sha256_pairs(doc, base=REPO_ROOT):
+    """Recursively find every (path-ish string, sha256-ish string) pair asserted anywhere
+    in the provenance document. Deliberately shape-agnostic (see resolution (b) above):
+    walks any nested dict/list looking for a 'sha256' key alongside a sibling
+    path/filename key, so it works whether hashes are one-per-artefact or
+    one-per-file-in-a-mapping.
+    """
+    pairs = []
+
+    def _walk(node, context_path=None):
+        if isinstance(node, dict):
+            if "sha256" in node and isinstance(node["sha256"], str):
+                p = (node.get("path") or node.get("file") or node.get("filename")
+                     or context_path)
+                if p:
+                    pairs.append((str(p), node["sha256"]))
+            # a mapping like {"cnn_best.pt": "abc123...", ...} nested under "sha256" or "files"
+            for key in ("sha256", "files", "hashes"):
+                sub = node.get(key)
+                if isinstance(sub, dict):
+                    for fname, val in sub.items():
+                        if isinstance(val, str) and len(val) == 64:
+                            pairs.append((fname, val))
+            for k, v in node.items():
+                if isinstance(v, (dict, list)):
+                    _walk(v, context_path)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item, context_path)
+
+    _walk(doc)
+    return pairs
+
+
+def check_b0_1_recorded_hashes_verify_against_disk():
+    """Every on-disk file the provenance JSON claims a sha256 for actually matches it.
+
+    A recorded file that is ABSENT is a SKIP for that file (the clone/checkpoint
+    pull has not happened on this machine -- large binaries are not in git, same
+    rule as data/). A recorded file that is PRESENT but hashes differently is a
+    hard FAIL: that is corruption or a stale/edited provenance record, not an
+    "I don't have the data" situation, and must never be silently downgraded to
+    a skip.
+    """
+    import hashlib
+    import json
+    path = REPO_ROOT / PROVENANCE_JSON_RELPATH
+    if not path.is_file():
+        raise SkipCheck(f"{PROVENANCE_JSON_RELPATH} absent -- see check_b0_1_provenance_json_exists_and_parses")
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    pairs = _b0_iter_sha256_pairs(doc)
+    assert pairs, (
+        f"{PROVENANCE_JSON_RELPATH} parsed but no (path, sha256) pair could be extracted from it"
+    )
+
+    external_dir = REPO_ROOT / "external"
+    if not external_dir.is_dir():
+        raise SkipCheck(
+            "external/ is absent on this machine -- large third-party artefacts are not in "
+            "git, same as data/; hash verification requires the actual clone/checkpoint pull "
+            "(this is a SKIP, not a pass: it proves nothing about integrity)"
+        )
+
+    absent, mismatched, verified = [], [], []
+    for rel, expected_hex in pairs:
+        candidate = pathlib.Path(rel)
+        fp = candidate if candidate.is_absolute() else (external_dir / candidate)
+        if not fp.is_file():
+            # also try resolving relative to REPO_ROOT, in case the JSON used repo-relative paths
+            alt = REPO_ROOT / rel
+            fp = alt if alt.is_file() else fp
+        if not fp.is_file():
+            absent.append(rel)
+            continue
+        h = hashlib.sha256()
+        with open(fp, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        got = h.hexdigest()
+        if got.lower() != expected_hex.lower():
+            mismatched.append((rel, expected_hex, got))
+        else:
+            verified.append(rel)
+
+    if absent and not mismatched and not verified:
+        raise SkipCheck(
+            f"all {len(absent)} recorded file(s) are absent on disk (e.g. {absent[:3]}); "
+            "clone/checkpoint pull has not happened here -- distinct from a hash mismatch"
+        )
+    assert not mismatched, (
+        "sha256 MISMATCH for file(s) the provenance record claims to have verified "
+        f"(recorded, expected, got): {mismatched}; this is corruption or a stale/edited "
+        "provenance record, not a missing-file situation"
+    )
+    if absent:
+        print(f"      [note: {len(absent)} recorded file(s) absent on this machine, "
+              f"skipped individually: {absent[:5]}]")
+
+
+def check_b0_1_data_dir_untouched_by_this_step():
+    """B0-1 must not write anything under data/ (invariant 2: data/ is immutable/append-only).
+
+    We cannot assert data/'s mtime is unchanged (other steps touch it), so this
+    checks the narrower, still-real claim: nothing under data/ is named for the
+    ONC ssamba clone or the merileo checkpoints -- the artefacts belong ONLY
+    under external/.
+    """
+    data_dir = REPO_ROOT / "data"
+    if not data_dir.is_dir():
+        raise SkipCheck(f"{data_dir} absent")
+    suspect_names = ("onc_ssamba", "ssamba", "merileo", "cnn_best.pt", "cnn_baseline")
+    hits = []
+    for p in data_dir.rglob("*"):
+        low = p.name.lower()
+        if any(s in low for s in suspect_names):
+            hits.append(str(p.relative_to(REPO_ROOT)))
+    assert not hits, (
+        f"found B0 external-artefact-looking path(s) under data/: {hits}; "
+        "external artefacts belong under external/, never under the immutable data/ tree "
+        "(CLAUDE.md invariant 2)"
+    )
+
+
+def check_b0_1_external_not_staged_or_untracked_in_git():
+    """`git status --porcelain` shows no staged/untracked path under external/ (invariants 2, 7).
+
+    Even though external/ is gitignored (check_b0_1_external_dir_is_gitignored),
+    a file added with `git add -f` would still show as staged; this check is the
+    belt to that check's suspenders.
+    """
+    proc = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=str(REPO_ROOT),
+        capture_output=True, text=True, timeout=SUBPROC_TIMEOUT_S,
+    )
+    assert proc.returncode == 0, f"git status failed: {proc.stderr}"
+    offending = [line for line in proc.stdout.splitlines() if "external/" in line]
+    assert not offending, (
+        f"`git status --porcelain` shows external/ path(s) as staged/untracked: {offending}; "
+        "external/ must never enter git, gitignored or not"
+    )
+
+
 CHECKS = [
     ("A0.1 paths import is dependency-free", check_a0_1_paths_import_is_dependency_free),
     ("A0.1 paths exports are pathlib.Path", check_a0_1_paths_exports_are_paths),
@@ -5171,6 +5503,13 @@ CHECKS = [
     ("A8b absolute-level comparison across calibration boundary raises", check_a8b_absolute_level_across_calibration_boundary_raises),
     ("A8b level-invariant cross-domain comparison is allowed", check_a8b_level_invariant_comparison_is_allowed),
     ("A8b undeclared calibration state raises", check_a8b_undeclared_calibration_state_raises),
+    ("B0.1 boatphone.paths exposes EXTERNAL_DIR/ONC_MODEL_DIR/CHECKPOINT_DIR", check_b0_1_paths_constants_exist_and_are_correct),
+    ("B0.1 external/ is gitignored", check_b0_1_external_dir_is_gitignored),
+    ("B0.1 provenance JSON exists, parses, tracked", check_b0_1_provenance_json_exists_and_parses),
+    ("B0.1 provenance fields complete (url/revision/sha256/size/ts/licence)", check_b0_1_provenance_fields_complete),
+    ("B0.1 recorded sha256 verifies against disk (data-dependent)", check_b0_1_recorded_hashes_verify_against_disk),
+    ("B0.1 data/ untouched by this step (invariant 2)", check_b0_1_data_dir_untouched_by_this_step),
+    ("B0.1 external/ never staged/untracked in git", check_b0_1_external_not_staged_or_untracked_in_git),
 ]
 
 
