@@ -104,6 +104,14 @@ FAO_SIZE_LABELS: tuple[str, str, str] = ("0-12m", "12-24m", ">24m")
 # class by an unknown fraction, and every recall-by-size-class number computed
 # from it is biased low with nothing in the output saying so.
 #
+# WHY 12-24 m IS IN. The project targets vessels without AIS, and AIS carriage is
+# set by tonnage and service, not by length -- Canadian requirements bind at
+# 300 GT international / 500 GT domestic plus passenger vessels, none of which
+# maps to a length edge. A 15 m private motor yacht is as AIS-dark as a 6 m
+# runabout. Excluding 12-24 m would cut the sample on a criterion that does not
+# track the property the project cares about, and would roughly halve an already
+# small n. Decision 0016.
+#
 # APPLY THIS AT ANALYSIS TIME, NOT AT DETECTION TIME -- see select_size_classes()
 # and the warning on classify_scene(). A large vessel that is out of scope for the
 # fit is still very much in scope for deciding whether a scene is CLEAN.

@@ -268,7 +268,12 @@ def haversine_km(lon1, lat1, lon2, lat2):
 
 def boxes_to_records(dets, meta, scene_id, acq, valid, clear, hydrophone,
                      min_len, max_len, wake_ar):
-    """Georeference boxes, convert size to metres, apply the small-vessel filter."""
+    """Georeference boxes, convert size to metres, drop implausible extents.
+
+    min_len/max_len are IMPLAUSIBILITY bounds (wakes, slicks, shoreline), not the
+    small-craft scope -- see decision 0016. Every plausible vessel is emitted,
+    including >24 m ones, because scene-cleanliness needs them.
+    """
     rows, cols, recs = [], [], []
     for (x1, y1, x2, y2), score in dets:
         cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
@@ -284,7 +289,7 @@ def boxes_to_records(dets, meta, scene_id, acq, valid, clear, hydrophone,
         h_m = (y2 - y1) * meta["res_y"]
         length = max(w_m, h_m)
         if not (min_len <= length <= max_len):
-            continue                       # the small-vessel filter
+            continue                       # not a plausible vessel extent
 
         rows.append(cy)
         cols.append(cx)
@@ -422,9 +427,15 @@ def main():
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--iou", type=float, default=0.5, help="NMS IoU threshold")
     ap.add_argument("--min-length", type=float, default=0.0)
-    ap.add_argument("--max-length", type=float, default=20.0,
-                    help="small-vessel filter: keep detections at or under this "
-                         "many metres (default 20)")
+    ap.add_argument("--max-length", type=float, default=150.0,
+                    help="IMPLAUSIBILITY bound, NOT the small-craft scope: reject "
+                         "features longer than this many metres as wakes, slicks "
+                         "or shoreline (default 150). The old default of 20 m was "
+                         "a science cut applied in the wrong place -- it bisected "
+                         "the 12-24 m FAO class and deleted large vessels before "
+                         "scene-cleanliness was computed. See decision 0016; scope "
+                         "is FAO classes applied at analysis time, via "
+                         "boatphone.optical.select_size_classes")
     ap.add_argument("--wake-aspect", type=float, default=2.5,
                     help="aspect ratio above which wake_flag is set")
     ap.add_argument("--device", default="cpu")
@@ -467,7 +478,7 @@ def main():
         total_raw += raw
         all_recs.extend(recs)
         print(f"[{i}/{len(paths)}] {os.path.basename(p)}: "
-              f"{raw} raw -> {len(recs)} small vessels")
+              f"{raw} raw -> {len(recs)} plausible vessels")
 
     with open(args.out, "w", newline="") as fh:
         wtr = csv.DictWriter(fh, fieldnames=FIELDS)

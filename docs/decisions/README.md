@@ -56,3 +56,8 @@ Superseding is normal -- mark the old one and link forward. Silently contradicti
 | [0009](0009-onc-pretrained-checkpoint-is-the-model.md) | ONC's pretrained checkpoint is the vessel-presence model | accepted |
 | [0010](0010-analysis-band-and-small-craft.md) | The analysis band, and why >=250 Hz is not a limitation for small craft | accepted |
 | [0011](0011-level-comparability-declarations.md) | Level comparability is declared at every pipeline boundary | accepted |
+| [0012](0012-b0-model-viability-outcome.md) | B0 outcome: NO-GO on the pretrained-checkpoint path; B5 promoted to primary | accepted |
+| [0013](0013-fft-axis-convention-is-an-open-assumption.md) | The FFT axis convention is an assumption, not a settled fact, worth +-125 Hz | accepted |
+| [0014](0014-two-spectral-ceilings-and-the-408-exclusion.md) | Two spectral ceilings, kept apart, and nothing above bin 408 enters B5 | accepted |
+| [0015](0015-censoring-aware-thresholds-for-b5.md) | B5's thresholds must be censoring-aware, and its free parameters are tuned off the overpasses | accepted |
+| [0016](0016-small-craft-scope-is-fao-classes.md) | The small-craft scope is FAO classes 0-12 m and 12-24 m, applied at analysis time | accepted |
