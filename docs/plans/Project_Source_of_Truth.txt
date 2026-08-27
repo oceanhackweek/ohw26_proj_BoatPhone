@@ -114,6 +114,28 @@ Isaac (Aug 27, later still) -- B0 NO-GO, plan surgery, B5 promoted to primary:
   regression) and B1a/B1b, then B5 as primary.
 
 
+Malachy (Aug 27) -- Planet gate-3 pre-checks; nothing ordered, no quota spent:
+- ACOUSTIC COVERAGE CLEARED. All 30 gate-2 survivors were cross-checked against the four
+  in-season outages in docs/derived/hydrophone_gaps.md, per Isaac's archive-only instruction.
+  Zero fall in a no-data span; nearest approach is 20220816_182157_60_2457 at 146 h (6.1 days)
+  from an outage edge, well outside the +/-300 s those edges carry. The 1-2 h of gate-3 review
+  is safe to spend. Method and a reproducible snippet are in the acquisition handoff section 1.
+  ISAAC: this rides on the LISTING-derived upper bound, so a scene can clear it and still sit on
+  a sub-10-min dropout. When A4's pull refines the calendar, this check should be re-run against
+  the refined version before ordering.
+- INVARIANT 6 DRIFT FOUND, NOT YET FIXED. The acquisition notebook restates the season as
+  SUMMER = (6, 9) -- June 1 to Sept 1 -- rather than importing boatphone.config.SEASON_MONTHS_UTC,
+  which is (5, 6, 7, 8, 9). Consequence: all 552 search hits and all 30 survivors are month
+  06/07/08, so roughly a third of the in-season candidate pool was never searched. The notebook
+  was deliberately left untouched this session (an autosave clobber cost a full session on
+  2026-08-27); the fix is logged as open item 5 in the handoff.
+- Searching May/September is now fallback option 1 if gate 3 drops the working set below 30 --
+  ABOVE admitting partials, because a May scene is still fully containing whereas a partial makes
+  the detection area vary between observations. Caveat: lower sun elevation at 48.8N means more
+  glint, and September 2023 holds three of the four hydrophone outages.
+- Next: gate 3 itself (30 scenes x 16 panels, human review), then the single-scene billing-basis
+  probe before any batch order.
+
 
 Project Goals:
 
