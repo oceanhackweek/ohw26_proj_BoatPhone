@@ -97,20 +97,47 @@ water, report = opt.water_mask(scene.green, scene.nir, scene.valid, res_m=RES_M)
 print(f"     {report}")
 check("land strip is excluded", not water[:60].any(),
       f"{int(water[:60].sum())} land px in mask")
-check("erosion pulled the shoreline back", report.eroded_px > 0,
-      f"{report.eroded_px:,} px")
-check("vessel pixels were restored by the hole fill", report.holes_filled_px > 0,
-      f"{report.holes_filled_px:,} px re-admitted")
+check("the land strip is found as ONE large component", report.land_components == 1,
+      f"{report.land_components} components >= {opt.MIN_LAND_AREA_M2/1e4:g} ha")
+check("the shore buffer pulled the mask back", report.buffered_px > 0,
+      f"{report.buffered_px:,} px")
 
-# The failure this guards against: without the hole fill the vessels' own NIR
-# brightness excludes them from the water mask and Detector B silently returns
-# nothing. Re-run with the fill disabled and confirm it really does break.
-water_nofill, _ = opt.water_mask(scene.green, scene.nir, scene.valid,
-                                 res_m=RES_M, fill_holes_m=0.0)
+# The vessels are bright in NIR, so they are bright COMPONENTS -- they must be
+# counted as too-small-to-be-land, never as land.
+check("vessels are counted as bright-but-too-small, not as land",
+      report.small_bright_components == len(scene.truth),
+      f"{report.small_bright_components} small bright components for "
+      f"{len(scene.truth)} vessels")
+check("every vessel centre is inside the water mask",
+      all(water[int(round(t["row"])), int(round(t["col"]))] for t in scene.truth))
+
+# THE REGRESSION. Measured on the first delivered Planet scene: a per-pixel
+# brightness cut classified the two BRIGHTEST objects in the scene as land and
+# removed them from the mask, so Detector B could not see them at any threshold.
+# Disable the extent rule and confirm that failure really does occur.
+water_bright, rep_bright = opt.water_mask(scene.green, scene.nir, scene.valid,
+                                          res_m=RES_M, min_land_area_m2=0.0)
 in_mask = sum(1 for t in scene.truth
-              if water_nofill[int(round(t["row"])), int(round(t["col"]))])
-check("without the hole fill, vessels fall OUTSIDE the mask (the bug it fixes)",
-      in_mask < len(scene.truth), f"{in_mask}/{len(scene.truth)} vessel centres in mask")
+              if water_bright[int(round(t["row"])), int(round(t["col"]))])
+check("a per-pixel brightness cut DELETES the vessels (the bug it fixes)",
+      in_mask == 0, f"{in_mask}/{len(scene.truth)} vessel centres survive it")
+
+# A brighter vessel must not be more likely to be called land. This is the
+# property the extent rule guarantees and brightness thresholding cannot.
+bright_scene = opt.make_synthetic_scene(n_px=700, res_m=RES_M, vessels=VESSELS, seed=3)
+for t in bright_scene.truth:                      # 3x brighter hulls
+    r0, c0 = int(round(t["row"])), int(round(t["col"]))
+    bright_scene.nir[r0-1:r0+2, c0-3:c0+4] = 0.60
+w2, rep2 = opt.water_mask(bright_scene.green, bright_scene.nir, bright_scene.valid,
+                          res_m=RES_M)
+check("tripling vessel brightness does not turn them into land",
+      all(w2[int(round(t["row"])), int(round(t["col"]))] for t in bright_scene.truth),
+      f"land still {rep2.land_components} component(s)")
+
+# NDWI is reported, not used. On an all-water scene it has no land mode and would
+# call ~half the water land; the number exists so that is visible, not hidden.
+print(f"     NDWI would call {100*report.ndwi_land_fraction:.0f}% of this scene land; "
+      f"the extent rule found {100*report.land_px/report.valid_px:.0f}%")
 
 # ---------------------------------------------------------------------------
 print("\n3. DETECTOR B -- recall on known vessels")

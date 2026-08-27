@@ -207,31 +207,45 @@ SWEEP_IMGSZ: tuple[int, ...] = (640, 1024)
 # ==========================================================================
 # 5. DETECTOR B (NIR bright-object screening)
 # ==========================================================================
-# NDWI = (green - nir) / (green + nir). Water is positive, land and vegetation
-# negative. 0.0 is the textbook edge; the mask is eroded afterwards, so a slightly
-# permissive edge costs nothing.
+# THE WATER MASK IS BUILT BY SUBTRACTING LAND, AND LAND IS DEFINED BY EXTENT.
+#
+# The obvious rule -- "bright in NIR is land" -- deletes the targets. A vessel is
+# bright in NIR; that is the entire basis of Detector B. Measured on the first
+# delivered Planet scene (20200730_192942_71_1059): a per-pixel `nir > 0.05` land
+# cut classified the two BRIGHTEST objects in the scene as land and removed them
+# from the mask, so Detector B could not see them at any threshold. Of the 335
+# bright-NIR connected components in that scene, only 8 are large enough to be
+# land; the other 327 are the candidate vessel population.
+#
+# So: threshold NIR, take connected components, and call a component land only if
+# it is LARGE. Size is what separates an island from a boat, and brightness is not.
+LAND_NIR_MIN: float = 0.05        # a pixel bright enough to be land OR a vessel
+MIN_LAND_AREA_M2: float = 20_000.0  # 2 ha. A 24 m vessel is ~200 m2, 100x smaller.
+
+# NDWI = (green - nir) / (green + nir), kept as a DIAGNOSTIC, not as the mask.
+#
+# It is not the mask because it silently fails on an all-water AOI. On the same
+# Planet scene, water reads green 0.0173 / NIR 0.0157 -- NDWI ~= -0.003, sitting
+# exactly on the textbook 0.0 threshold, so it split the water's own noise in half
+# and admitted 49%. There was nothing for it to segment: the AOI is 98% open
+# water, with 1.75 km2 of land in 100 km2. `ndwi_land_fraction()` reports whether
+# a land mode exists at all, so the caller finds out rather than being fooled.
 NDWI_WATER_MIN: float = 0.0
 
-# Erode the water mask by this many pixels. The Broken Group is 100+ islands and
-# bright shoreline is the single dominant false positive here (plan section 7.2).
-# Metres, not pixels, so 10 m S2 and 3 m Planet erode by the same real distance.
+# Buffer the land mask outward by this much before subtracting it. The Broken
+# Group is 100+ islands and bright shoreline is the single dominant false
+# positive here (plan section 7.2). Metres, not pixels, so 10 m S2 and 3 m Planet
+# pull back from the shore by the same real distance.
 WATER_ERODE_M: float = 9.0
 
-# Close holes in the water mask up to this size BEFORE eroding.
+# SUPERSEDED, kept only as an explanation of a bug that no longer exists here.
 #
-# THIS IS NOT COSMETIC AND THE PLAN DOES NOT MENTION IT. A vessel is bright in
-# NIR, so its own pixels have a NEGATIVE NDWI and the water mask excludes them --
-# a boat punches a boat-shaped hole in the mask that is supposed to contain it.
-# Threshold inside that mask and Detector B finds nothing, on a scene with boats
-# in it, with no error raised: the exact "found nothing" / "is broken" confusion
-# invariant 9 is about.
-#
-# Sized by BEAM, not length. A morphological closing fills a hole according to
-# its NARROWEST dimension, so a 150 m ship with a 25 m beam is restored by a
-# kernel sized for 25 m -- whereas sizing this off MAX_PLAUSIBLE_VESSEL_M would
-# mean a 75 m radius that bridges the narrow channels of the Broken Group and
-# turns 100+ islands into one landmass.
-WATER_FILL_HOLES_M: float = 30.0        # max plausible vessel beam
+# An earlier version built the mask from NDWI and then closed holes up to a
+# vessel beam, because a bright vessel has a NEGATIVE NDWI and punched a
+# boat-shaped hole in the mask meant to contain it. Defining land by EXTENT
+# removes the hole at its source: a vessel is never a large component, so it is
+# never land, so there is no hole to fill. Two fixes for one bug is one too many
+# -- the closing is gone, and this comment is what survives of it.
 
 # Candidate = NIR above (water median + N * sigma), sigma from the MAD. Boats are
 # outliers and would inflate a plain standard deviation, which is self-defeating:
@@ -410,10 +424,12 @@ class MaskReport:
     """
     valid_px: int
     water_px: int
-    holes_filled_px: int
-    eroded_px: int
+    land_px: int
+    land_components: int
+    small_bright_components: int   # bright but too small to be land: candidate vessels
+    buffered_px: int
     cloud_removed_px: int
-    ndwi_undefined_px: int
+    ndwi_land_fraction: float      # DIAGNOSTIC ONLY -- see NDWI_WATER_MIN
 
     @property
     def water_fraction(self) -> float:
@@ -422,10 +438,12 @@ class MaskReport:
     def __str__(self) -> str:
         return (f"water mask: {self.water_px:,} px "
                 f"({100 * self.water_fraction:.1f}% of {self.valid_px:,} valid) | "
-                f"hole-fill added {self.holes_filled_px:,} (vessel pixels) | "
-                f"erosion removed {self.eroded_px:,} | "
+                f"land {self.land_px:,} px in {self.land_components} components "
+                f"(+{self.buffered_px:,} px shore buffer) | "
+                f"{self.small_bright_components} bright components too small to be "
+                f"land -> candidate vessels | "
                 f"cloud/haze removed {self.cloud_removed_px:,} | "
-                f"NDWI undefined on {self.ndwi_undefined_px:,}")
+                f"NDWI would call {100*self.ndwi_land_fraction:.0f}% land")
 
 
 def ndwi(green: np.ndarray, nir: np.ndarray) -> np.ndarray:
@@ -447,49 +465,78 @@ def ndwi(green: np.ndarray, nir: np.ndarray) -> np.ndarray:
     return out
 
 
+def land_mask(nir: np.ndarray, valid: np.ndarray, res_m: float,
+              nir_min: float = LAND_NIR_MIN,
+              min_area_m2: float = MIN_LAND_AREA_M2) -> tuple[np.ndarray, int, int]:
+    """Land = a LARGE connected region of NIR-bright pixels. Returns (land, kept, small).
+
+    The size test is the whole point. Brightness alone cannot separate an island
+    from a boat, because a boat is bright -- that is why Detector B works at all.
+    `small` counts the bright components rejected as too small to be land; those
+    are the candidate vessel population, and reporting the number is how a caller
+    notices when a mask change has quietly eaten them.
+    """
+    import cv2
+
+    nir = np.asarray(nir, dtype=np.float32)
+    valid = np.asarray(valid, dtype=bool)
+    bright = ((nir > nir_min) & valid).astype(np.uint8)
+    n_lab, lab, stats, _ = cv2.connectedComponentsWithStats(bright, connectivity=8)
+
+    px_m2 = res_m * res_m
+    keep = [i for i in range(1, n_lab)
+            if stats[i, cv2.CC_STAT_AREA] * px_m2 >= min_area_m2]
+    land = np.isin(lab, keep) if keep else np.zeros(nir.shape, bool)
+    return land, len(keep), max(n_lab - 1 - len(keep), 0)
+
+
+def ndwi_land_fraction(green: np.ndarray, nir: np.ndarray, valid: np.ndarray,
+                       ndwi_min: float = NDWI_WATER_MIN) -> float:
+    """Fraction NDWI would call land. A DIAGNOSTIC, deliberately not the mask.
+
+    Read it against the land fraction the extent rule actually found. If NDWI says
+    50% and the extent rule says 2%, NDWI has no land mode to find and is splitting
+    the water's own noise -- which is what it did on the first delivered Planet
+    scene, and what would have been invisible without this number.
+    """
+    valid = np.asarray(valid, dtype=bool)
+    idx = ndwi(green, nir)[valid]
+    idx = idx[np.isfinite(idx)]
+    return float((idx < ndwi_min).mean()) if idx.size else float("nan")
+
+
 def water_mask(green: np.ndarray, nir: np.ndarray, valid: np.ndarray,
                clear: np.ndarray | None = None, res_m: float = 3.0,
-               ndwi_min: float = NDWI_WATER_MIN,
-               erode_m: float = WATER_ERODE_M,
-               fill_holes_m: float = WATER_FILL_HOLES_M) -> tuple[np.ndarray, MaskReport]:
-    """Cloud-screened water mask -- holes filled, then eroded -- plus a report.
+               nir_min: float = LAND_NIR_MIN,
+               min_land_area_m2: float = MIN_LAND_AREA_M2,
+               buffer_m: float = WATER_ERODE_M) -> tuple[np.ndarray, MaskReport]:
+    """water = valid AND NOT land AND NOT cloud, with land defined by EXTENT.
 
-    ORDER MATTERS. Close first, erode second. Closing re-admits the vessel-shaped
-    holes the vessels themselves punch in the NDWI water mask (see
-    WATER_FILL_HOLES_M); eroding first would shrink those holes' surroundings and
-    leave the boats outside the mask that is meant to contain them.
+    Built by SUBTRACTING land rather than by selecting water. That ordering is
+    what keeps vessels in: anything bright and small is left in the mask by
+    construction, instead of being selected out and then patched back.
 
-    Both distances are in METRES so 10 m Sentinel-2 and 3 m PlanetScope treat the
-    shoreline the same way rather than sharing a pixel count.
+    `buffer_m` dilates land before subtracting, pulling the mask back from the
+    shoreline -- the dominant false-positive source in an archipelago. In METRES,
+    so 10 m Sentinel-2 and 3 m PlanetScope pull back the same real distance.
 
-    `fill_holes_m <= 0` disables the fill. That switch exists so the self-test can
-    demonstrate the failure the fill prevents, rather than asserting it in a
-    comment.
+    Set `min_land_area_m2 = 0` to disable the extent rule and fall back to the
+    brightness cut. That switch exists so the self-test can demonstrate the bug
+    the extent rule prevents rather than asserting it in a comment.
     """
     import cv2
 
     valid = np.asarray(valid, dtype=bool)
-    index = ndwi(green, nir)
-    undefined = int(np.count_nonzero(~np.isfinite(index) & valid))
+    land, n_land, n_small = land_mask(nir, valid, res_m, nir_min, min_land_area_m2)
+    if min_land_area_m2 <= 0:                      # the broken behaviour, on purpose
+        land = (np.asarray(nir, dtype=np.float32) > nir_min) & valid
+        n_land, n_small = -1, -1
+    land_px = int(land.sum())
 
-    water = np.isfinite(index) & (index >= ndwi_min) & valid
-    before_fill = int(water.sum())
-
-    def _disk(radius_m):
-        r = max(1, int(round(radius_m / max(res_m, 1e-6))))
-        return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
-
-    if fill_holes_m > 0:
-        water = cv2.morphologyEx(water.astype(np.uint8), cv2.MORPH_CLOSE,
-                                 _disk(fill_holes_m / 2.0)).astype(bool)
-        # Closing can only add pixels inside `valid`; re-impose it so a filled
-        # hole cannot spill across a nodata edge.
-        water &= valid
-    filled = int(water.sum()) - before_fill
-    before_erode = int(water.sum())
-
-    water = cv2.erode(water.astype(np.uint8), _disk(erode_m), iterations=1).astype(bool)
-    eroded = before_erode - int(water.sum())
+    r = max(1, int(round(buffer_m / max(res_m, 1e-6))))
+    disk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    buffered = cv2.dilate(land.astype(np.uint8), disk, iterations=1).astype(bool)
+    water = valid & ~buffered
 
     cloud_removed = 0
     if clear is not None:
@@ -502,10 +549,11 @@ def water_mask(green: np.ndarray, nir: np.ndarray, valid: np.ndarray,
         cloud_removed = int((water & ~clear).sum())
         water &= clear
 
-    return water, MaskReport(valid_px=int(valid.sum()), water_px=int(water.sum()),
-                             holes_filled_px=filled, eroded_px=eroded,
-                             cloud_removed_px=cloud_removed,
-                             ndwi_undefined_px=undefined)
+    return water, MaskReport(
+        valid_px=int(valid.sum()), water_px=int(water.sum()), land_px=land_px,
+        land_components=n_land, small_bright_components=n_small,
+        buffered_px=int(buffered.sum()) - land_px, cloud_removed_px=cloud_removed,
+        ndwi_land_fraction=ndwi_land_fraction(green, nir, valid))
 
 
 # ==========================================================================
