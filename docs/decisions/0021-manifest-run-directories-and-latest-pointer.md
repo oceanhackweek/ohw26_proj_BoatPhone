@@ -79,5 +79,5 @@ and made explicit here:
   worth recording), but it does mean such a run is invisible to anyone scanning `runs/` afterward,
   and its failure is only visible in the process's own stdout/stderr at the time.
 * Cross-references: decision 0020 governs `ONC_OVERPASS_CORPUS_DIR`, the directory this
-  `manifest_dir`/`runs/` structure lives under; decision 0016 governs the content written into
+  `manifest_dir`/`runs/` structure lives under; decision 0028 governs the content written into
   `absent_log` that this decision's run/latest split is protecting.

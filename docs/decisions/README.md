@@ -56,3 +56,29 @@ Superseding is normal -- mark the old one and link forward. Silently contradicti
 | [0009](0009-onc-pretrained-checkpoint-is-the-model.md) | ONC's pretrained checkpoint is the vessel-presence model | accepted |
 | [0010](0010-analysis-band-and-small-craft.md) | The analysis band, and why >=250 Hz is not a limitation for small craft | accepted |
 | [0011](0011-level-comparability-declarations.md) | Level comparability is declared at every pipeline boundary | accepted |
+| [0012](0012-b0-model-viability-outcome.md) | B0 outcome: NO-GO on the pretrained-checkpoint path; B5 promoted to primary | accepted |
+| [0013](0013-fft-axis-convention-is-an-open-assumption.md) | The FFT axis convention is an assumption, not a settled fact, worth +-125 Hz | accepted |
+| [0014](0014-two-spectral-ceilings-and-the-408-exclusion.md) | Two spectral ceilings, kept apart, and nothing above bin 408 enters B5 | accepted |
+| [0015](0015-censoring-aware-thresholds-for-b5.md) | B5's thresholds must be censoring-aware, and its free parameters are tuned off the overpasses | accepted |
+| [0016](0016-small-craft-scope-is-fao-classes.md) | The small-craft scope is FAO classes 0-12 m and 12-24 m, applied at analysis time | accepted |
+| [0017](0017-land-is-defined-by-extent-not-brightness.md) | Land is defined by extent, not by brightness, and NDWI is a diagnostic | accepted |
+| [0018](0018-no-server-checksum-local-sha256-only.md) | No server checksum is available; integrity is a locally-computed sha256 of the wire bytes | accepted |
+| [0019](0019-refuse-unknown-length-transfer.md) | A transfer of unknown length is refused, not accepted and hoped for | accepted |
+| [0020](0020-pull-refines-only-the-overpass-window.md) | The pull refines availability only inside the overpass window it actually requested | accepted |
+| [0021](0021-manifest-run-directories-and-latest-pointer.md) | Manifests live in per-run directories with a volatile "latest" pointer | accepted |
+| [0022](0022-onc-serves-fft-as-plain-text-not-gzip.md) | ONC serves the `.fft` product as plain text, not gzip | accepted |
+| [0023](0023-missing-file-is-http-400-api-error-96.md) | A missing archive file is an HTTP 400 with API error 96, not a 404 | accepted |
+| [0024](0024-bulk-pull-compresses-on-write.md) | The bulk pull compresses on write; the corpus is permanently mixed-container | accepted |
+| [0025](0025-already-compressed-names-are-stored-verbatim.md) | Already-compressed names are stored verbatim | accepted |
+| [0026](0026-fft-level-ceiling-86-is-not-a-ceiling-for-this-corpus.md) | `FFT_LEVEL_CEILING = 86` is falsified for the corpus (levels reach 112) | accepted |
+| [0027](0027-fft-product-is-viable-for-b5-band-level-detection.md) | The `.fft.gz` product IS viable for B5 band-level detection -- GO | accepted |
+| [0028](0028-empty-overpass-window-is-a-measured-zero.md) | An empty overpass window is a measured zero, not a failure | accepted |
+| [0029](0029-overpass-window-is-local-time-resolved-per-date.md) | The overpass window is local time, resolved per date via zoneinfo | accepted |
+
+> **A numbering collision happened here, and this is how it was resolved.** The acoustics and
+> optical workstreams both allocated **0016** and **0017** while working in parallel on
+> 2026-08-27. The optical pair (FAO size classes; land-by-extent) reached `main` first and keeps
+> those numbers. The acoustics pair was renumbered to **0028** and **0029** on the
+> `milestone1/b3-bulk-acquisition` branch before it was pushed. Nothing else moved. If you find a
+> pre-merge citation of "decision 0016" in acoustics code or docs, it means 0028; in optical code
+> or docs, it means 0016 and is correct.

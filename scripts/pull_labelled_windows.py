@@ -98,7 +98,7 @@ def main(argv=None):
             client, locations, lo, hi, allow_empty=True)
         if not filenames:
             # An empty listing over a deployed span is a MEASURED ZERO, not a
-            # failure (decisions 0008, 0016). Recorded, never retried into a lie.
+            # failure (decisions 0008, 0028). Recorded, never retried into a lie.
             print("  EMPTY LISTING -- measured zero, not an error")
             absences.append({"scene_id": op.scene_id, "reason": "empty_listing",
                              "window_utc": [lo.isoformat(), hi.isoformat()]})

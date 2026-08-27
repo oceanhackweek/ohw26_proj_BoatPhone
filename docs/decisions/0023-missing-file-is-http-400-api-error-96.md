@@ -57,14 +57,14 @@ listing-side "no data can exist" evidence. A confirmed-missing *file* is a diffe
 claim -- ONC has a listing that named the file but the archive does not have it -- so
 `download_archive_file` routes an `_FILE_DOES_NOT_EXIST_MARKERS` match to `status="absent"`
 instead, keeping the two 400-body meanings distinct rather than collapsing them into one status
-that would blur decision 0016's three-bucket scheme. `scripts/pull_overpass_corpus.py`'s
+that would blur decision 0028's three-bucket scheme. `scripts/pull_overpass_corpus.py`'s
 `absent_log` consumes both statuses but records which one produced each row.
 
 ## Consequences
 
 * Without this fix, a bulk pull that happens to request a file ONC does not have (e.g. from a
   listing/download race, or a listing that is stale relative to the archive) would misrecord that
-  file as an error and burn retries on it, rather than logging it as absent per decision 0016's
+  file as an error and burn retries on it, rather than logging it as absent per decision 0028's
   three-bucket scheme (404-as-bug, positive-zero, and now this: confirmed-missing-file).
 * **Operational fact from the completed 918-date bulk pull (26,689 real requests):** this path
   never fired. `errors=0` across the whole run, and every one of the 23 absences the manifest

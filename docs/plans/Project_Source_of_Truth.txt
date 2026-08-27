@@ -114,6 +114,328 @@ Isaac (Aug 27, later still) -- B0 NO-GO, plan surgery, B5 promoted to primary:
   regression) and B1a/B1b, then B5 as primary.
 
 
+Malachy (Aug 27) -- Planet gate-3 pre-checks; nothing ordered, no quota spent:
+- ACOUSTIC COVERAGE CLEARED. All 30 gate-2 survivors were cross-checked against the four
+  in-season outages in docs/derived/hydrophone_gaps.md, per Isaac's archive-only instruction.
+  Zero fall in a no-data span; nearest approach is 20220816_182157_60_2457 at 146 h (6.1 days)
+  from an outage edge, well outside the +/-300 s those edges carry. The 1-2 h of gate-3 review
+  is safe to spend. Method and a reproducible snippet are in the acquisition handoff section 1.
+  ISAAC: this rides on the LISTING-derived upper bound, so a scene can clear it and still sit on
+  a sub-10-min dropout. When A4's pull refines the calendar, this check should be re-run against
+  the refined version before ordering.
+- INVARIANT 6 DRIFT FOUND, NOT YET FIXED. The acquisition notebook restates the season as
+  SUMMER = (6, 9) -- June 1 to Sept 1 -- rather than importing boatphone.config.SEASON_MONTHS_UTC,
+  which is (5, 6, 7, 8, 9). Consequence: all 552 search hits and all 30 survivors are month
+  06/07/08, so roughly a third of the in-season candidate pool was never searched. The notebook
+  was deliberately left untouched this session (an autosave clobber cost a full session on
+  2026-08-27); the fix is logged as open item 5 in the handoff.
+- Searching May/September is now fallback option 1 if gate 3 drops the working set below 30 --
+  ABOVE admitting partials, because a May scene is still fully containing whereas a partial makes
+  the detection area vary between observations. Caveat: lower sun elevation at 48.8N means more
+  glint, and September 2023 holds three of the four hydrophone outages.
+- Next: gate 3 itself (30 scenes x 16 panels, human review), then the single-scene billing-basis
+  probe before any batch order.
+
+
+Neve (Aug 27) -- Option C detection stack landed; scope decided; two silent bugs killed:
+- OPTION C IS BUILT AND PROVEN, WITH NO IMAGERY. boatphone/optical.py is the optical library
+  (water mask, Detector B, A-B fusion, dominance, scene classification, geodesy, both schemas,
+  the FAO classes) and scripts/optical_selftest.py proves it against a synthetic scene with
+  vessels of KNOWN length at KNOWN lon/lat -- the optical counterpart of invariant 3's synthetic
+  tone. 44/44 checks pass; scripts/checks.py still 130/130. Deliberately no file I/O in the
+  library, so none of it waits on rasterio, on the model download, or on a delivered scene.
+- MALACHY, THIS ONE IS FOR YOU, BEFORE YOU ORDER: the bundle must be `analytic_sr`, NOT `visual`.
+  Detector B screens on NIR, and NIR is what certifies a scene CLEAN -- which is the assumption
+  the whole single-dominant-source fit rests on. A `visual` scene cannot be certified, so it is
+  nearly useless to Option C. This costs nothing: `analytic_sr` is already in your
+  SINGLE_RASTER_BUNDLES, and your order cell already re-fetches UDM2 separately for free. Two
+  riders: confirm `analytic_sr` exists for every instrument in the batch (2020 scenes may be PS2,
+  2023+ PSB.SD -- and SuperDove's 8-band product puts NIR at band 8, not band 4), and note the
+  free UDM2 arrives as a FULL scene, not clipped, so it must be windowed at read time.
+- ALSO MALACHY: the plan's section 5 acceptance test wanted `visual` on 2-3 paired scenes. At
+  BATCH_SIZE 26 there is no quota for it. It is being rehearsed on Sentinel-2 instead, for free.
+- ISAAC, TWO INTERFACE MISMATCHES. (1) Option C section 10 specifies detections.csv keyed on
+  scene_id; your I3 specifies detections.parquet keyed on overpass_id with length_px/length_m_est/
+  size_class. Resolved in code, not by picking a winner: optical.to_i3_records() derives your view
+  from the same rows, so there is one detector output and two views that cannot drift. It passes
+  scene_id through as overpass_id until Malachy's overpasses.csv exists -- deliberately, so the
+  unagreed join key is visible rather than invented. (2) Option C's levels.csv asks for
+  band_20_200_db. That band CANNOT EXIST: FFT_BIN_WIDTH_HZ is 250 and bin 0 is a structural zero,
+  so 20-200 Hz is below the first resolvable bin, and band_100_2k_db is partly below it too. The
+  interface line needs rewriting; decision 0010 already says the floor costs large vessels, not
+  our small craft.
+- DECISION 0016 -- the small-craft scope is FAO CLASSES (0-12 m and 12-24 m), applied at ANALYSIS
+  time, not a metres threshold applied at detection time. vessel_detect.py's inherited
+  `--max-length 20` was doing two unrelated jobs. 20 m is not an FAO edge: it bisected [12, 24),
+  so an 18 m vessel was kept and a 22 m one dropped while both reported `12-24m` -- silently
+  truncating that bin and biasing every recall-by-size-class number, including the one I3 hands
+  you. Worse, applied before scene classification it DELETED large vessels, so a scene with a 39 m
+  ship at 1 km passed as SINGLE-DOMINANT on a small craft the ship was acoustically swamping --
+  the plan's own worst failure. 12-24 m is IN scope because AIS carriage is tonnage-based, not
+  length-based, so no length edge tracks it. MAX_PLAUSIBLE_VESSEL_M = 150 keeps the rejection job.
+- TWO SILENT BUGS FOUND AND FIXED, both of the "found nothing" / "is broken" kind (invariant 9).
+  (1) A vessel is bright in NIR, so its own pixels have NEGATIVE NDWI and the water mask excluded
+  the boats it exists to contain -- Detector B returned nothing, with no error, on a scene full of
+  boats. Fixed by closing holes (sized by BEAM, not length) before eroding the shoreline; the
+  self-test asserts 0/4 vessels are in the mask with the fix disabled. (2) cv2.minAreaRect measures
+  corner-to-corner between pixel CENTRES, so every length was short by exactly 1 px = 3 m at
+  PlanetScope GSD, 50% of a 2 px hull. On the fixture the correction alone moved the class tally
+  from {0-12m: 6, 12-24m: 1} to {0-12m: 5, 12-24m: 2}.
+- A NUMBER FOR THE SECTION 8 EYEBALL BUDGET: at the plan's permissive N=3, the null scene yields
+  ~5 false positives per 4.5e5 water px, which scales to ~125 candidate dots per real 10x10 km AOI
+  scene -- not "2 min/scene". N=6 removes all of them while still recovering every planted vessel
+  down to 6 m. Sweep N on real imagery before committing a person to a full census.
+- INVARIANT 6, OPTICAL SIDE: the hydrophone coordinate (-125.278277, 48.814200) and the AOI
+  geometry existed in exactly ONE place -- cell 6 of Malachy's acquisition notebook. They are now
+  importable from boatphone/optical.py along with the FAO classes and both schemas. Malachy,
+  import them rather than restating them. When B7 lands boatphone/geo.py, site geometry should
+  move there and optical.py should import it -- do not let a second copy appear.
+- ENVIRONMENT, EVERYONE: rasterio is NOT in /home/.pixi/envs/default (CLAUDE.md was right about
+  this one). Installed with `pip install --user` into /home/jovyan/.local -- persists across
+  restarts, NOT shared with you, NOT in environment.yml. Neither are ultralytics,
+  huggingface_hub or opencv, all of which the optical path needs. If the optical half is to be
+  reproducible off-hub, those four belong in the manifest.
+- BLOCKED ON DATA, NOT ON CODE. No imagery is delivered. The Sentinel-2 development scene is
+  missing exactly the two things Option C's novel half needs: B08 (NIR) is truncated at 56 MiB and
+  rasterio cannot open it at all, and TCI was never downloaded, so the section 5 acceptance test
+  cannot run either. Re-downloading those two files is the cheapest unblock on the board.
+- STILL OPEN: the repo is MIT, the YOLO weights and ultralytics are AGPL-3.0, and no decision
+  record exists. This was Wednesday's task and is unresolved.
+- Next: sections 7-13 into contributor_folders/neve/option_c_detection.ipynb (left untouched on
+  disk today -- it is open in a live Jupyter session and an autosave clobber already cost Malachy
+  a full session), then Detector A's first real run the moment a scene lands.
+
+Malachy (Aug 27, evening) -- NEVE: YOUR IMAGERY IS DELIVERED, AND TWO DECISIONS ARE YOURS:
+
+CONTEXT FIRST, because two premises in your entry above have changed:
+- "BLOCKED ON DATA, NOT ON CODE. No imagery is delivered." No longer true. 26 PlanetScope
+  scenes are on disk as analytic_sr_udm2 -- 26 SR clips (4-band, NIR is band 4) and 26 UDM2
+  masks, 2020-2025, 23 PSB.SD / 3 PS2.SD, aoi_clear 0.9854-1.0000, all cleared against the
+  hydrophone gaps. Manifest committed at contributor_folders/malachymcc/planet_folger/
+  manifest_folger_202608.csv (tracked; the 1.2 GB of imagery is not, ask me for it).
+- "At BATCH_SIZE 26 there is no quota for it. It is being rehearsed on Sentinel-2 instead."
+  Also no longer true -- the section 5 paired VISUAL controls were ordered and delivered:
+  20200730_192942_71_1059 (PS2.SD) and 20250630_193824_56_24db (PSB.SD), one per instrument.
+  Both renderings of both acquisitions are on disk, so section 5.4 can run on real
+  PlanetScope. Keep the S2 rehearsal as an independent check in the model's NATIVE domain,
+  but it no longer has to stand in for the real test.
+
+DECISION 1 -- THE FIXED SCALE (section 5.2). read_visual() at vessel_detect.py:98-107 still
+applies the 2-98% percentile stretch. Section 5.2 says that path becomes the PRIMARY input and
+the stretch must be replaced by the fixed TCI scaling. Until it is, section 5.4 cannot be run
+honestly: a run today would be testing the percentile stretch, which section 5.1 explicitly
+rejects for making radiometry depend on scene content. This is the single blocker on the whole
+section 5/6 chain. Your file, your call -- I have not touched it.
+
+DECISION 2 -- AGPL. The repo is MIT, ultralytics and yolo11s_tci.pt are AGPL-3.0, and there is
+still no decision record. It gates using the weights at all, so it blocks the same chain. This
+was Wednesday's task.
+
+WHAT I ALREADY MEASURED, so you do not repeat it: the radiometric half of 5.4, on both paired
+scenes, pixel-level, no model needed. THE TWO RENDERINGS DO NOT MATCH, and not by a scale
+factor. On both scenes -- different instruments, five years apart -- blue FALLS while red and
+green RISE (20200730 water R 1.0->9.9, G 2.0->17.6, B 21.0->14.1; 20250630 R 22->28, G 34->40,
+B 52->38). A single multiplier cannot do that; Planet's `visual` is applying per-band colour
+correction and a black point, not a linear rescale. Channel order was verified first, so this
+is not a section 6.1 inversion: visual is R,G,B,Alpha and analytic is B,G,R,NIR.
+Note 20250630's OVERALL bias is -0.4 DN, which reads as a clean pass -- only the per-band split
+exposes it. Do not judge this on an aggregate mean.
+
+That does NOT fail 5.4, whose criterion is detection count and box positions; a detector may be
+robust to a colour shift this size. It does raise the odds of the "diverge badly" branch.
+
+SUGGESTED SEQUENCE, once the two decisions land: run 5.4 UNFITTED first, on the plain fixed TCI
+scaling. That is the plan's actual test and it is what section 3's headline claim needs -- recall
+of the PRETRAINED model. Only if it diverges, fit a per-band affine SR->visual, and fit it on ONE
+paired scene and test on the OTHER, because fitting and testing on the same two scenes passes by
+construction (the same circularity section 9.4 already names for k). One control per instrument
+was chosen precisely so that leave-one-out is available. Report both numbers: the gap between
+unfitted and fitted separates how much of the transfer gap is radiometric from how much is the
+model not seeing 3 m hulls. A fitted transform is not retraining, but it does tune the model's
+input, so section 13's "recall is measured, not improved" needs a sentence about it.
+
+TWO SMALL CORRECTIONS to your entry, both measured against the live Planet spec:
+- `analytic_sr` is NOT a PSScene bundle and is not in any working SINGLE_RASTER_BUNDLES set --
+  that list was wrong and would have failed at order time. PSScene has exactly two bundles worth
+  anything here: `visual` (1 raster) and `analytic_sr_udm2` (SR + xml + UDM2). The latter is the
+  only route to NIR, and UDM2 inside it is free -- a unified bundle draws quota once.
+- Because UDM2 now arrives IN-BUNDLE and CLIPPED, your note that "the free UDM2 arrives as a FULL
+  scene, not clipped, so it must be windowed at read time" does not apply to these deliveries.
+  Check find_udm2()/read_udm2_clear() against a real file before assuming a window is needed.
+- Confirmed for you: ortho_analytic_4b_sr exists on BOTH instruments in the batch, and we ordered
+  4-band, so NIR is band 4 everywhere. The 8-band band-8 caveat does not apply.
+
+
+Neve (Aug 27, evening) -- Planet stack running; water mask was deleting the brightest vessels:
+- MALACHY, TWO CORRECTIONS OF MINE ACCEPTED, thank you. `analytic_sr` is not a PSScene bundle and
+  my SINGLE_RASTER_BUNDLES advice would have failed at order time; `analytic_sr_udm2` is right and
+  draws quota once. And since UDM2 arrives in-bundle and CLIPPED, my "window it at read time" note
+  does not apply to these deliveries. Both were wrong in my entry above; this entry supersedes them.
+- THE LOADER IS VALIDATED AGAINST A REAL DELIVERY, not against assumptions. On
+  20200730_192942_71_1059: 4 bands, self-described as ('blue','green','red','nir') so the order is
+  now ASSERTED rather than assumed; uint16; 3.0 m; EPSG:32610; nodata 0 declared; 3429x3429 fully
+  containing the AOI; hydrophone inside the scene so range_km is real. Detector A runs a full
+  100 km2 scene at 3 m in 42 s on CPU -- compute is not a constraint anywhere in this pipeline.
+- DETECTOR A WORKS AND IS NOT DOMAIN-BROKEN. Proven on Sentinel-2 first, where the answer was
+  checkable: on an Eastern Shore scene it fired on 2-3 things across 300 km2, and the strongest --
+  both channel orders agreeing, highest confidence in the run -- is a real vessel, confirmed by eye
+  in ArcGIS at 62.65883 W 44.79563 N. That settles invariant 9 for Detector A: earlier near-zero
+  counts were empty water, not a broken pipeline. On the delivered Planet scene it returns 4
+  detections, all on water, none implausible, confidences 0.16-0.21 (low, as expected under domain
+  shift -- the plan's conf=0.10 was the right call).
+- THE WATER MASK WAS DELETING THE BRIGHTEST VESSELS. Decision 0017. Two successive versions failed
+  silently and in the same way: a vessel is bright in NIR -- that is the whole basis of Detector B --
+  so any rule of the form "bright means not water" removes its own targets, and the more obvious
+  the vessel the more certainly it goes. NDWI failed first (this AOI is 98% OPEN WATER, 1.75 km2 of
+  land in 100 km2, so there was no land mode to find and a 0.0 threshold split the water's own
+  noise, admitting 49%). A `nir > 0.05` land cut then failed worse, classifying the two BRIGHTEST
+  objects in the scene as land. FIX: land is a LARGE CONNECTED COMPONENT, not a bright pixel --
+  size separates an island from a boat, brightness cannot. Of 335 bright-NIR components in that
+  scene only 8 are >= 2 ha; the other 327 are the candidate vessel population and were all being
+  discarded. All four Detector A hits are now inside the mask (was two) and Detector B recovers
+  three of them at every N from 6 to 12. NDWI is now a printed DIAGNOSTIC (it would have called 51%
+  of this scene land, against the 2% actually there) so this class of failure is visible next time.
+- ISAAC, RELEVANT TO YOUR NULL CHECKS: both bugs produced a plausible, non-empty, entirely wrong
+  answer rather than an error -- 585 "detections" and a confident CROWDED classification off a
+  broken mask. Anything I hand you before the eyeball pass should be treated as unverified.
+- DETECTOR B IS NOT TUNED AND ITS NUMBERS ARE NOT RESULTS YET. Depending on (N, min_px) it returns
+  82-249 candidates on one scene. The plan is right that the sweep must be ranked on recall against
+  the eyeball truth set (section 8), and that gate has not been passed. Do not quote a B count.
+- MY TWO OPEN DECISIONS, both still open, both blocking the section 5/6 chain, both mine:
+  (1) the fixed TCI scale replacing read_visual()'s 2-98% percentile stretch, and (2) AGPL-3.0
+  weights against this MIT repo. Malachy's per-band measurement (blue falls while red and green
+  rise, on both paired scenes, five years and two instruments apart) says `visual` applies per-band
+  colour correction and a black point, not a linear rescale -- so this cannot be fixed by choosing
+  a better divisor, and his unfitted-first then leave-one-out sequence is the right way to run 5.4.
+- VIEWING ARTEFACTS for the eyeball pass are in /home/jovyan/neve_ohw26/ (hub filesystem, not in
+  git): a full-scene stretched RGB, a NIR view, per-detection chips, and detectorA/detectorB
+  GeoJSON layers carrying an empty `verdict` field to fill in. CAVEAT: these do not currently
+  render in ArcGIS Pro -- they add to the Contents pane and draw nothing, unresolved as of this
+  entry. QGIS is installed on the hub if you need a second opinion on whether it is the files.
+- Next: the two decisions, then section 5.4 unfitted on the paired scenes, then the eyeball pass
+  that unlocks the Detector B sweep.
+
+Malachy (Aug 27, later) -- NEVE, TWO THINGS FROM READING mayrajeo/ship-detection AGAINST OUR §6.
+Both bear on why Detector A found only 4 hits in 100 km2. Sourcing caveat: these came from
+summarising fetches of the repo, not a line-by-line read, so confirm against scripts/
+predict_tile.py and scripts/train_models.py before anything irreversible rests on them.
+
+1. APPARENT OBJECT SCALE IS ~3.3x OFF, AND THE SWEEP GRID CANNOT TEST THE FIX.
+   Their training: 320 px patches at 10 m upsampled to 640, so a vessel of length L metres
+   arrives at network input as L/10 x 2 = L/5 px. A 20 m vessel = 4 px.
+   Ours at the default slice 320 -> imgsz 640: L/3 x 2 = L/1.5 px. The SAME 20 m vessel = 13.3 px.
+   That is 3.3x larger than anything the model was trained on, and train_models.py sets
+   scale=0.25, i.e. +/-25% scale augmentation -- so 3.3x is far outside what it ever saw.
+
+   §6.3 concludes we are "landing apparent object scale in the model's comfortable range". That
+   conclusion compares OUR 10 m boat (6.6 px) against THEIR 20 m boat (4 px) -- two different
+   vessels. Like for like, we are 3.3x out. The two numbers §6.3 quotes are each correct; only
+   the comparison between them is not.
+
+   Matching apparent scale needs imgsz/slice ~= 0.6. The sweep grid is slice {256,320,512} x
+   imgsz {640,1024}, whose ratios run 1.25x to 4x -- EVERY cell makes objects larger than
+   training, and the best available cell (512->640) is still ~2x out. If scale mismatch is what
+   is suppressing recall, the sweep as written can never reveal it.
+
+   I am NOT saying downsample to 5 m. More pixels carry more information and YOLO's FPN has real
+   scale tolerance, so the optimum may sit anywhere between parity and 3.3x. The point is that it
+   is an empirical question the current grid forbids asking. SUGGESTION: extend the grid to
+   include ratios below 1 (slice 1024 -> imgsz 640, slice 640 -> imgsz 640) and let recall against
+   your truth set decide. Not implemented -- §6 is yours.
+
+2. CHECK model.task BEFORE YOU BUILD ANY LENGTH PIPELINE. The HuggingFace card describes
+   yolo11s_tci.pt as a "fine-tuned instance segmentation model" with "instance segmentation
+   output", while scripts/train_models.py reads as plain detection. These cannot both be right.
+   vessel_detect.py only ever touches res.boxes, so if the checkpoint is a -seg variant we are
+   discarding res.masks. You already have the model loaded -- `print(model.task)` settles it.
+
+   It matters beyond tidiness. boxes_to_records() takes length = max(w_m, h_m) from an
+   AXIS-ALIGNED box. For a rotated L x W hull the axis-aligned extent is L|cos t| + W|sin t|:
+   correct at 0 deg, but at 45 deg a 24 x 4 m vessel measures 19.8 m, SHORT BY 17.5%. That pushes
+   12-24 m vessels down into 0-12 m -- the same bin-truncation failure decision 0016 exists to
+   prevent, and the same direction as the minAreaRect 1-px bug you fixed for Detector B. Detector
+   A still has it. A mask, or an oriented box, removes the bias and gives orientation directly,
+   which G4 (speed/heading) needs anyway. If the checkpoint is detection-only, the bias should be
+   stated in §13 rather than left implicit in the size-class numbers.
+
+RIDER, same theme: their predict_tile.py runs conf_th=0.001. Our CLI default is 0.25 and §6.4
+proposes 0.05-0.10 -- 50-100x above what the authors use. Their precision is recovered downstream
+by a heavy filter stack (sea/lake/river polygons, submerged and above-water rock layers,
+fisheries, beacons, wind turbines, a 750 m size cut), which is §6.4's own philosophy carried
+much further than we carry it. If 4 hits is the count at 0.25, the low-confidence tail is
+unexplored. Worth a cell in the same sweep.
+
+Related, for decision 0017's open question: you note islets under 2 ha will reach the human pass
+and suggest a shoreline vector if they dominate. The repo suggests a shoreline vector alone will
+not be enough -- they filter `vesikivikko` (submerged rocks) and `vesikivi` (above-water rocks)
+as datasets SEPARATE from the coastline. We have no Canadian equivalent to hand, but we do have
+26 co-registered scenes of the same 100 km2 over six years: a detection recurring at the same
+coordinates across multiple YEARS is a fixed object, not a boat. That is a persistence mask built
+from data we already own, and it complements your extent rule rather than replacing it -- yours
+separates island from boat by size within a scene, this separates rock from boat by recurrence
+across scenes.
+
+Malachy (Aug 27, evening) -- ISAAC: DETECTIONS ARE SHIPPED. READ THE CAVEATS BEFORE YOU JOIN.
+
+Plan section 11 says "detection must never block the acoustic join" and it has been blocking it
+all day. That stops now. Files, all tracked, in contributor_folders/malachymcc/planet_folger/:
+  detections.csv    32,877 rows, schema = optical.DETECTIONS_FIELDS + size_class,
+                    n_years_at_cell, transient
+  scenes.csv        26 rows, optical.SCENES_FIELDS
+  review_queue.csv  146 rows, the human-review shortlist
+Produced by scripts/detect_vessels_nir.py over the 26 delivered scenes. DETECTOR B ONLY.
+
+EXACT AND WILL NOT CHANGE -- build your join against these today:
+- `acq_time_utc`. A PlanetScope scene is ONE snapshot, so every detection in a scene shares its
+  acquisition instant. ISO-8601, tz-aware, UTC, microsecond precision, 21 distinct instants over
+  the 26 scenes. All in-season 2020-2025, all cleared against docs/derived/hydrophone_gaps.md.
+- `range_km`. Centroid to hydrophone, via optical.range_km against the single coordinate in
+  config -- not restated anywhere, so it cannot drift from the AOI. Observed 0.84 - 6.42 km.
+- `length_class_m` / `size_class`. From the blob's MINIMUM-AREA rectangle, so these do NOT carry
+  Detector A's axis-aligned bias (which is short by up to 17.5% at 45 deg).
+THE POINT: the join keys are correct NOW. What will change is WHICH ROWS survive verification,
+not the columns or their values. Build the machinery today and swap the row set in later.
+
+DO NOT TREAT THESE AS VESSELS. 32,877 detections over 26 scenes is ~1,265 per scene against an
+AOI expected to hold one or two boats. Median length 7.2 m against a 6 m floor and median NIR SNR
+7.6 against a 6.0 threshold -- the mass piles up at the cut, which is a threshold-limited noise
+distribution with no natural break. There is no principled threshold until the section 8 eyeball
+census exists, and section 6.2 forbids picking one on counts. If you correlate this against band
+level today you WILL get a number, and CLAUDE.md invariant 4 says that is exactly what a broken
+pipeline produces too.
+
+SCENES.CSV IS NOT USABLE AS A JOIN KEY YET. All 26 scenes classify as CROWDED, because dominance
+is computed over unverified candidates. There are ZERO SINGLE-DOMINANT scenes, so section 9's
+RL = SL - k*log10(r) fit has no input. That is a consequence of the candidate population, not a
+statement about the water. Under section 12 that is rung-1/rung-2 territory and we should expect
+to degrade.
+
+TWO FIELDS YOU MAY BE EXPECTING THAT ARE NOT THERE:
+- SPEED. Not estimable from a single snapshot, by any threshold or tuning. Do not derive it from
+  length or from wake_flag. Section 11's Friday analysis uses WAKE PRESENCE (moving vs not), which
+  is the honest proxy and is what the acoustic comparison actually needs.
+- ORIENTATION. detect_nir_blobs fits a minAreaRect but Blob does not expose its angle. One field
+  on that dataclass fixes it; not done, because re-deriving it in a second file would put two
+  measurements of one quantity in the repo (invariant 6).
+
+PERSISTENCE, which is the one filter here that is principled. A candidate recurring in the same
+~50 m cell across DIFFERENT YEARS is a fixed object -- rock, islet, beacon. 53% of candidates sit
+in multi-year cells. `transient == 1` means single-year. Nothing about this is tuned to make the
+counts look plausible, unlike the SNR threshold. If you want the least-bad subset today, use
+transient == 1 AND nir_snr >= 20: 146 rows, 7 per scene. STATE THE CUT if you publish anything
+from it, because it is uncalibrated.
+
+WHY DETECTOR B ONLY, AND WHAT WE THINK IS ACTUALLY WRONG. Detector A on the native-domain visual
+scene found four shoreline blobs (aspect 1.2-1.5, conf 0.07-0.14) and missed three wakes plainly
+visible in the preview. Root cause now identified: yolo11s_tci.pt was trained on Sentinel-2 L1C,
+which is TOP-OF-ATMOSPHERE, and we ordered SURFACE reflectance. Over water, atmospheric path
+radiance is most of the TOA signal, so `_sr` removes the bulk of what the model was trained to
+see: S2 L1C TCI water sits near DN 50-100, ours at DN 8-36. It also explains the paired-scene
+measurement (blue falls while red and green rise) -- Rayleigh scattering goes as lambda^-4, so
+removing path radiance must hit blue hardest. That is a SPECTRAL difference and no single divisor
+can undo it. We are ordering ortho_analytic_4b (TOA, bundle `analytic_udm2`) to test it.
+NOTE: `_sr` remains the RIGHT product for Detector B, whose MAD threshold is scene-relative.
+
 
 Project Goals:
 
@@ -141,6 +463,61 @@ Milestones:
 7) Link to AIS data?
 8) Test on a new location?
 9) Play with other data source?
+
+
+Neve (Aug 27, late) -- MALACHY: BOTH OF YOUR POINTS CONFIRMED, ONE OF THEM MATTERS A LOT:
+
+Q2, model.task -- SETTLED, AND THE MODEL CARD IS WRONG. `model.task` is 'detect', the head is
+`Detect`, and `names` is {0: 'boat'}. yolo11s_tci.pt is a plain single-class DETECTION model. The
+HuggingFace card's "fine-tuned instance segmentation model / instance segmentation output" is
+incorrect; train_models.py is the one telling the truth. Nobody should plan around masks that do
+not exist -- recording it here so the card is not believed again.
+- Good: we are NOT silently discarding res.masks, because there are none.
+- Bad: your axis-aligned bias stands and has no cheap fix. L|cos t| + W|sin t| means a 24 x 4 m
+  hull at 45 deg measures 19.8 m, short by 17.5%, pushing 12-24 m vessels into 0-12 m. That is
+  exactly the bin truncation decision 0016 exists to prevent, and Detector A still has it.
+  CONSEQUENCE: length comes from DETECTOR B wherever B sees the vessel -- minAreaRect is
+  orientation-free and measured exactly right on the self-test fixture -- and A-only detections
+  carry a stated, one-sided length bias that belongs in section 13. This also kills the comment in
+  fuse() claiming A's box is the better extent estimate; it is the better DETECTION, not the
+  better MEASUREMENT. Not yet changed in code.
+
+Q1, apparent scale -- YOU ARE RIGHT, AND THE EFFECT IS BIG. Measured on 20200730_192942_71_1059,
+conf 0.10, BGR, full 100 km2 scene:
+
+    slice->imgsz   ratio   20 m boat at input   detections   wall clock
+      320 -> 640    2.00        13.3 px              4          74 s     <- our default
+      512 -> 640    1.25         8.3 px             16          30 s
+      640 -> 640    1.00         6.7 px             17          18 s
+     1024 -> 640    0.62         4.2 px             12           6 s     <- matches training
+     1024 -> 640    0.62         4.2 px  @conf 0.01 19           6 s
+      320 -> 640    2.00        13.3 px  @conf 0.01  6          72 s
+
+The default was returning 4 where a ratio-1.0 tile returns 17, and doing it 4x SLOWER, since
+larger slices mean fewer tiles. My section 6.3 reasoning was wrong in precisely the way you
+diagnosed: I compared our 10 m boat against their 20 m boat, two different vessels.
+- Note the peak is at ratio 1.0-1.25, NOT at the training-matched 0.62 -- so extra pixels do buy
+  something and the optimum sits between parity and 3.3x, which is what you predicted rather than
+  what either of us assumed. Worth saying because it means "match training scale" is not the rule
+  either; it is genuinely empirical, as you said.
+- THE CAVEAT MATTERS MORE THAN THE TABLE: these are COUNTS, not recall. 17 could be 13 more false
+  positives. Ranking these cells needs the eyeball truth set, and section 6.2's rule stands -- the
+  sweep runs AFTER verification, not before. This establishes that the parameter is far more
+  load-bearing than section 6.3 assumed, NOT that 640->640 is the answer.
+- It does retract something from my previous entry: Detector A's "4 detections, a plausible count"
+  was CONFIG-SUPPRESSED, not a property of the scene. Do not build on that number.
+- Your conf rider is folded in above: at ratio 0.62, dropping conf 0.10 -> 0.01 adds 7 detections,
+  so the low-confidence tail is real and unexplored. mayrajeo run 0.001 with a heavy downstream
+  filter stack; we have the water mask, the size prior and the NIR cross-check, which is the same
+  philosophy but much lighter, so we should not assume their threshold transfers.
+
+Your persistence-mask idea for decision 0017 is better than my shoreline-vector suggestion and I
+am adopting it: 26 co-registered scenes over six years means a detection recurring at the same
+coordinates across YEARS is a fixed object. It separates rock from boat by recurrence across
+scenes, where the extent rule separates island from boat by size within a scene -- the two
+compose. Cost is one spatial join over data we already own. Not implemented.
+
+Still open, still mine, still blocking: the fixed TCI scale, and AGPL.
 
 
 ================================================================================

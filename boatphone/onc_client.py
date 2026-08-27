@@ -887,7 +887,7 @@ def list_fft_files(client, location_codes, start_utc, end_utc, *, allow_empty=Fa
       that scale pass `allow_empty=True` and get `([], empty_chunks)` back, and
       MUST record the empty window as a measured zero themselves. Default
       stays `False` so the year-scale callers keep decision 0008 unchanged.
-      See `docs/decisions/0016-empty-overpass-window-is-a-measured-zero.md`.
+      See `docs/decisions/0028-empty-overpass-window-is-a-measured-zero.md`.
 
     Errors surface (D8): zero files across the whole span raises `ONCListingError`
     -- an all-unavailable calendar looks exactly like data. A failed chunk raises

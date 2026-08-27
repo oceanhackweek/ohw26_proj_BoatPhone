@@ -16,7 +16,7 @@ can fill the top row alone, which yields "how often was I right when I fired" --
 not a false-positive rate and not a detection rate, and neither of the numbers
 goal G1 asks for. Every fully-covered window is rendered, including the ones
 where the detector found nothing, and the 12 scenes with NO acoustic coverage
-appear in the manifest as explicit absences (decisions 0008, 0016) rather than
+appear in the manifest as explicit absences (decisions 0008, 0028) rather than
 being silently dropped.
 
 WHAT IS NOT HERE: audio. The `.fft.gz` product is averaged magnitude with no

@@ -30,7 +30,7 @@ RAW_DIR: pathlib.Path = DATA_DIR / "raw"
 ONC_RAW_DIR: pathlib.Path = RAW_DIR / "onc"
 
 # Source: docs/decisions/0020 -- B3's bulk pull covers ONLY the 2.5 h PlanetScope
-# overpass window (09:15-11:45 America/Vancouver, decision 0017) per in-season date,
+# overpass window (09:15-11:45 America/Vancouver, decision 0029) per in-season date,
 # roughly 10% of the calendar. That sampling conditionality must be visible ON DISK,
 # not only inside a manifest a downstream globber will never open: a consumer that
 # globs ONC_RAW_DIR and finds this subdirectory can tell an overpass-window corpus

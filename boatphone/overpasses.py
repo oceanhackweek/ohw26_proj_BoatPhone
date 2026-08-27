@@ -12,7 +12,7 @@ single most likely way this project produces a confident wrong answer.
 
 COVERAGE IS MEASURED, NEVER INFERRED. `window_coverage` reports what is actually
 on disk for a window, and a window with no files is a MEASURED ZERO (decisions
-0008, 0016) -- an honest statement that the corpus does not cover that overpass,
+0008, 0028) -- an honest statement that the corpus does not cover that overpass,
 not a failure and not something to fill in.
 """
 

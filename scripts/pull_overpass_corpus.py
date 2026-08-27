@@ -259,7 +259,7 @@ _REASON_ABSENT_UNSTATED_STATUS = (
     "so WHICH definitive negative ONC gave (404, or 400 Error 96) is UNKNOWN for this row"
 )
 _REASON_EMPTY_WINDOW = (
-    "measured_zero (decision 0016): ONC listed zero files for this whole overpass "
+    "measured_zero (decision 0028): ONC listed zero files for this whole overpass "
     "window -- the window itself is the measured zero, not any named file"
 )
 _REASON_MEASURED_ZERO = (
@@ -287,12 +287,12 @@ _ABSENT_DEFINITION = (
     "'absent' = a retrieval unit that is counted in `requested` but produced no file on "
     "disk. requested == present + absent EXACTLY, with no third bucket. A retrieval unit "
     "is one listed filename, OR one whole overpass window that ONC listed no file for at "
-    "all (decision 0016; that row carries filename=null). Four kinds land in absent_log, "
+    "all (decision 0028; that row carries filename=null). Four kinds land in absent_log, "
     "distinguished ONLY by the row's `reason`: (1) ONC gave a definitive negative for a "
     "listed filename -- either HTTP 404, or HTTP 400 Error 96 'file does not exist' "
     "(decision 0023); those are two different `reason` strings, because a row saying '404' "
     "while carrying http_status 400 would contradict itself; (2) decision 0007 -- ONC states no data CAN exist (no device deployed, or "
-    "the window has not elapsed); (3) decision 0016 -- the whole window listed zero files; "
+    "the window has not elapsed); (3) decision 0028 -- the whole window listed zero files; "
     "(4) the file was listed but the download FAILED (retry budget exhausted, unexpected "
     "status, hash mismatch, unstated length -- decision 0019); those rows carry an `error` "
     "field and are counted in `errors`. Kind (4) is NOT a statement that ONC has no data "
@@ -399,7 +399,7 @@ def run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
     `(filenames, empty_chunks)` -- what `onc_client.list_fft_files` really
     returns -- or a bare list of filenames; see `_unpack_listing`. An
     `onc_client.EmptyListingError` from it is caught PER DATE and recorded as a
-    measured zero (decision 0016), never allowed to abort a multi-season run.
+    measured zero (decision 0028), never allowed to abort a multi-season run.
     `transport`: B3-B's injectable network layer, passed straight through to
     `download_archive_file`.
     `client`: an ONC client, or `None`. When `None`, location discovery is
@@ -682,7 +682,7 @@ def run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
                 print(
                     f"pull_overpass_corpus.run: {local_date.isoformat()} listed zero file(s) "
                     f"for {start_utc.isoformat()} -> {end_utc.isoformat()}: recorded as a "
-                    f"measured zero (decision 0016). Listing said: {exc}"
+                    f"measured zero (decision 0028). Listing said: {exc}"
                 )
             else:
                 filenames, empty_chunks = _unpack_listing(listing, local_date=local_date)
@@ -713,7 +713,7 @@ def run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
                     # unable to tell that from an implementation slip
                     # (invariant 9). The window edges below still bound this
                     # measured zero: it is the WINDOW that is the zero, not any
-                    # named file (decision 0016).
+                    # named file (decision 0028).
                     "file_start_utc": None,
                     "file_end_utc": None,
                     "local_date": local_date.isoformat(),
@@ -873,7 +873,7 @@ def run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
         f"pull_overpass_corpus.run: {len(date_list)} date(s), {requested} file(s) listed, "
         f"{present} present, {absent} absent (dropped from the pull: {absent}); "
         f"{errors} of those absent are download ERRORS, not ONC saying no data; "
-        f"{empty_windows} window(s) with zero files listed (measured zeros, decision 0016); "
+        f"{empty_windows} window(s) with zero files listed (measured zeros, decision 0028); "
         f"{empty_chunks_total} empty listing chunk(s) reported over "
         f"{len(date_list) - empty_chunks_unreported} date(s) "
         f"({empty_chunks_unreported} date(s) whose listing reported no chunk count)"
@@ -888,7 +888,7 @@ def run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
 
 
 def _listing_fn_allow_empty(client, location_codes, start_utc, end_utc):
-    """`list_fft_files` with decision 0016's short-span premise made explicit.
+    """`list_fft_files` with decision 0028's short-span premise made explicit.
 
     The 2.5 h overpass window is a span where zero files is the ordinary case,
     so the opt-in is stated once, here, at the wiring point -- not hidden in a

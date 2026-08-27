@@ -7523,7 +7523,7 @@ def check_b3c_2b_run_drives_the_real_list_fft_files_not_a_narrower_fake():
     and the production callee had different contracts and only the seam was
     ever exercised. This check makes them the SAME callable: `listing_fn` is
     `onc.list_fft_files` itself (allow_empty=True, since B3's per-date window
-    is the short 2.5 h overpass span decision 0016 governs, not the year-scale
+    is the short 2.5 h overpass span decision 0028 governs, not the year-scale
     span decision 0008 governs), called against `_StubONC`, a fake ONC
     CLIENT -- not a fake of `run()`'s own listing_fn seam. A regression here
     can only mean `run()`'s handling of `list_fft_files`'s real return shape
@@ -7583,7 +7583,7 @@ def check_b3c_2b_run_drives_the_real_list_fft_files_not_a_narrower_fake():
 
 
 def check_b3c_2c_empty_overpass_window_logs_an_absent_measured_zero_row():
-    """An empty 2.5 h overpass window is a MEASURED ZERO (decision 0016), not a
+    """An empty 2.5 h overpass window is a MEASURED ZERO (decision 0028), not a
     crash and not silently dropped from the manifest.
 
     Decision 0016 exists because integration review found that a fully-empty
@@ -7641,7 +7641,7 @@ def check_b3c_2c_empty_overpass_window_logs_an_absent_measured_zero_row():
 
     assert raised is None, (
         f"run() raised {raised!r} for a single date whose overpass window had zero files -- "
-        "decision 0016 requires an empty window to be a MEASURED ZERO, not an error that "
+        "decision 0028 requires an empty window to be a MEASURED ZERO, not an error that "
         "takes down the whole corpus run over one quiet morning"
     )
     assert isinstance(manifest, dict), f"run() returned {type(manifest).__name__}, not a dict"
@@ -7656,16 +7656,16 @@ def check_b3c_2c_empty_overpass_window_logs_an_absent_measured_zero_row():
     assert requested == 1 and present == 0, (
         f"manifest for a single-date, zero-file overpass window is requested={requested}, "
         f"present={present}, expected requested=1 (the empty window itself counted as one "
-        "retrieval unit per decision 0016 SS3) and present=0"
+        "retrieval unit per decision 0028 SS3) and present=0"
     )
     assert isinstance(absent_log, list) and len(absent_log) == 1, (
         f"absent_log has {len(absent_log) if isinstance(absent_log, list) else type(absent_log)} "
-        "entries, expected exactly 1 -- decision 0016 requires the empty window to produce its "
+        "entries, expected exactly 1 -- decision 0028 requires the empty window to produce its "
         "own absent_log row so it is visible in coverage accounting"
     )
     assert requested == present + len(absent_log), (
         f"requested ({requested}) != present ({present}) + len(absent_log) "
-        f"({len(absent_log)}) -- decision 0016 SS3 requires this identity to hold EXACTLY as a "
+        f"({len(absent_log)}) -- decision 0028 SS3 requires this identity to hold EXACTLY as a "
         "statement about coverage"
     )
 
@@ -9679,7 +9679,7 @@ def check_b5_9_window_coverage_counts_overlap_not_start_containment():
     )
     assert not cov.is_full, "180 s of a 1800 s window is not full coverage"
 
-    # An empty index is a MEASURED ZERO (decisions 0008, 0016), not an error.
+    # An empty index is a MEASURED ZERO (decisions 0008, 0028), not an error.
     empty = overpasses.window_coverage(op, [])
     assert empty.n_files == 0 and empty.covered_seconds == 0.0, (
         "an uncovered window must report zero coverage, not raise -- 'the corpus does "

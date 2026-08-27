@@ -18,7 +18,7 @@ forward into B3's plan for segment D, which refines the year-scale uptime calend
 products.
 
 The trap, flagged in integration review before segment D was implemented: B3's pull only ever
-requests the 2.5-hour PlanetScope overpass window (09:15-11:45 `America/Vancouver`, decision 0017)
+requests the 2.5-hour PlanetScope overpass window (09:15-11:45 `America/Vancouver`, decision 0029)
 per in-season date. Against a full day of 5-minute uptime bins, that window covers roughly 10% of
 the calendar's bins. "Pull wins" stated without qualification reads as though the *entire*
 `hydrophone_uptime.csv` calendar has now been upgraded from listing-derived to pull-verified. It
