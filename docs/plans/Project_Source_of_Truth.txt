@@ -266,6 +266,56 @@ TWO SMALL CORRECTIONS to your entry, both measured against the live Planet spec:
   4-band, so NIR is band 4 everywhere. The 8-band band-8 caveat does not apply.
 
 
+Neve (Aug 27, evening) -- Planet stack running; water mask was deleting the brightest vessels:
+- MALACHY, TWO CORRECTIONS OF MINE ACCEPTED, thank you. `analytic_sr` is not a PSScene bundle and
+  my SINGLE_RASTER_BUNDLES advice would have failed at order time; `analytic_sr_udm2` is right and
+  draws quota once. And since UDM2 arrives in-bundle and CLIPPED, my "window it at read time" note
+  does not apply to these deliveries. Both were wrong in my entry above; this entry supersedes them.
+- THE LOADER IS VALIDATED AGAINST A REAL DELIVERY, not against assumptions. On
+  20200730_192942_71_1059: 4 bands, self-described as ('blue','green','red','nir') so the order is
+  now ASSERTED rather than assumed; uint16; 3.0 m; EPSG:32610; nodata 0 declared; 3429x3429 fully
+  containing the AOI; hydrophone inside the scene so range_km is real. Detector A runs a full
+  100 km2 scene at 3 m in 42 s on CPU -- compute is not a constraint anywhere in this pipeline.
+- DETECTOR A WORKS AND IS NOT DOMAIN-BROKEN. Proven on Sentinel-2 first, where the answer was
+  checkable: on an Eastern Shore scene it fired on 2-3 things across 300 km2, and the strongest --
+  both channel orders agreeing, highest confidence in the run -- is a real vessel, confirmed by eye
+  in ArcGIS at 62.65883 W 44.79563 N. That settles invariant 9 for Detector A: earlier near-zero
+  counts were empty water, not a broken pipeline. On the delivered Planet scene it returns 4
+  detections, all on water, none implausible, confidences 0.16-0.21 (low, as expected under domain
+  shift -- the plan's conf=0.10 was the right call).
+- THE WATER MASK WAS DELETING THE BRIGHTEST VESSELS. Decision 0017. Two successive versions failed
+  silently and in the same way: a vessel is bright in NIR -- that is the whole basis of Detector B --
+  so any rule of the form "bright means not water" removes its own targets, and the more obvious
+  the vessel the more certainly it goes. NDWI failed first (this AOI is 98% OPEN WATER, 1.75 km2 of
+  land in 100 km2, so there was no land mode to find and a 0.0 threshold split the water's own
+  noise, admitting 49%). A `nir > 0.05` land cut then failed worse, classifying the two BRIGHTEST
+  objects in the scene as land. FIX: land is a LARGE CONNECTED COMPONENT, not a bright pixel --
+  size separates an island from a boat, brightness cannot. Of 335 bright-NIR components in that
+  scene only 8 are >= 2 ha; the other 327 are the candidate vessel population and were all being
+  discarded. All four Detector A hits are now inside the mask (was two) and Detector B recovers
+  three of them at every N from 6 to 12. NDWI is now a printed DIAGNOSTIC (it would have called 51%
+  of this scene land, against the 2% actually there) so this class of failure is visible next time.
+- ISAAC, RELEVANT TO YOUR NULL CHECKS: both bugs produced a plausible, non-empty, entirely wrong
+  answer rather than an error -- 585 "detections" and a confident CROWDED classification off a
+  broken mask. Anything I hand you before the eyeball pass should be treated as unverified.
+- DETECTOR B IS NOT TUNED AND ITS NUMBERS ARE NOT RESULTS YET. Depending on (N, min_px) it returns
+  82-249 candidates on one scene. The plan is right that the sweep must be ranked on recall against
+  the eyeball truth set (section 8), and that gate has not been passed. Do not quote a B count.
+- MY TWO OPEN DECISIONS, both still open, both blocking the section 5/6 chain, both mine:
+  (1) the fixed TCI scale replacing read_visual()'s 2-98% percentile stretch, and (2) AGPL-3.0
+  weights against this MIT repo. Malachy's per-band measurement (blue falls while red and green
+  rise, on both paired scenes, five years and two instruments apart) says `visual` applies per-band
+  colour correction and a black point, not a linear rescale -- so this cannot be fixed by choosing
+  a better divisor, and his unfitted-first then leave-one-out sequence is the right way to run 5.4.
+- VIEWING ARTEFACTS for the eyeball pass are in /home/jovyan/neve_ohw26/ (hub filesystem, not in
+  git): a full-scene stretched RGB, a NIR view, per-detection chips, and detectorA/detectorB
+  GeoJSON layers carrying an empty `verdict` field to fill in. CAVEAT: these do not currently
+  render in ArcGIS Pro -- they add to the Contents pane and draw nothing, unresolved as of this
+  entry. QGIS is installed on the hub if you need a second opinion on whether it is the files.
+- Next: the two decisions, then section 5.4 unfitted on the paired scenes, then the eyeball pass
+  that unlocks the Detector B sweep.
+
+
 Project Goals:
 
 1) Create a model that uses hydrophone data and prior knowledge of vessels detected from optical satellite imagery to create continuous estimates of the number of boats, 
