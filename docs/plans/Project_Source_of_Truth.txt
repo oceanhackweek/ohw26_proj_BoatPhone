@@ -436,6 +436,53 @@ removing path radiance must hit blue hardest. That is a SPECTRAL difference and 
 can undo it. We are ordering ortho_analytic_4b (TOA, bundle `analytic_udm2`) to test it.
 NOTE: `_sr` remains the RIGHT product for Detector B, whose MAD threshold is scene-relative.
 
+Malachy (Aug 27, night) -- SOLVED: DETECTOR A NEEDED TOP-OF-ATMOSPHERE, NOT SURFACE REFLECTANCE.
+
+Three renderings of ONE acquisition (20200730_192942_71_1059), same water, same boats, same
+instant, slice 640 -> imgsz 640, conf 0.05. `sr` and `toa` get the IDENTICAL fixed TCI scale, so
+the difference between them is the PRODUCT, not the transform:
+
+    input    water DN   p99   raw  kept   what the boxes are on
+    toa         50.0    83     48    46   ALL THREE WAKES, conf 0.51-0.63, + island FPs
+    sr          13.0    30     19    17   mostly shoreline
+    visual       1.0    37      4     4   four shoreline blobs, conf 0.07-0.14, zero wakes
+
+S2 L1C TCI water sits at DN ~50-100. TOA lands at 50.0. SR at 13 is 4x too dark and `visual` at 1
+is crushed to black. yolo11s_tci.pt was trained on Sentinel-2 L1C -- TOP OF ATMOSPHERE -- and over
+water atmospheric path radiance is most of the TOA signal, so `_sr` had removed the bulk of what
+the model was trained to see. This also explains the earlier paired-scene measurement (blue falls,
+red and green rise): Rayleigh scattering goes as lambda^-4, so removing path radiance hits blue
+hardest. That is a SPECTRAL difference and no divisor could ever have fixed it.
+
+THE COUNT IS NOT THE RESULT. The result is WHERE the boxes are. All three wakes plainly visible in
+the preview -- and missed by every previous run -- are now boxed at conf 0.51-0.63, against a
+maximum of 0.14 across the whole `visual` run. Real vessels went from undetected to confidently
+detected; that is a different kind of change from "more detections".
+
+MY ERROR, CORRECTED, worth recording so nobody repeats it: ortho_analytic_4b is TOA *RADIANCE* in
+DN, NOT reflectance. Applying the TCI recipe to it directly saturates the scene -- measured water
+at DN 236 of 255, and a meaningless 26 detections. The XML carries <ps:reflectanceCoefficient>
+per band (~2e-5); TOA reflectance = DN * coefficient, and only then does the TCI recipe apply.
+ortho_analytic_4b_sr needs no coefficient because it is already reflectance * 10000. That
+asymmetry is the trap.
+
+NEVE -- THIS RESOLVES YOUR 17. Your unreproducible sweep figure is exactly the `sr` row above:
+SR + the fixed TCI scale at 640->640 gives 17 kept. I could not reproduce it because I was running
+read_visual()'s percentile fallback, which gives ZERO on the same scene and same config. So your
+number was right, my earlier "cannot reproduce" was an artefact of the input path, and section
+5.2's fix is worth far more than it looked: percentile stretch 0 -> fixed scale 17 -> TOA 46.
+Your section 6.3 tile-ratio finding stands independently and is unaffected.
+
+WHAT IS STILL TRUE. Counts are still not recall and section 6.2 still governs: the remaining
+false positives cluster on islands and shoreline, which is the class mayrajeo filter with national
+rock layers and we handle with the water mask plus the persistence mask. The section 8 census is
+still what calibrates any threshold. But Detector A is no longer a dead end and section 12 rung 4
+should NOT be declared.
+
+DATA: 26 TOA scenes, 1.57 GB, downloads/folger_202608_toa/, ordered as bundle `analytic_udm2`.
+Quota still reports 0.0/3000 after a third order and download.
+Tool: scripts/detector_a_toa_test.py.
+
 
 Project Goals:
 
