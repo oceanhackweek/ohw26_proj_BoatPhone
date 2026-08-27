@@ -37,6 +37,14 @@ SAMPLES_DIR: pathlib.Path = DATA_DIR / "samples"
 # Source: CLAUDE.md "Layout" -- derived products go to data/derived/ with provenance.
 DERIVED_DIR: pathlib.Path = DATA_DIR / "derived"
 
+# Basenames of the three A1 deliverable-O1 artifacts. Source: the A1 plan (O1).
+# They live HERE, not in scripts/, because the optical workstream opens them by
+# name: one definition, shared across teams (CLAUDE.md invariant 6). Strings, not
+# Paths, because the output directory is chosen at run time (--out-dir).
+UPTIME_CSV_NAME: str = "hydrophone_uptime.csv"
+DEPLOYMENTS_CSV_NAME: str = "deployments.csv"
+UPTIME_PROVENANCE_JSON_NAME: str = "hydrophone_uptime.provenance.json"
+
 # Source: approved A0 plan. Neither of these exists on disk yet; they are the agreed
 # destinations, and require_path() is how code says so out loud instead of guessing.
 # INTERIM_DIR: scratch between stages (re-creatable). PROCESSED_DIR: analysis-ready.
@@ -76,7 +84,8 @@ _DEFAULT_HOW_TO_OBTAIN = (
 __all__ = [
     "REPO_ROOT", "DATA_DIR", "SAMPLE_DIR", "SAMPLE_DIR_NAME", "RAW_DIR", "ONC_RAW_DIR",
     "SAMPLES_DIR", "DERIVED_DIR", "INTERIM_DIR", "PROCESSED_DIR", "DOCS_DIR",
-    "SCRIPTS_DIR", "require_path", "ensure_dir",
+    "SCRIPTS_DIR", "UPTIME_CSV_NAME", "DEPLOYMENTS_CSV_NAME",
+    "UPTIME_PROVENANCE_JSON_NAME", "require_path", "ensure_dir",
 ]
 
 

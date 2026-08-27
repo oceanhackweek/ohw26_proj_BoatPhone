@@ -14,6 +14,55 @@ Malachy:
 - incorporate/fix notebook that will be used to access the images through an API
 - put the images into the shared github folder to store them
 
+Thursday, Aug 27, 2026:
+Isaac:
+- A1 landed: the hydrophone uptime calendar is built and deliverable O1 has shipped --
+  data/derived/hydrophone_uptime.csv (one row per 5-min in-season UTC bin), deployments.csv, and a
+  provenance sidecar. Built by scripts/build_uptime_calendar.py from boatphone/onc_client.py.
+- The calendar is LISTING-DERIVED and pending A4 refinement: "available" means ONC says a file
+  exists, not that it downloads. A4's pull refines it and where they disagree the pull wins. The
+  provenance records source = "listing" so a refined calendar is distinguishable by inspection.
+- Headline numbers: seasonal (May-Sep, UTC) availability is ~97% across the six DEPLOYED seasons
+  2020-2025 (97.05%); 2026 was not deployed, so it has no availability figure at all. (Averaging a
+  2026 zero into the mean gives 83.2%, which is a statement about deployment history, not uptime.)
+  The 2026 season has NO data because the deployment ENDED 2026-03-14 -- that is a not-deployed
+  fact, not an outage, and nothing downstream should read it as one.
+- Availability is an UPPER BOUND: a bin counts as available if any listed file overlaps it, and
+  each file is modelled as 300 s of coverage, so dropouts shorter than ~10 min cannot appear.
+  A4's pull is expected to report LOWER uptime; that disagreement is this model, not an A4 bug.
+  See docs/derived/hydrophone_gaps.md.
+- ALL WORKSTREAMS: import the study window, season months, and device/location from
+  boatphone/config.py -- do not restate them in a notebook or a second config module. Two
+  definitions of the study window make the eventual optical-acoustic matchup join silently wrong
+  instead of raising (CLAUDE.md invariant 6). Malachy and Neve: `from boatphone import config`.
+- New decision record: docs/decisions/0007-onc-400s-that-are-measured-zeros.md (two ONC 400s are
+  measured zeros; listing truncation is detected from ONC's `next` cursor, never a row count).
+- Next: A4, the actual pull of the FFT/audio files, which refines the calendar.
+
+Isaac (later, Aug 27):
+- ACOUSTICS PLAN v2. docs/plans/acoustics_plan_v2.md replaces docs/plans/accoutics_plan.md, which
+  now carries a superseded banner. v2 states the four goals it serves and what "done" means for
+  each; v1 is kept only for its 250 Hz bin-mapping evidence.
+- MALACHY, THIS ONE IS FOR YOU: ORDER ARCHIVE IMAGERY ONLY, 2020-2025 SEASONS. The hydrophone
+  deployment ENDED 2026-03-14, so any newly tasked 2026 scene has no acoustic counterpart and the
+  order is unrecoverably wasted. Same class of quota waste O1 was built to prevent. Safe dates are
+  any May-September day in 2020-2025 outside the four outages in docs/derived/hydrophone_gaps.md.
+- THE MODEL CHANGED. We are no longer buying VTUAD or training our own classifier. Ocean Networks
+  Canada has released a pretrained model (github.com/OceanNetworksCanada/selfsupervision_anomalies_onc,
+  MIT) with an "Engine Noise" class, trained on ONC hydrophone spectrograms -- and OUR device,
+  ICLISTENHF1266, is in its training/eval set. It consumes ONC spectrogram arrays, so our .fft.gz
+  product is the native input; no WAV pull needed. Decision 0009.
+- Why VTUAD was dropped: no vessel size or length label (so the size-stratified transfer gap the
+  old plan promised cannot be computed), uncalibrated audio against our calibrated data, and a paid
+  IEEE DataPort subscription with no download API. Also established: NO public AIS-trained acoustic
+  model weights exist anywhere -- we verified Domingos (code, no weights), Decrop et al. (dataset,
+  no weights) and Renaud et al. (method only). Facts in docs/vtuad-facts.md and references/.
+- Band reframing that matters for expectations: the >=250 Hz floor is NOT a problem for the small
+  recreational craft we care about. Small planing hulls peak around 1-10 kHz; it is LARGE ships
+  whose diagnostic tonals sit at 10-100 Hz. The floor costs us large-vessel detection. Decision 0010.
+- Next: B0, a half-day gate confirming ONC's model actually accepts our .fft.gz surface. If it does
+  not, we fall back to standard band-level SPL detection (PyPAM/pbp/MHKiT), which needs no model.
+
 
 
 Project Goals:
