@@ -375,6 +375,67 @@ from data we already own, and it complements your extent rule rather than replac
 separates island from boat by size within a scene, this separates rock from boat by recurrence
 across scenes.
 
+Malachy (Aug 27, evening) -- ISAAC: DETECTIONS ARE SHIPPED. READ THE CAVEATS BEFORE YOU JOIN.
+
+Plan section 11 says "detection must never block the acoustic join" and it has been blocking it
+all day. That stops now. Files, all tracked, in contributor_folders/malachymcc/planet_folger/:
+  detections.csv    32,877 rows, schema = optical.DETECTIONS_FIELDS + size_class,
+                    n_years_at_cell, transient
+  scenes.csv        26 rows, optical.SCENES_FIELDS
+  review_queue.csv  146 rows, the human-review shortlist
+Produced by scripts/detect_vessels_nir.py over the 26 delivered scenes. DETECTOR B ONLY.
+
+EXACT AND WILL NOT CHANGE -- build your join against these today:
+- `acq_time_utc`. A PlanetScope scene is ONE snapshot, so every detection in a scene shares its
+  acquisition instant. ISO-8601, tz-aware, UTC, microsecond precision, 21 distinct instants over
+  the 26 scenes. All in-season 2020-2025, all cleared against docs/derived/hydrophone_gaps.md.
+- `range_km`. Centroid to hydrophone, via optical.range_km against the single coordinate in
+  config -- not restated anywhere, so it cannot drift from the AOI. Observed 0.84 - 6.42 km.
+- `length_class_m` / `size_class`. From the blob's MINIMUM-AREA rectangle, so these do NOT carry
+  Detector A's axis-aligned bias (which is short by up to 17.5% at 45 deg).
+THE POINT: the join keys are correct NOW. What will change is WHICH ROWS survive verification,
+not the columns or their values. Build the machinery today and swap the row set in later.
+
+DO NOT TREAT THESE AS VESSELS. 32,877 detections over 26 scenes is ~1,265 per scene against an
+AOI expected to hold one or two boats. Median length 7.2 m against a 6 m floor and median NIR SNR
+7.6 against a 6.0 threshold -- the mass piles up at the cut, which is a threshold-limited noise
+distribution with no natural break. There is no principled threshold until the section 8 eyeball
+census exists, and section 6.2 forbids picking one on counts. If you correlate this against band
+level today you WILL get a number, and CLAUDE.md invariant 4 says that is exactly what a broken
+pipeline produces too.
+
+SCENES.CSV IS NOT USABLE AS A JOIN KEY YET. All 26 scenes classify as CROWDED, because dominance
+is computed over unverified candidates. There are ZERO SINGLE-DOMINANT scenes, so section 9's
+RL = SL - k*log10(r) fit has no input. That is a consequence of the candidate population, not a
+statement about the water. Under section 12 that is rung-1/rung-2 territory and we should expect
+to degrade.
+
+TWO FIELDS YOU MAY BE EXPECTING THAT ARE NOT THERE:
+- SPEED. Not estimable from a single snapshot, by any threshold or tuning. Do not derive it from
+  length or from wake_flag. Section 11's Friday analysis uses WAKE PRESENCE (moving vs not), which
+  is the honest proxy and is what the acoustic comparison actually needs.
+- ORIENTATION. detect_nir_blobs fits a minAreaRect but Blob does not expose its angle. One field
+  on that dataclass fixes it; not done, because re-deriving it in a second file would put two
+  measurements of one quantity in the repo (invariant 6).
+
+PERSISTENCE, which is the one filter here that is principled. A candidate recurring in the same
+~50 m cell across DIFFERENT YEARS is a fixed object -- rock, islet, beacon. 53% of candidates sit
+in multi-year cells. `transient == 1` means single-year. Nothing about this is tuned to make the
+counts look plausible, unlike the SNR threshold. If you want the least-bad subset today, use
+transient == 1 AND nir_snr >= 20: 146 rows, 7 per scene. STATE THE CUT if you publish anything
+from it, because it is uncalibrated.
+
+WHY DETECTOR B ONLY, AND WHAT WE THINK IS ACTUALLY WRONG. Detector A on the native-domain visual
+scene found four shoreline blobs (aspect 1.2-1.5, conf 0.07-0.14) and missed three wakes plainly
+visible in the preview. Root cause now identified: yolo11s_tci.pt was trained on Sentinel-2 L1C,
+which is TOP-OF-ATMOSPHERE, and we ordered SURFACE reflectance. Over water, atmospheric path
+radiance is most of the TOA signal, so `_sr` removes the bulk of what the model was trained to
+see: S2 L1C TCI water sits near DN 50-100, ours at DN 8-36. It also explains the paired-scene
+measurement (blue falls while red and green rise) -- Rayleigh scattering goes as lambda^-4, so
+removing path radiance must hit blue hardest. That is a SPECTRAL difference and no single divisor
+can undo it. We are ordering ortho_analytic_4b (TOA, bundle `analytic_udm2`) to test it.
+NOTE: `_sr` remains the RIGHT product for Detector B, whose MAD threshold is scene-relative.
+
 
 Project Goals:
 
