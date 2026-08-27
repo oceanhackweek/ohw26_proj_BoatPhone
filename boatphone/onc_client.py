@@ -42,10 +42,14 @@ seconds since the UTC epoch.
 """
 
 import csv
+import hashlib
+import random
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from boatphone.paths import ensure_dir
 from boatphone.config import (
     ARCHIVE_EXTENSION,
     BIN_SECONDS,
@@ -79,6 +83,10 @@ __all__ = [
     "write_uptime_calendar_csv",
     "UPTIME_CSV_HEADER",
     "DEPLOYMENTS_CSV_HEADER",
+    "ArchiveTransportError",
+    "DownloadRecord",
+    "download_archive_file",
+    "RequestsArchiveTransport",
 ]
 
 
@@ -795,7 +803,7 @@ def _list_span_complete(client, method_name, code, span_start, span_end, stats):
     return left + right
 
 
-def list_fft_files(client, location_codes, start_utc, end_utc):
+def list_fft_files(client, location_codes, start_utc, end_utc, *, allow_empty=False):
     """List the archive FFT files ONC reports for `[start_utc, end_utc)`.
 
     Returns `(filenames, empty_chunks)` and PRINTS the empty-chunk count.
@@ -842,6 +850,16 @@ def list_fft_files(client, location_codes, start_utc, end_utc):
     * **Extension**: `config.ARCHIVE_EXTENSION` ("fft"), which is what the ONC
       archive index registers. `config.PRODUCT_EXTENSION` ("fft.gz") is the
       on-disk gzipped form and returns ZERO files if used as a listing filter.
+
+    * **`allow_empty`**: decision 0008's raise-on-empty is justified BY SPAN
+      SIZE -- over a year-scale span, zero files is evidence of a broken
+      request, not a silent hydrophone. That premise inverts for a short span:
+      B3's per-date PlanetScope overpass window is 2.5 h, where an empty
+      listing is the ordinary case (one outage morning). Callers working at
+      that scale pass `allow_empty=True` and get `([], empty_chunks)` back, and
+      MUST record the empty window as a measured zero themselves. Default
+      stays `False` so the year-scale callers keep decision 0008 unchanged.
+      See `docs/decisions/0016-empty-overpass-window-is-a-measured-zero.md`.
 
     Errors surface (D8): zero files across the whole span raises `ONCListingError`
     -- an all-unavailable calendar looks exactly like data. A failed chunk raises
@@ -944,7 +962,7 @@ def list_fft_files(client, location_codes, start_utc, end_utc):
         f"over {len(codes)} location(s) {codes}; {empty_chunks} empty chunk(s); "
         f"{foreign_device} name(s) dropped as another device's"
     )
-    if not filenames:
+    if not filenames and not allow_empty:
         raise EmptyListingError(
             f"ONC listed zero {ARCHIVE_EXTENSION!r} files for {codes} over "
             f"{start_utc.isoformat()} -> {end_utc.isoformat()} "
@@ -1375,3 +1393,661 @@ def mean_availability_by_utc_hour(bins, available):
         (totals[hour] / counts[hour]) if counts[hour] else float("nan")
         for hour in range(HOURS_PER_DAY)
     ]
+
+
+# ---------------------------------------------------------------------------
+# B3-B: resumable, content-hashed download primitive
+#
+# Extends A1's listing with the pull. `download_archive_file()` never talks to
+# the real network itself -- it is handed a `transport` object exposing
+# `.get(filename, range_start=0) -> response` with `.status_code`, `.headers`
+# and `.iter_bytes(chunk_size)`, so the seam is testable without touching ONC
+# and so a caller can swap in a `requests`-backed transport that hits
+# `archivefile/download?filename=...&token=...` (the live ONC archive-file
+# retrieval path -- see the B3-B retrieval-path finding below).
+#
+# THE HASH GUARANTEE ACTUALLY IN FORCE: ONC's `onc` client (checked live in
+# `_OncArchive.downloadArchivefile`/`saveAsFile`, 2026-08-27) streams the
+# response straight to disk with no server-side checksum header consulted or
+# even present in a plain `requests.get` -- no ETag, no Content-MD5. So the
+# guarantee here is a LOCAL one: a sha256 computed once over the completed
+# file, kept in a `.sha256` sidecar beside it, and re-verified before a cache
+# hit is trusted. That catches local corruption (bit rot, a hand-edited
+# fixture) but cannot catch a server response that was truncated and then
+# declared complete without any independent length/hash to check it against --
+# stated, not silently assumed.
+# ---------------------------------------------------------------------------
+
+# Backoff schedule for HTTP 429/5xx. Exponential with jitter STRICTLY bounded
+# below half the gap to the next step, so the recorded sleeps are provably
+# strictly increasing regardless of the random draw (check_b3b_5 asserts
+# exactly this on the recorded, not wall-clock, values).
+_BACKOFF_BASE_SECONDS = 1.0
+_BACKOFF_MULTIPLIER = 2.0
+_BACKOFF_JITTER_FRACTION = 0.1  # jitter in [0, base * fraction); fraction < 1 keeps it monotone
+
+# One archive file is at most a few hundred MB (a 300 s FFT/WAV chunk), so this
+# many attempts is generous headroom for real 429/5xx churn while still being a
+# hard stop: an implementation that can never complete (e.g. a connection that
+# is interrupted on literally every attempt, check_b3b_1's fixture) must raise
+# rather than retry forever.
+_MAX_TRANSFER_ATTEMPTS = 8
+
+# HTTP statuses treated as transient and worth a backed-off retry.
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+# Local-hash streaming chunk size: large enough to amortise per-chunk overhead
+# on a multi-hundred-MB file, small enough not to hold a big buffer in memory.
+_HASH_CHUNK_BYTES = 65536
+
+# Network read chunk size used when the caller does not name one. A PRODUCTION
+# value: 64 KiB is what `requests`-based streaming code normally reads, and a
+# real ONC archive file is a few hundred MB, so a smaller chunk buys nothing on
+# the wire and costs a syscall per KiB.
+#
+# It is a DEFAULT, not a constant baked into the loop, because the resume checks
+# need a small chunk to be meaningful: `iter_bytes()` can only be interrupted
+# between chunks, so at 65536 a multi-KB fixture body arrives in ONE chunk, the
+# `.part` file is already complete when the "resumed" attempt starts, and the
+# resume checks pass while exercising nothing. Those checks pass `chunk_bytes`
+# explicitly and small; production gets the real value.
+_DEFAULT_DOWNLOAD_CHUNK_BYTES = 65536
+
+_PART_SUFFIX = ".part"
+_SHA256_SUFFIX = ".sha256"
+
+
+class DownloadError(RuntimeError):
+    """B3-B's own download failed for a reason that is not a measured zero.
+
+    Distinct from `ONCListingError` because a failed pull and a failed listing
+    are different findings even though both come from `_client_call`-adjacent
+    code (invariant 9); this one names the file, not a location/span.
+    """
+
+
+class ArchiveTransportError(OSError):
+    """A transport-level network failure, with any token value REDACTED.
+
+    An `OSError` subclass on purpose: `download_archive_file`'s retry loop
+    already treats `OSError`/`ConnectionError` as the transient, resumable
+    class of failure, so a connect-time drop raised as this type is retried
+    exactly like a mid-stream one rather than terminating the run.
+
+    It exists because `requests`/`urllib3` embed the FULL request URL --
+    `...archivefile/download?token=<the real token>&filename=...` -- verbatim
+    in the text of a connection error. Raising that unmodified writes the
+    credential into a notebook cell and into every traceback (CLAUDE.md
+    invariant 7). `RequestsArchiveTransport.get()` therefore builds the
+    message through `_redact()` (A1b's redactor, the one
+    `check_a1b_network_live_401_is_redacted` already covers) and raises it
+    OUTSIDE the `except` block, so no token-bearing original survives on
+    `__cause__` or `__context__` either.
+    """
+
+
+class DownloadRecord:
+    """Outcome of one `download_archive_file()` call.
+
+    `status` is exactly one of "downloaded", "cached", "absent",
+    "measured_zero" -- segment C's absent-file log consumes `status` and
+    `filename` without re-parsing an exception string. `path` is the Path to
+    the completed file on `status in ("downloaded", "cached")`, and `None`
+    otherwise: nothing is ever left at the final path for an absent or
+    measured-zero file (D7/D8, extended to the pull).
+
+    `http_status` is the LAST HTTP status code this call observed from
+    `transport.get()` -- the status that produced the terminal outcome (200 on
+    a completed download, 404 on "absent", 400 on "measured_zero"). For a
+    "cached" record no HTTP request was made at all, so `http_status` is
+    `None` -- a fabricated 200 here would claim a network round trip that
+    never happened (invariant 5). `attempts` is the number of
+    `transport.get()` calls this invocation issued, counting retries after a
+    429/5xx backoff and after an interrupted transfer; it is `0` for
+    "cached", since again no request was issued. Both fields are the B3-C
+    contract's "HTTP status, attempt count per file" -- carried in the
+    manifest so a slow overnight run is diagnosable as slow-throughput versus
+    slow-from-retries after the fact, without re-deriving it from logs.
+
+
+    `total_size_known` records whether the transfer's expected TOTAL length was
+    stated by the server (`Content-Range` on a 206, `Content-Length` on a 200)
+    and could therefore be checked against what landed on disk. It is `True`
+    for a verified download and for a "cached" record (whose sha256 was
+    re-verified against the sidecar), and `None` for "absent"/"measured_zero",
+    where no body was transferred at all. A downloaded file NEVER carries
+    `False`: an unverifiable transfer is not promoted (see
+    `download_archive_file`).
+    """
+
+    __slots__ = (
+        "filename", "status", "path", "bytes_downloaded", "sha256", "message",
+        "http_status", "attempts", "total_size_known",
+    )
+
+    def __init__(self, filename, status, path=None, bytes_downloaded=0, sha256=None,
+                 message=None, http_status=None, attempts=0, total_size_known=None):
+        self.filename = filename
+        self.status = status
+        self.path = path
+        self.bytes_downloaded = bytes_downloaded
+        self.sha256 = sha256
+        self.message = message
+        self.http_status = http_status
+        self.attempts = attempts
+        self.total_size_known = total_size_known
+
+    def __repr__(self):
+        return (
+            f"DownloadRecord(filename={self.filename!r}, status={self.status!r}, "
+            f"path={self.path!r}, bytes_downloaded={self.bytes_downloaded!r}, "
+            f"http_status={self.http_status!r}, attempts={self.attempts!r}, "
+            f"total_size_known={self.total_size_known!r})"
+        )
+
+
+def _sha256_of_file(path: Path) -> str:
+    """Local sha256 of a file on disk, streamed -- never loaded whole into memory."""
+    hasher = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(_HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _backoff_sleep_seconds(attempt_index: int) -> float:
+    """Sleep duration for the `attempt_index`-th (0-based) backed-off retry.
+
+    Doubling with jitter capped at `_BACKOFF_JITTER_FRACTION` of the base keeps
+    successive sleeps strictly increasing: attempt N+1's minimum (its base) is
+    always greater than attempt N's maximum (its base * (1 + jitter fraction))
+    because the multiplier (2.0) exceeds (1 + jitter fraction) (1.1).
+    """
+    base = _BACKOFF_BASE_SECONDS * (_BACKOFF_MULTIPLIER ** attempt_index)
+    jitter = random.uniform(0.0, base * _BACKOFF_JITTER_FRACTION)
+    return base + jitter
+
+
+def download_archive_file(client, filename, *, dest_dir, transport,
+                           sleep=time.sleep, expected_sha256=None,
+                           chunk_bytes=_DEFAULT_DOWNLOAD_CHUNK_BYTES):
+    """Pull ONE ONC archive file into `dest_dir`, resumably and content-hashed.
+
+    `client` is accepted for interface symmetry with the listing functions
+    (and so a future real transport can be built from it), but is never called
+    directly here -- every byte and every status code comes from `transport`,
+    the injected seam (`transport.get(filename, range_start=0)`).
+
+    Conventions:
+
+    * **Landing zone**: `dest_dir` is created (parents included) via
+      `boatphone.paths.ensure_dir()` if absent -- the ONE place a directory
+      is created as a side effect of calling this, never of importing this
+      module (decision 0005).
+    * **Atomicity**: bytes land in `<filename>.part` and are renamed to the
+      final path only once the transfer is verified complete and hashed.
+      `Path.rename` is atomic on the same filesystem, so a file observed at
+      the final path is, by construction, complete (decision 0005 §1).
+    * **Resume**: if a `.part` sidecar already exists, the next attempt asks
+      `transport.get(filename, range_start=<bytes already on disk>)`. If the
+      server answers 206 the tail is APPENDED to what is already on disk. If
+      it answers a bare 200 the Range header was ignored and the full body is
+      coming, so the partial is DISCARDED and the file is written from byte
+      zero -- appending there would silently double the file. So resume avoids
+      re-transferring bytes whenever the server honours Range, and falls back
+      to a restart, loudly, when it does not.
+    * **`chunk_bytes`**: bytes per `iter_bytes()` read, default
+      `_DEFAULT_DOWNLOAD_CHUNK_BYTES` (65536). A caller exercising resume
+      against a small fixture body must pass a small value explicitly, or the
+      whole body arrives in one chunk and there is no partial state to resume
+      from.
+    * **Cache**: if the final path already exists, its LOCAL sha256 is
+      recomputed and checked against the `.sha256` sidecar written at
+      download time (or `expected_sha256` if the caller supplied one and no
+      sidecar exists yet). A match is a zero-byte-transferred "cached" record.
+      A mismatch RAISES `DownloadError` -- it is never silently overwritten
+      (CLAUDE.md invariant 2).
+    * **Backoff**: HTTP 429/5xx sleep via the injected `sleep` callable with
+      strictly increasing exponential-with-jitter durations
+      (`_backoff_sleep_seconds`), then retry the SAME `range_start`.
+    * **Measured zeros (D7)**: a 400 whose message matches
+      `_NO_DATA_POSSIBLE_MARKERS` (the identical strings A1b/A1e already key
+      on for listing) returns a "measured_zero" record and does not raise --
+      no instrument was deployed, or the window has not elapsed, so there is
+      nothing to fetch. Nothing is written at the final path.
+    * **Absent (a real 404)**: returns an "absent" record and does not raise
+      -- segment C's absent-file log is the stated consumer. Nothing is
+      written at the final path.
+    * **Anything else** (an unexpected status code, a transfer that never
+      completes within `_MAX_TRANSFER_ATTEMPTS`, a hash mismatch on a freshly
+      completed transfer) raises `DownloadError`. No bare `except`.
+
+    **What "complete" is actually verified against, stated honestly.** The only
+    independent statement of length available is the server's own
+    `Content-Range`/`Content-Length`, surfaced as `response.total_size`. When it
+    is present, a body shorter than it is treated as an interrupted transfer and
+    retried. When it is ABSENT -- which is exactly what
+    `Transfer-Encoding: chunked` gives, and this transport streams -- there is
+    nothing to check the body against, so a truncated response would otherwise be
+    hashed, sidecar'd, renamed to the final path and reported "downloaded", and
+    every later run would take a clean CACHE HIT on the truncated file: the local
+    sha256 would have laundered an unverifiable file into a verified-looking one.
+    That is not done. A transfer whose total size the server never stated is NOT
+    promoted; it raises `DownloadError` naming the missing headers and leaves the
+    bytes in the `.part` file. The guarantee in force is therefore: a file at the
+    final path was as long as the server said it would be, and its sha256 matches
+    its sidecar. It is NOT a guarantee that the server sent the right bytes --
+    ONC serves no content checksum (checked 2026-08-27) -- and it never covers a
+    response that stated no length at all.
+    """
+    dest_dir = ensure_dir(dest_dir)
+    final_path = dest_dir / filename
+    part_path = dest_dir / f"{filename}{_PART_SUFFIX}"
+    sha_path = dest_dir / f"{filename}{_SHA256_SUFFIX}"
+
+    if final_path.exists():
+        on_disk_sha = _sha256_of_file(final_path)
+        recorded_sha = None
+        if sha_path.exists():
+            recorded_sha = sha_path.read_text(encoding="utf-8").strip()
+        elif expected_sha256 is not None:
+            recorded_sha = expected_sha256
+
+        if recorded_sha is not None and on_disk_sha != recorded_sha:
+            raise DownloadError(
+                f"{final_path} exists but its local sha256 ({on_disk_sha}) does not match "
+                f"the recorded hash ({recorded_sha}); a cached file must never be silently "
+                "overwritten (CLAUDE.md invariant 2) -- remove or investigate it by hand"
+            )
+        if expected_sha256 is not None and on_disk_sha != expected_sha256:
+            raise DownloadError(
+                f"{final_path} exists but its local sha256 ({on_disk_sha}) does not match "
+                f"the caller-supplied expected_sha256 ({expected_sha256})"
+            )
+        if not sha_path.exists():
+            sha_path.write_text(on_disk_sha, encoding="utf-8")
+        return DownloadRecord(
+            filename=filename, status="cached", path=final_path,
+            bytes_downloaded=0, sha256=on_disk_sha, http_status=None, attempts=0,
+            total_size_known=True,
+        )
+
+    attempt = 0
+    # Separate from `attempt`: the index into the backoff schedule, advanced by
+    # EVERY slept retry whatever caused it (429/5xx, a dropped connection, a
+    # short body). Sharing one increasing schedule is what stops a server that
+    # keeps returning short bodies from being hammered `_MAX_TRANSFER_ATTEMPTS`
+    # times with no delay at all, which is what the pre-B3 code did.
+    backoff_index = 0
+    while True:
+        attempt += 1
+        if attempt > _MAX_TRANSFER_ATTEMPTS:
+            raise DownloadError(
+                f"{filename}: gave up after {_MAX_TRANSFER_ATTEMPTS} attempt(s) "
+                f"(_MAX_TRANSFER_ATTEMPTS) without completing the transfer; the connection "
+                "was interrupted on every attempt or the server never returned a usable "
+                "response. A partial file, if any, remains at "
+                f"{part_path} for a future resume"
+            )
+        range_start = part_path.stat().st_size if part_path.exists() else 0
+        # INSIDE the retried region. A ConnectionError/Timeout at CONNECT time
+        # is the single most common failure of a multi-thousand-file overnight
+        # pull; with this call above the `try` it was never caught, never
+        # retried, and killed the process. The message is redacted before it is
+        # printed because `requests` puts the full token-bearing request URL in
+        # its own error text (invariant 7) -- and the transport itself raises
+        # `ArchiveTransportError` already redacted.
+        connect_failure = None
+        try:
+            response = transport.get(filename, range_start=range_start)
+        except (OSError, ConnectionError) as exc:
+            connect_failure = f"{type(exc).__name__}: {_redact(str(exc))}"
+        if connect_failure is not None:
+            # Built inside the except, raised/handled outside it, like
+            # `_client_call`: chaining would re-attach the original (possibly
+            # token-bearing) exception on __context__.
+            sleep_seconds = _backoff_sleep_seconds(backoff_index)
+            backoff_index += 1
+            print(
+                f"download_archive_file: {filename} could not be requested at "
+                f"range_start={range_start} ({connect_failure}); attempt {attempt} of "
+                f"{_MAX_TRANSFER_ATTEMPTS}, sleeping {sleep_seconds:.2f}s before retrying"
+            )
+            sleep(sleep_seconds)
+            continue
+        status_code = response.status_code
+
+        if status_code == 404:
+            return DownloadRecord(
+                filename=filename, status="absent", path=None,
+                http_status=status_code, attempts=attempt,
+            )
+
+        if status_code == 400:
+            message = getattr(response, "error_text", "") or ""
+            if any(marker in message for marker in _NO_DATA_POSSIBLE_MARKERS):
+                print(
+                    f"download_archive_file: ONC states NO data can exist for {filename} "
+                    f"(no device deployed in the window, or the window has not elapsed); "
+                    f"recorded as a MEASURED ZERO, not an error. ONC said: {message}"
+                )
+                return DownloadRecord(
+                    filename=filename, status="measured_zero", path=None,
+                    http_status=status_code, attempts=attempt,
+                )
+            raise DownloadError(f"{filename}: request failed with 400: {message}")
+
+        if status_code in _RETRYABLE_STATUS_CODES:
+            sleep_seconds = _backoff_sleep_seconds(backoff_index)
+            backoff_index += 1
+            sleep(sleep_seconds)
+            continue
+
+        # 200 vs 206 on a RESUMED request (range_start > 0): whether ONC's
+        # archivefile/download endpoint honours a Range header at all is
+        # UNVERIFIED -- ONC's own `onc` package client never sends one. 206
+        # is the server accepting the resume and returning only the tail; a
+        # bare 200 here means the Range header was ignored and the FULL body
+        # is about to arrive, so appending it to the existing .part would
+        # silently double the file (invariant 5's "silent corruption" class).
+        # The only safe move on a 200-instead-of-206 is to DISCARD the
+        # partial and write from byte zero, and to say so loudly so the
+        # first real run is the thing that resolves this, not a guess here.
+        if status_code == 200 and range_start > 0:
+            print(
+                f"download_archive_file: {filename} resume requested Range: "
+                f"bytes={range_start}- but the server returned 200 (not 206), meaning "
+                "the Range header was ignored and the full body is being sent; ONC "
+                "Range-resume support is UNVERIFIED (checked live 2026-08-27 only against "
+                "source -- see boatphone/onc_client.py module docstring). Discarding the "
+                f"existing {part_path.stat().st_size if part_path.exists() else 0} byte(s) "
+                "of partial content and writing from byte zero rather than appending, "
+                "which would silently corrupt the file"
+            )
+            range_start = 0
+        elif status_code == 206 and range_start > 0:
+            print(
+                f"download_archive_file: {filename} resume Range: bytes={range_start}- "
+                "was honoured (206 Partial Content) -- ONC's archivefile/download endpoint "
+                "DOES support Range resume for this file"
+            )
+        elif status_code not in (200, 206):
+            message = getattr(response, "error_text", "") or ""
+            raise DownloadError(
+                f"{filename}: unexpected HTTP status {status_code} at range_start="
+                f"{range_start}: {message}"
+            )
+
+        mode = "ab" if range_start > 0 else "wb"
+        interrupted = None
+        retained = 0
+        try:
+            with open(part_path, mode) as handle:
+                for chunk in response.iter_bytes(chunk_size=chunk_bytes):
+                    handle.write(chunk)
+        except (OSError, ConnectionError) as exc:
+            # A dropped connection mid-stream: the bytes already written stay on
+            # disk under the .part sidecar, and the loop retries with a resumed
+            # range_start. Not a bare except -- narrowly the two error types a
+            # broken transport actually raises.
+            # `_redact`, not str(exc): a transport error carries the request URL,
+            # and that URL carries the token (invariant 7).
+            interrupted = f"{type(exc).__name__}: {_redact(str(exc))}"
+            retained = part_path.stat().st_size if part_path.exists() else 0
+        if interrupted is not None:
+            sleep_seconds = _backoff_sleep_seconds(backoff_index)
+            backoff_index += 1
+            print(
+                f"download_archive_file: {filename} interrupted mid-transfer "
+                f"({interrupted}); {retained} byte(s) retained, sleeping "
+                f"{sleep_seconds:.2f}s then resuming on the next attempt"
+            )
+            sleep(sleep_seconds)
+            continue
+
+        expected_total = getattr(response, "total_size", None)
+        got_size = part_path.stat().st_size
+        if expected_total is None:
+            # NOT promoted. Nothing states how long this body should have been
+            # (no Content-Range, no Content-Length -- what chunked transfer
+            # encoding gives), so "complete" is unverifiable and hashing it here
+            # would only make a possibly-truncated file look verified forever
+            # after, via the sha256 sidecar and the cache hit it earns.
+            raise DownloadError(
+                f"{filename}: the response carried no total size (neither Content-Range "
+                f"nor a usable Content-Length -- e.g. Transfer-Encoding: chunked), so the "
+                f"{got_size} byte(s) received cannot be checked for truncation. Refusing to "
+                f"promote an unverifiable transfer to {final_path}: the local sha256 would "
+                "then present a possibly-truncated file as verified on every later run. The "
+                f"bytes are left at {part_path}"
+            )
+        if got_size < expected_total:
+            # The response ended without raising but did not deliver everything
+            # it advertised -- treated the same as an interrupted transfer:
+            # resume from what is on disk rather than trusting a short body.
+            # It SLEEPS: a server returning short bodies would otherwise be
+            # retried `_MAX_TRANSFER_ATTEMPTS` times back to back.
+            sleep_seconds = _backoff_sleep_seconds(backoff_index)
+            backoff_index += 1
+            print(
+                f"download_archive_file: {filename} received {got_size} of "
+                f"{expected_total} advertised byte(s) without an error; treating it as a "
+                f"short body, sleeping {sleep_seconds:.2f}s then resuming"
+            )
+            sleep(sleep_seconds)
+            continue
+
+        final_sha = _sha256_of_file(part_path)
+        if expected_sha256 is not None and final_sha != expected_sha256:
+            raise DownloadError(
+                f"{filename}: freshly downloaded content's sha256 ({final_sha}) does not "
+                f"match the caller-supplied expected_sha256 ({expected_sha256}); the .part "
+                f"file is left at {part_path} for inspection rather than promoted"
+            )
+        sha_path.write_text(final_sha, encoding="utf-8")
+        part_path.rename(final_path)
+        return DownloadRecord(
+            filename=filename, status="downloaded", path=final_path,
+            bytes_downloaded=got_size, sha256=final_sha,
+            http_status=status_code, attempts=attempt, total_size_known=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Real HTTP transport for download_archive_file() -- the seam B3-B built and
+# proved only against `_B3BFakeTransport` (scripts/checks.py). Everything
+# above this line is unaware this class exists; `download_archive_file` only
+# ever calls `transport.get(filename, range_start=0)`.
+#
+# Retrieval path, established from the INSTALLED `onc` package source
+# (`onc/modules/_OncArchive.py::downloadArchivefile`,
+# `onc/modules/_OncService.py`), not re-derived: a plain authenticated GET on
+# `{baseUrl}api/archivefile/download` with query params
+# `{"token": ..., "filename": ...}`. There is no order queue and no async job
+# poll for an archive file -- that machinery (`_OncDelivery`) exists only for
+# derived data products, which this project does not use here.
+#
+# Range resume is UNVERIFIED against the live API: the `onc` package's own
+# client never sends a Range header (confirmed by reading
+# `downloadArchivefile` above -- `requests.get(url, filters, ...)`, no
+# `headers=`), so whether `archivefile/download` honours one is genuinely
+# unknown until a real resumed request is made. This transport therefore:
+#
+#   * sends `Range: bytes=<range_start>-` whenever `range_start > 0`;
+#   * treats a `206 Partial Content` response as the server honouring the
+#     resume -- exposed to `download_archive_file` as `status_code=206`,
+#     which that function's own 200-vs-206 handling appends;
+#   * treats a `200 OK` response to a ranged request as the server IGNORING
+#     the header and sending the full body from byte zero -- exposed as
+#     `status_code=200`, which `download_archive_file` handles by discarding
+#     the partial `.part` content and writing from zero, never appending
+#     (appending a full body onto a partial file is silent corruption);
+#   * anything else propagates as whatever status code it is, and
+#     `download_archive_file` raises `DownloadError` for a status it does not
+#     otherwise recognise.
+#
+# Nothing here decides which of 200/206 ONC actually returns -- that is
+# unknown until this code is run for real. It only makes sure BOTH answers are
+# handled correctly rather than assumed.
+# ---------------------------------------------------------------------------
+
+
+class _RequestsArchiveResponse:
+    """Adapts a streamed `requests.Response` to the seam `download_archive_file` expects:
+    `.status_code`, `.error_text`, `.total_size`, `.iter_bytes(chunk_size)`.
+
+    `total_size` is the size of the COMPLETE file, never of this response's
+    body:
+
+    * on a **206** it comes ONLY from `Content-Range: bytes start-end/total`.
+      There is deliberately no `Content-Length` fallback here: on a 206
+      `Content-Length` is the length of the TAIL being sent, and returning it
+      as the whole-file size makes `download_archive_file`'s
+      `got_size < expected_total` test compare a whole file against a tail
+      length, which passes trivially and would wave a truncated resume
+      through. A 206 without a parseable `Content-Range` yields `None`;
+    * on anything else it is `Content-Length`, which for a 200 serving the
+      whole file IS the total.
+
+    `None` means "the server stated no total size". `download_archive_file`
+    refuses to PROMOTE such a transfer rather than treating it as complete --
+    an unverifiable body must not be laundered into a hash-verified file.
+    """
+
+    __slots__ = ("_response", "status_code", "error_text", "total_size", "headers")
+
+    def __init__(self, response):
+        self._response = response
+        self.status_code = response.status_code
+        self.headers = response.headers
+        self.total_size = self._parse_total_size(response)
+        self.error_text = "" if response.ok else self._error_text(response)
+
+    @staticmethod
+    def _parse_total_size(response):
+        content_range = response.headers.get("Content-Range")
+        if content_range:
+            # "bytes 1024-2047/4096" -- the total is after the final "/".
+            tail = content_range.rsplit("/", 1)[-1].strip()
+            if tail.isdigit():
+                return int(tail)
+        if response.status_code == 206:
+            # A partial response whose Content-Range is missing or unparseable
+            # ("*/*" for an unknown total, or absent entirely). Content-Length
+            # here measures the TAIL, so falling through to it would report a
+            # total smaller than the file and make the truncation check vacuous
+            # (see the class docstring). Unknown is the honest answer.
+            return None
+        content_length = response.headers.get("Content-Length")
+        if content_length is not None and content_length.isdigit():
+            return int(content_length)
+        return None
+
+    @staticmethod
+    def _error_text(response):
+        """Best-effort error text. Never raises; a malformed error body must not
+        mask the status code that caused it (invariant 5)."""
+        try:
+            payload = response.json()
+        except ValueError:
+            return (response.text or "")[:2000]
+        if isinstance(payload, dict) and "errors" in payload:
+            try:
+                return "; ".join(
+                    f"API Error {e.get('errorCode')}: {e.get('errorMessage')} "
+                    f"(parameter: {e.get('parameter')})"
+                    for e in payload["errors"]
+                )
+            except (KeyError, TypeError, AttributeError):
+                return str(payload)[:2000]
+        return str(payload)[:2000]
+
+    def iter_bytes(self, chunk_size=65536):
+        return self._response.iter_content(chunk_size=chunk_size)
+
+
+class RequestsArchiveTransport:
+    """Real network transport for `download_archive_file`, built on `requests`.
+
+    `client` is an already-constructed `onc.ONC` instance
+    (`boatphone.credentials.get_onc_client()`) -- this class reads `.baseUrl`,
+    `.token`, `.timeout` off it. Constructing this object makes no network
+    call; only `.get()` does.
+
+    **The token never reaches an output.** That is a property of the code, not
+    a hope: the token goes in the query string, so `requests`/`urllib3` put it
+    in the text of every connection error they raise --
+
+        HTTPSConnectionPool(host='data.oceannetworks.ca', port=443): Max
+        retries exceeded with url: /api/archivefile/download?token=<the real
+        token>&filename=... (Caused by ...)
+
+    -- and that message otherwise lands in a traceback and a notebook cell
+    (CLAUDE.md invariant 7). So every network failure in `.get()` is caught,
+    passed through `_redact()` (A1b's redactor, already covered by
+    `check_a1b_network_live_401_is_redacted`), and re-raised as
+    `ArchiveTransportError` from OUTSIDE the `except` block, so the
+    token-bearing original is not reachable via `__cause__` or `__context__`
+    either. Verified live 2026-08-27 with a deliberately bogus token against
+    an unresolvable host: the redacted form is what appears.
+
+    `.get(filename, range_start=0)` issues exactly one HTTP GET per call (no
+    retry, no backoff -- that lives in `download_archive_file`) and returns a
+    `_RequestsArchiveResponse`. A `Range: bytes=<range_start>-` header is
+    attached whenever `range_start > 0`; see the module-level comment above
+    for exactly what 200 vs 206 in the response then means.
+    """
+
+    __slots__ = ("_base_url", "_token", "_timeout")
+
+    def __init__(self, client):
+        base_url = getattr(client, "baseUrl", None)
+        token = getattr(client, "token", None)
+        if not base_url or not token:
+            raise ValueError(
+                "RequestsArchiveTransport requires an onc.ONC client exposing non-empty "
+                "baseUrl and token attributes; got "
+                f"baseUrl={base_url!r} token={'<redacted>' if token else token!r}"
+            )
+        self._base_url = base_url
+        self._token = token
+        self._timeout = getattr(client, "timeout", 60)
+
+    @property
+    def base_url(self):
+        """The ONC deployment's base URL, for provenance. NEVER the token.
+
+        Public because a manifest must be able to state WHICH ONC deployment
+        served the bytes; the token stays private and is never exposed by any
+        accessor on this class (a token leak was caught on this branch once).
+        """
+        return self._base_url
+
+    def get(self, filename, range_start=0):
+        import requests  # imported lazily: boatphone must import without third-party deps
+
+        url = f"{self._base_url}api/archivefile/download"
+        params = {"token": self._token, "filename": filename}
+        headers = {"Range": f"bytes={range_start}-"} if range_start > 0 else None
+        failure = None
+        try:
+            response = requests.get(
+                url, params=params, headers=headers, timeout=self._timeout, stream=True,
+            )
+            adapted = _RequestsArchiveResponse(response)
+        except (OSError, ValueError) as exc:
+            # OSError covers requests' own RequestException tree (ConnectionError,
+            # Timeout, and the urllib3 wrappers underneath), which is where the
+            # token-bearing URL shows up. Narrow and typed, never bare.
+            # `_redact` is applied to the WHOLE message, and the message is
+            # raised below, outside this block.
+            failure = (
+                f"GET {_redact(url)} (filename={filename!r}, range_start={range_start}) "
+                f"failed: {type(exc).__name__}: {_redact(str(exc))}"
+            )
+        if failure is not None:
+            raise ArchiveTransportError(failure)
+        return adapted

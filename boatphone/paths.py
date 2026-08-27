@@ -29,6 +29,17 @@ SAMPLE_DIR: pathlib.Path = DATA_DIR / SAMPLE_DIR_NAME
 RAW_DIR: pathlib.Path = DATA_DIR / "raw"
 ONC_RAW_DIR: pathlib.Path = RAW_DIR / "onc"
 
+# Source: docs/decisions/0020 -- B3's bulk pull covers ONLY the 2.5 h PlanetScope
+# overpass window (09:15-11:45 America/Vancouver, decision 0017) per in-season date,
+# roughly 10% of the calendar. That sampling conditionality must be visible ON DISK,
+# not only inside a manifest a downstream globber will never open: a consumer that
+# globs ONC_RAW_DIR and finds this subdirectory can tell an overpass-window corpus
+# from a whole-day pull by its path alone. Resolve it through
+# `boatphone.acquire.resolve_corpus_files`, which is the ONE glob (invariant 6) and
+# knows that the pulled files carry config.ARCHIVE_EXTENSION ("fft"), NOT
+# config.PRODUCT_EXTENSION ("fft.gz").
+ONC_OVERPASS_CORPUS_DIR: pathlib.Path = ONC_RAW_DIR / "overpass_window_corpus"
+
 # Source: docs/decisions/0005 -- the ONE tracked-fixture exception inside data/.
 # Small committed test fixtures only (see data/samples/README.md); negated out of
 # the .gitignore media rules so a deliberate fixture is actually committable.
@@ -78,6 +89,12 @@ _HOW_TO_OBTAIN: dict[pathlib.Path, str] = {
         "download the ONC/CIOOS Folger Deep ICLISTEN HF1266 sample into "
         f"'{SAMPLE_DIR}' (ONC Oceans 3.0, https://data.oceannetworks.ca)"
     ),
+    ONC_OVERPASS_CORPUS_DIR: (
+        "run `python3 scripts/pull_overpass_corpus.py` to pull the overpass-window "
+        f"corpus into '{ONC_OVERPASS_CORPUS_DIR}' (2.5 h/day, in-season, "
+        "2020-2025); it is a deliberate, human-triggered operational step and is "
+        "not in git"
+    ),
     ONC_RAW_DIR: (
         "run the ONC acquisition stage (A1/A4) to download it into "
         f"'{ONC_RAW_DIR}' (ONC Oceans 3.0, https://data.oceannetworks.ca); "
@@ -98,6 +115,7 @@ _DEFAULT_HOW_TO_OBTAIN = (
 
 __all__ = [
     "REPO_ROOT", "DATA_DIR", "SAMPLE_DIR", "SAMPLE_DIR_NAME", "RAW_DIR", "ONC_RAW_DIR",
+    "ONC_OVERPASS_CORPUS_DIR",
     "SAMPLES_DIR", "DERIVED_DIR", "INTERIM_DIR", "PROCESSED_DIR", "DOCS_DIR",
     "SCRIPTS_DIR", "EXTERNAL_DIR", "ONC_MODEL_DIR", "CHECKPOINT_DIR",
     "UPTIME_CSV_NAME", "DEPLOYMENTS_CSV_NAME",

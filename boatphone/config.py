@@ -18,7 +18,7 @@ Conventions pinned here (decision 0002, decisions D1/D2/D4 of the A1 plan):
 Names carry their frame: `*_UTC` means tz-aware UTC, `*_SECONDS` means seconds.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 
 # Bin width for the uptime calendar. Source: A1 decision D2 -- 300 s (5 min) is
 # the ONC FFT product's natural file cadence, so a bin maps 1:1 onto a listing.
@@ -35,6 +35,21 @@ STUDY_START_UTC = datetime(2020, 2, 18, 0, 0, 0, tzinfo=timezone.utc)
 # exclusive). It is an analysis convention -- revise it here, not per notebook,
 # if the deployment record extends further.
 STUDY_END_UTC = datetime(2026, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+# Year bounds for the bulk overpass-corpus pull (scripts/pull_overpass_corpus.py).
+# ONE definition of the corpus span (invariant 6); the pull driver imports these
+# and defines nothing of its own.
+#   Start: the first full season inside the study window -- STUDY_START_UTC is
+#   2020-02-18, so 2020 is the earliest year with a complete May-Sep season under
+#   this device's calibration.
+#   End: 2025, NOT the year of STUDY_END_UTC. Source: acoustics_plan_v2.md SS5
+#   ("B3 -- Bulk acquisition"). The ICLISTEN HF1266 deployment ended 2026-03-14,
+#   so the 2026 season has no acoustic counterpart at all; pulling it would spend
+#   ONC quota on windows that cannot contain data. STUDY_END_UTC bounds the
+#   ANALYSIS window; this bounds what is worth DOWNLOADING, and they are allowed
+#   to differ as long as both say why.
+CORPUS_PULL_START_YEAR = 2020
+CORPUS_PULL_END_YEAR = 2025
 
 # Months included in the "season", evaluated on the UTC month of the bin start.
 # Source: A1 decision D4 -- May through September, the recreational-vessel
@@ -574,3 +589,39 @@ if FFT_N_FRAMES * FFT_FRAME_SECONDS != FFT_FILE_SECONDS:
         f"({FFT_FRAME_SECONDS}) = {FFT_N_FRAMES * FFT_FRAME_SECONDS} s, which is not "
         f"FFT_FILE_SECONDS ({FFT_FILE_SECONDS} s)"
     )
+
+
+# --- PlanetScope overpass window (B3 bulk acquisition) ----------------------
+# The ONE definition of the acoustic window matched to a Planet overpass. Do not
+# restate 09:15/11:45 or "America/Vancouver" anywhere downstream (invariant 6);
+# import these and convert per date with boatphone.acquire.overpass_window_utc.
+#
+# Source: docs/plans/acoustics_plan_v2.md SS5 "B3 -- Bulk acquisition" --
+# PlanetScope crosses Barkley Sound 09:30-11:30 LOCAL, padded 15 min each side
+# to absorb orbit/scheduling jitter, giving 09:15-11:45 local (150 min).
+#
+# These are LOCAL wall-clock times, deliberately NOT stored as UTC: the true UTC
+# offset for America/Vancouver is not a constant (it moves by an hour across the
+# DST transitions, and the 2024/2025 seasons plus their shoulder months straddle
+# both). Storing a UTC pair here would bake in one offset and silently shift the
+# window on the other side of a transition -- decision 0002. The offset is
+# derived per date from zoneinfo at use time instead.
+PLANET_OVERPASS_WINDOW_START_LOCAL = time(9, 15)
+PLANET_OVERPASS_WINDOW_END_LOCAL = time(11, 45)
+
+# IANA zone name for the local times above. Source: acoustics_plan_v2 SS5.
+PLANET_OVERPASS_TZ_NAME = "America/Vancouver"
+
+# The ONE sentence describing what the PlanetScope-matched acoustic pull can and
+# cannot support, so every downstream figure/manifest imports it verbatim rather
+# than paraphrasing it (invariant 6). Source: acoustics_plan_v2 SS5 -- the
+# overpass window is ~09:15-11:45 local (see PLANET_OVERPASS_WINDOW_*_LOCAL
+# above), a roughly 10:30-local band, so this corpus can support NO diurnal
+# claim (it only ever samples one hour-band of the day) and any seasonal claim
+# is valid ONLY within that same hour-band.
+PLANET_SAMPLING_CONDITIONALITY_STATEMENT = (
+    "This corpus samples only the ~09:15-11:45 local PlanetScope overpass "
+    "window (PLANET_OVERPASS_TZ_NAME) on each date; it supports no diurnal "
+    "claim, and any seasonal comparison is valid only within that same "
+    "local-time band."
+)

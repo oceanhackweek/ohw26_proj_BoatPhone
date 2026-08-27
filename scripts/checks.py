@@ -1294,10 +1294,33 @@ def check_a1a_6_dst_is_a_no_op():
 
 
 def check_a1a_6b_no_local_timezone_in_a1_source():
-    """No A1 module references a non-UTC timezone (D4: no America/Vancouver in A1)."""
+    """No A1 module performs a local-timezone CONVERSION (D4: no
+    America/Vancouver conversion baked into A1's season/bin logic).
+
+    Narrowed by B3-A (see docs on overpass_window_utc): B3-A requires
+    PLANET_OVERPASS_TZ_NAME == "America/Vancouver" to live as a named
+    constant in boatphone/config.py (CLAUDE.md invariant 6 -- one shared
+    definition, not one literal restated per module), and boatphone.config
+    is one of the _A1A_MODULES this check scans. A bare constant that
+    *names* a zone is not a conversion; the point of B3-A is precisely that
+    the local->UTC conversion happens per date via zoneinfo rather than a
+    baked fixed offset. So this check now flags actual conversion facilities
+    and call sites (zoneinfo/ZoneInfo/pytz USE, tz_localize, tz_convert,
+    astimezone, localtime, and a bare "America/" literal appearing anywhere
+    other than as the right-hand side of a constant assignment), while
+    permitting a module-level `NAME = "America/Vancouver"`-style constant
+    declaration. It does not simply exempt boatphone.config wholesale --
+    an astimezone/zoneinfo call inside boatphone.config would still fail.
+    """
     import inspect
-    forbidden = ("America/", "zoneinfo", "ZoneInfo", "pytz", "tz_localize",
-                 "tz_convert", "astimezone", "localtime")
+    import re
+    # Facilities that, if USED (not just named), perform or enable a local
+    # conversion. These remain forbidden anywhere in A1 source.
+    forbidden_calls = ("zoneinfo", "ZoneInfo", "pytz", "tz_localize",
+                        "tz_convert", "astimezone", "localtime")
+    # A bare "America/" literal is only permitted as the RHS of a simple
+    # module-level constant assignment, e.g. FOO_TZ_NAME = "America/Vancouver".
+    const_assignment_re = re.compile(r'^[A-Z_][A-Z0-9_]*\s*(:\s*\w+\s*)?=\s*["\']America/')
     hits = []
     for mod in _a1a_mods():
         try:
@@ -1306,13 +1329,19 @@ def check_a1a_6b_no_local_timezone_in_a1_source():
             raise AssertionError(f"could not read source of {mod.__name__}: {exc}") from exc
         for lineno, line in enumerate(src.splitlines(), 1):
             code = line.split("#", 1)[0]
-            for token in forbidden:
+            for token in forbidden_calls:
                 if token in code:
                     hits.append(f"{mod.__name__}:{lineno}: {token!r} in {line.strip()!r}")
+            if "America/" in code and not const_assignment_re.match(code.strip()):
+                hits.append(
+                    f"{mod.__name__}:{lineno}: 'America/' used outside a named-constant "
+                    f"assignment in {line.strip()!r}"
+                )
     assert not hits, (
-        "A1 source references a non-UTC timezone facility: " + "; ".join(hits)
-        + ". The season is defined on month(start_utc) in UTC and no America/Vancouver "
-        "conversion appears anywhere in A1 (D4)"
+        "A1 source performs (or enables) a local-timezone conversion: " + "; ".join(hits)
+        + ". The season is defined on month(start_utc) in UTC; a named tz constant "
+        "(e.g. B3-A's PLANET_OVERPASS_TZ_NAME) is fine, but no America/Vancouver "
+        "CONVERSION may appear in A1's season/bin logic (D4)"
     )
 
 
@@ -5058,6 +5087,703 @@ def check_a1e_5_a_no_data_marker_on_page_2_must_RAISE_not_truncate():
 
 
 # ---------------------------------------------------------------------------
+# B3-B -- resumable, content-hashed download primitive
+#
+# Contract (segment B3-B, `docs/plans/acoustics_plan_v2.md` §"B3 -- Bulk
+# acquisition", extending A1's `boatphone/onc_client.py`). ONE function pulls
+# ONE ONC archive file into the landing zone (`boatphone.paths.ONC_RAW_DIR`,
+# decision 0005 -- append-only, gitignored, created at download time via
+# `paths.ensure_dir()`, never as an import side effect). It must:
+#
+#   * write to a `.part` sidecar and rename to the final path only on
+#     completion, so a file is immutable ONLY once complete (decision 0005 §1)
+#     and an interrupted transfer can never be mistaken for a good one;
+#   * be a no-op, a counted CACHE HIT, on re-invocation when the final path
+#     already exists and verifies;
+#   * RAISE on a hash mismatch against a cached file, never silently
+#     overwrite it (CLAUDE.md invariant 2: data/ is immutable, and a silent
+#     overwrite of a corrupt cache entry is exactly the failure that
+#     invariant exists to prevent);
+#   * back off exponentially with jitter on HTTP 429/5xx;
+#   * treat the decision-0007 "not deployed" / "not yet elapsed" 400s as
+#     MEASURED ZEROS, not errors -- the same distinction A1b/A1e already draw
+#     for listing, now drawn for the pull;
+#   * return a structured ABSENT record for a file ONC genuinely has nothing
+#     for (a real 404), rather than raising or skipping silently -- segment
+#     C's absent-file log is the stated consumer;
+#   * contain no bare `except`.
+#
+# THIS CODE DOES NOT EXIST YET. `boatphone/onc_client.py` currently exports no
+# `download`/`getFile`/hash/manifest symbol at all (grepped, confirmed empty).
+# Every check below is therefore expected to FAIL until B3-B lands, and each
+# one says so explicitly via `_b3b_mod()` before it does anything else, so a
+# missing-symbol AssertionError reads as "not implemented" and never as
+# "implemented and wrong" (test-author brief).
+#
+# ASSUMED INTERFACE, stated because none of it can be read off an
+# implementation that does not exist -- this is the shape the checks below
+# are written against, and if B3-B lands with a different shape, the checks
+# (not the guess) are what should move:
+#
+#   download_archive_file(client, filename, *, dest_dir, transport,
+#                          sleep=time.sleep, expected_sha256=None)
+#       -> a result exposing at least `.status` (one of "downloaded",
+#          "cached", "absent", "measured_zero") and `.path` (Path or None).
+#
+#   `transport` is the injected network layer: `transport.get(filename,
+#   range_start=0)` returns an object with `.status_code`, `.headers`, and
+#   `.iter_bytes(chunk_size)`; this is the seam these checks monkeypatch so
+#   NOTHING here touches the real ONC API or writes outside a temp dir this
+#   file creates and removes (never under data/, per the test-author brief).
+#
+# THE HASH GUARANTEE ACTUALLY IN FORCE -- a judgement call, stated rather than
+# assumed silently: ONC's archive endpoint is not known to serve a
+# server-side content checksum (nothing in A1's listing/metadata rows carries
+# one). So "hash-matching" below is read as: the cache is keyed on a LOCAL
+# sha256 of the completed file, computed once at download time and kept
+# alongside it (e.g. a `.sha256` sidecar), and re-verified before a cache hit
+# is trusted. That detects LOCAL corruption (bit rot, a hand-edited fixture,
+# a bad copy) but NOT a server response that was truncated and then presented
+# as complete -- a completed transfer is trusted to be whole unless the
+# response carries its own length/hash to check against, which is answered by
+# check_b3b_5 below, not assumed. If B3-B finds ONC does serve a checksum
+# (e.g. an ETag or a `Content-MD5`), check_b3b_4 and check_b3b_5's assertions
+# still hold; they would simply be checking a stronger guarantee than the one
+# assumed here, not a different one.
+# ---------------------------------------------------------------------------
+
+B3B_FAKE_CONTENT = b"ICLISTEN-FFT-BYTES-" * 512  # a deterministic, non-trivial fixture payload
+B3B_FAKE_FILENAME = "ICLISTENHF1266_20240715T000136.000Z.fft.gz"
+
+
+def _b3b_mod():
+    """Import boatphone.onc_client and require the B3-B download symbol.
+
+    Mirrors `_a1b_mod()`'s convention exactly: `assert hasattr(...)` turns a
+    not-yet-written function into a named, readable AssertionError ("not
+    implemented") rather than a bare AttributeError that could be confused
+    with a real bug once the function exists.
+    """
+    cfg, onc = _a1a_mods()
+    assert hasattr(onc, "download_archive_file"), (
+        "boatphone/onc_client.py has no download_archive_file(); B3-B (the "
+        "resumable, content-hashed download primitive) is not implemented yet"
+    )
+    return cfg, onc
+
+
+class _B3BFakeResponse:
+    """One simulated HTTP response. `status_code` 200/404/429/500/400."""
+
+    def __init__(self, status_code, body=b"", total_size=None, sha256_hex=None,
+                 error_text="", interrupt_after=None):
+        self.status_code = status_code
+        self._body = body
+        self.total_size = total_size if total_size is not None else len(body)
+        self.error_text = error_text
+        self.headers = {"Content-Length": str(self.total_size)}
+        if sha256_hex:
+            self.headers["X-Content-SHA256"] = sha256_hex
+        self._interrupt_after = interrupt_after
+
+    def iter_bytes(self, chunk_size=65536):
+        sent = 0
+        for offset in range(0, len(self._body), chunk_size):
+            chunk = self._body[offset:offset + chunk_size]
+            sent += len(chunk)
+            yield chunk
+            if self._interrupt_after is not None and sent >= self._interrupt_after:
+                raise ConnectionError(
+                    f"simulated dropped connection after {sent} byte(s) (test fixture)"
+                )
+
+
+class _B3BFakeTransport:
+    """Injectable stand-in for B3-B's network layer -- no network, ever.
+
+    `content_by_name` is the FULL, correct payload per filename, so a
+    resumed request can be sliced by `range_start` and checked byte-for-byte
+    against an uninterrupted pull of the same map.
+    """
+
+    def __init__(self, content_by_name):
+        self.content_by_name = dict(content_by_name)
+        self.calls = []                 # (filename, range_start) per attempt, in order
+        self.fail_sequence = []         # status codes to return before a real answer, popped in order
+        self.interrupt_once_after = None  # bytes to serve before ConnectionError, ONE attempt only
+        self.not_deployed_names = set()
+        self.absent_names = set()
+
+    def get(self, filename, range_start=0):
+        self.calls.append((filename, range_start))
+        if filename in self.absent_names:
+            return _B3BFakeResponse(404, error_text=f"{filename} not found")
+        if filename in self.not_deployed_names:
+            # Decision 0007's exact first marker, so the check exercises the
+            # SAME string match _NO_DATA_POSSIBLE_MARKERS uses for listing.
+            return _B3BFakeResponse(
+                400, error_text="API Error 127: A device with category HYDROPHONE was "
+                "deployed at location FGPD but not during the provided time range"
+            )
+        if self.fail_sequence:
+            code = self.fail_sequence.pop(0)
+            return _B3BFakeResponse(code, error_text=f"simulated {code} (test fixture)")
+        full = self.content_by_name[filename]
+        body = full[range_start:]
+        interrupt_after = None
+        if self.interrupt_once_after is not None and range_start == 0:
+            interrupt_after = self.interrupt_once_after
+            self.interrupt_once_after = None  # only the FIRST attempt is interrupted
+        return _B3BFakeResponse(200, body=body, total_size=len(full), interrupt_after=interrupt_after)
+
+
+def _b3b_sha256(data: bytes) -> str:
+    import hashlib
+    return hashlib.sha256(data).hexdigest()
+
+
+def check_b3b_0_api_surface():
+    """download_archive_file exists and is callable (not-implemented gate for the rest of B3-B)."""
+    _cfg, onc = _b3b_mod()
+    assert callable(onc.download_archive_file), (
+        "boatphone.onc_client.download_archive_file exists but is not callable"
+    )
+
+
+def check_b3b_1_interrupted_transfer_never_leaves_a_corrupt_final_file():
+    """A dropped connection never leaves a bad file at the FINAL path.
+
+    Every attempt in this fixture is interrupted (the transport re-arms after
+    each attempt, unlike the resume check below), so no correct implementation
+    can complete the pull here. The ONLY acceptable outcomes are: the call
+    raises and the final path does not exist, or the final path is absent
+    while a `.part` sidecar (any name containing '.part') holds the partial
+    bytes. What must NEVER happen is a file at the final path with the wrong
+    length or wrong hash -- decision 0005 §1's "immutable once COMPLETE" is
+    exactly the guarantee this pins.
+    """
+    _cfg, onc = _b3b_mod()
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+
+        class _AlwaysInterrupts(_B3BFakeTransport):
+            def get(self, filename, range_start=0):
+                self.calls.append((filename, range_start))
+                full = self.content_by_name[filename]
+                body = full[range_start:]
+                return _B3BFakeResponse(
+                    200, body=body, total_size=len(full),
+                    interrupt_after=min(64, len(body)) if body else None,
+                )
+
+        transport = _AlwaysInterrupts({B3B_FAKE_FILENAME: B3B_FAKE_CONTENT})
+        raised = None
+        try:
+            onc.download_archive_file(
+                client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+                transport=transport, sleep=lambda _s: None,
+            )
+        except Exception as exc:  # noqa: BLE001 -- a raise here is an ACCEPTABLE outcome
+            raised = exc
+
+        final_path = dest_dir / B3B_FAKE_FILENAME
+        if final_path.exists():
+            on_disk = final_path.read_bytes()
+            assert on_disk == B3B_FAKE_CONTENT, (
+                f"download_archive_file left a file at the FINAL path {final_path} that is "
+                f"{len(on_disk)} byte(s), not the {len(B3B_FAKE_CONTENT)}-byte complete "
+                "payload, after every simulated attempt was interrupted mid-transfer. "
+                "Decision 0005 §1: a file is immutable only once COMPLETE, so an interrupted "
+                "transfer must never be observable at the final path"
+            )
+        stray_final_writes = [
+            p for p in dest_dir.rglob("*")
+            if p.is_file() and p.name == B3B_FAKE_FILENAME and p.stat().st_size not in (0, len(B3B_FAKE_CONTENT))
+        ]
+        assert not stray_final_writes, (
+            f"found file(s) at the exact final name with a partial size: {stray_final_writes}; "
+            "a partial transfer must live under a .part sidecar, never at the final name"
+        )
+        assert raised is not None or not final_path.exists(), (
+            "download_archive_file returned normally with every attempt interrupted, but left "
+            "no final file and raised nothing -- an interrupted transfer must be either raised "
+            "or left resumable, never silently reported as done"
+        )
+
+
+class _B3BFakeTransport206OnResume(_B3BFakeTransport):
+    """A transport that HONOURS Range on resume: 206 Partial Content, body sliced from `range_start`.
+
+    Only the resumed leg (`range_start > 0`) differs from the base fixture --
+    it returns 206, not the base class's (buggy, pre-existing-check) 200, so
+    this pins the real "Range honoured" branch of `download_archive_file`
+    rather than a status code that never occurs over real HTTP for a
+    successful resume.
+    """
+
+    def get(self, filename, range_start=0):
+        self.calls.append((filename, range_start))
+        full = self.content_by_name[filename]
+        if range_start > 0:
+            return _B3BFakeResponse(206, body=full[range_start:], total_size=len(full))
+        interrupt_after = None
+        if self.interrupt_once_after is not None:
+            interrupt_after = self.interrupt_once_after
+            self.interrupt_once_after = None  # only the FIRST attempt is interrupted
+        return _B3BFakeResponse(200, body=full, total_size=len(full), interrupt_after=interrupt_after)
+
+
+class _B3BFakeTransport200IgnoresRangeOnResume(_B3BFakeTransport):
+    """A transport that IGNORES Range on resume: plain 200, FULL unsliced body from byte zero.
+
+    This is real HTTP's actual "Range not honoured" behavior -- the opposite
+    of what the old (removed) fixture simulated. A correct downloader must
+    detect this and discard-and-restart rather than appending the full body
+    onto the partial `.part` file already on disk.
+    """
+
+    def get(self, filename, range_start=0):
+        self.calls.append((filename, range_start))
+        full = self.content_by_name[filename]
+        interrupt_after = None
+        if range_start == 0 and self.interrupt_once_after is not None:
+            interrupt_after = self.interrupt_once_after
+            self.interrupt_once_after = None  # only the FIRST attempt is interrupted
+        return _B3BFakeResponse(200, body=full, total_size=len(full), interrupt_after=interrupt_after)
+
+
+def check_b3b_2a_resume_when_range_honoured_206_is_byte_identical_to_uninterrupted_pull():
+    """206 Partial Content on resume: append, and the result == an uninterrupted pull.
+
+    The fixture interrupts ONLY the first attempt (`interrupt_once_after`);
+    a correct resumable downloader retries, this time asking the transport
+    for `range_start` at the byte it already has, and gets back a REAL 206
+    with the body correctly sliced. The reassembled file must be
+    indistinguishable from a clean single-shot pull of the same content.
+    This is the check that actually exercises RESUME, not just
+    retry-from-scratch -- `transport.calls` is asserted to contain a
+    `range_start > 0`, or a downloader that silently restarts from zero every
+    time would pass on content alone while still being O(n^2) against a large
+    corpus, contrary to the segment's stated purpose.
+    """
+    _cfg, onc = _b3b_mod()
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _B3BFakeTransport206OnResume({B3B_FAKE_FILENAME: B3B_FAKE_CONTENT})
+        transport.interrupt_once_after = 128  # first attempt dies after 128 bytes, then heals
+
+        # chunk_bytes is passed SMALL and EXPLICIT, not left at the production
+        # default (65536, as of the B3-B shared contract). iter_bytes() only
+        # raises its simulated interrupt AFTER yielding a whole chunk, so at
+        # the 9728-byte fixture size a production-sized chunk IS the entire
+        # body: the .part would already be complete, range_start on "resume"
+        # would equal len(content), and this check would go vacuous while
+        # still reporting PASS. Do not "tidy" this back to the default.
+        result = onc.download_archive_file(
+            client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=transport, sleep=lambda _s: None, chunk_bytes=1024,
+        )
+        final_path = dest_dir / B3B_FAKE_FILENAME
+        assert final_path.exists(), (
+            f"download_archive_file returned {result!r} but wrote no file at {final_path} "
+            "after resuming a once-interrupted transfer honoured with 206"
+        )
+        on_disk = final_path.read_bytes()
+        assert on_disk == B3B_FAKE_CONTENT, (
+            f"resumed download is {len(on_disk)} byte(s) and does not match the "
+            f"{len(B3B_FAKE_CONTENT)}-byte uninterrupted content byte-for-byte "
+            "(first mismatching offset: "
+            f"{next((i for i in range(min(len(on_disk), len(B3B_FAKE_CONTENT))) if on_disk[i] != B3B_FAKE_CONTENT[i]), 'length differs')})"
+        )
+        range_starts = [rs for (_fn, rs) in transport.calls]
+        assert any(0 < rs < len(B3B_FAKE_CONTENT) for rs in range_starts), (
+            f"transport.get() was called with range_start values {range_starts}; none is a "
+            f"PARTIAL offset strictly between 0 and {len(B3B_FAKE_CONTENT)}, so either the "
+            "retry restarted the WHOLE transfer from byte zero rather than resuming (that is "
+            "retry, not the resumable primitive B3-B is required to be), or the '.part' already "
+            "held the complete file when resume was attempted and this check exercised nothing"
+        )
+        assert result.http_status == 206, (
+            f"result.http_status is {result.http_status!r}, not 206, after the resumed leg was "
+            "answered with 206 Partial Content -- http_status must reflect the LAST response "
+            "observed, which honoured the resume"
+        )
+
+
+def check_b3b_2b_resume_when_range_ignored_200_discards_and_restarts_from_zero():
+    """200 (not 206) on resume: Range was IGNORED -- must discard the .part and restart, never append.
+
+    Real HTTP semantics, the opposite of the old removed check's fixture: a
+    plain 200 on a request that carried a Range header means the server sent
+    the FULL body from byte zero, not the honoured tail. Appending that onto
+    an existing partial file would silently double it -- exactly the class of
+    silent corruption CLAUDE.md invariant 5 rules out. The assertions below
+    are: (1) the final content is byte-for-byte correct -- this ALONE
+    already implies the length is correct too (nothing can be byte-equal to
+    B3B_FAKE_CONTENT and a different length), so it is content equality, not
+    a separate length check, that is doing the real work of catching a naive
+    len(partial) + len(full) append; a length-only assertion would be
+    redundant once content equality is asserted, and (2) the implementation
+    observably took the discard-and-restart path. `download_archive_file`
+    records no structured
+    field for which resume path was taken (`DownloadRecord` carries
+    `http_status`/`attempts` but nothing that distinguishes "206 honoured"
+    from "200 ignored and restarted" after the fact), so the only observable
+    at this seam is the `print()` the implementation emits when it discards
+    -- captured here rather than asserted against log text elsewhere, and
+    flagged: if a structured field for this is later added to
+    `DownloadRecord`, this assertion should move to it instead of stdout.
+    """
+    _cfg, onc = _b3b_mod()
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _B3BFakeTransport200IgnoresRangeOnResume({B3B_FAKE_FILENAME: B3B_FAKE_CONTENT})
+        transport.interrupt_once_after = 128  # first attempt dies after 128 bytes, then heals
+
+        import contextlib
+        import io
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            # chunk_bytes small and explicit -- see check_b3b_2a's comment for
+            # why: at the production default (65536) the 9728-byte fixture's
+            # first chunk IS the whole body, the .part lands complete, and the
+            # "resumed" request would carry range_start == len(content),
+            # making this check pass without ever exercising a real resume.
+            result = onc.download_archive_file(
+                client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+                transport=transport, sleep=lambda _s: None, chunk_bytes=1024,
+            )
+        final_path = dest_dir / B3B_FAKE_FILENAME
+        assert final_path.exists(), (
+            f"download_archive_file returned {result!r} but wrote no file at {final_path} "
+            "after resuming a once-interrupted transfer whose Range was ignored (200)"
+        )
+        on_disk = final_path.read_bytes()
+        assert on_disk == B3B_FAKE_CONTENT, (
+            f"resumed download (Range ignored, 200) is {len(on_disk)} byte(s) and does not "
+            f"match the {len(B3B_FAKE_CONTENT)}-byte uninterrupted content byte-for-byte "
+            "(first mismatching offset: "
+            f"{next((i for i in range(min(len(on_disk), len(B3B_FAKE_CONTENT))) if on_disk[i] != B3B_FAKE_CONTENT[i]), 'length differs')})"
+        )
+        # No separate length assertion here: `on_disk == B3B_FAKE_CONTENT` above
+        # already pins the length (byte equality implies length equality;
+        # nothing passes the former while failing the latter), including
+        # against the naive len(partial) + len(full) append this check exists
+        # to catch. A prior version of this comment claimed the length check
+        # was doing that work -- it was not; content equality was.
+        range_starts = [rs for (_fn, rs) in transport.calls]
+        assert any(0 < rs < len(B3B_FAKE_CONTENT) for rs in range_starts), (
+            f"transport.get() was called with range_start values {range_starts}; none is a "
+            f"PARTIAL offset strictly between 0 and {len(B3B_FAKE_CONTENT)}, so this check "
+            "never actually exercised a resumed request that got Range ignored at a genuine "
+            "partial offset -- a full-length range_start (a .part that was already complete "
+            "when 'resume' was attempted) would satisfy `rs > 0` but exercise nothing"
+        )
+        log_text = captured.getvalue()
+        assert "discard" in log_text.lower() and "200" in log_text, (
+            f"download_archive_file logged nothing recognizable as 'discarded the partial and "
+            f"restarted from zero' when the resumed request came back 200 instead of 206; "
+            f"captured stdout was: {log_text!r}. This is the only observable of the "
+            "discard-and-restart path today -- if DownloadRecord grows a structured field for "
+            "it, this assertion should move there instead"
+        )
+
+
+def check_b3b_2c_download_record_carries_http_status_and_attempts_per_status():
+    """DownloadRecord.http_status/.attempts are populated correctly for every status.
+
+    Pins the B3-C manifest contract stated in `DownloadRecord`'s own
+    docstring: "cached" made no HTTP request at all, so it must report
+    `http_status=None, attempts=0` rather than fabricating a 200 that never
+    happened (invariant 5); "downloaded", "absent", and "measured_zero" each
+    made at least one real request, so both fields must be populated.
+    """
+    _cfg, onc = _b3b_mod()
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+
+        downloaded_transport = _B3BFakeTransport({B3B_FAKE_FILENAME: B3B_FAKE_CONTENT})
+        downloaded = onc.download_archive_file(
+            client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=downloaded_transport, sleep=lambda _s: None,
+        )
+        assert downloaded.status == "downloaded"
+        assert downloaded.http_status == 200 and downloaded.attempts >= 1, (
+            f"'downloaded' record has http_status={downloaded.http_status!r}, "
+            f"attempts={downloaded.attempts!r}; a completed transfer made a real request and "
+            "must report both"
+        )
+
+        cached = onc.download_archive_file(
+            client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=downloaded_transport, sleep=lambda _s: None,
+        )
+        assert cached.status == "cached"
+        assert cached.http_status is None and cached.attempts == 0, (
+            f"'cached' record has http_status={cached.http_status!r}, attempts="
+            f"{cached.attempts!r}; a cache hit made NO HTTP request, so it must not fabricate "
+            "an http_status or a nonzero attempt count (invariant 5)"
+        )
+
+        absent_transport = _B3BFakeTransport({})
+        absent_transport.absent_names = {B3B_FAKE_FILENAME}
+        absent = onc.download_archive_file(
+            client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir / "absent",
+            transport=absent_transport, sleep=lambda _s: None,
+        )
+        assert absent.status == "absent"
+        assert absent.http_status == 404 and absent.attempts >= 1, (
+            f"'absent' record has http_status={absent.http_status!r}, attempts="
+            f"{absent.attempts!r}; a real 404 is a real request and must report both"
+        )
+
+        zero_transport = _B3BFakeTransport({})
+        zero_transport.not_deployed_names = {B3B_FAKE_FILENAME}
+        measured_zero = onc.download_archive_file(
+            client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir / "zero",
+            transport=zero_transport, sleep=lambda _s: None,
+        )
+        assert measured_zero.status == "measured_zero"
+        assert measured_zero.http_status == 400 and measured_zero.attempts >= 1, (
+            f"'measured_zero' record has http_status={measured_zero.http_status!r}, attempts="
+            f"{measured_zero.attempts!r}; a real 400 is a real request and must report both"
+        )
+
+
+def check_b3b_3_second_call_on_a_complete_file_is_a_zero_byte_cache_hit():
+    """Re-invoking on an already-complete, hash-matching file downloads ZERO bytes."""
+    _cfg, onc = _b3b_mod()
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _B3BFakeTransport({B3B_FAKE_FILENAME: B3B_FAKE_CONTENT})
+
+        first = onc.download_archive_file(
+            client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=transport, sleep=lambda _s: None,
+        )
+        calls_after_first = len(transport.calls)
+        assert calls_after_first >= 1, "the first call made no network request at all"
+
+        second = onc.download_archive_file(
+            client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=transport, sleep=lambda _s: None,
+        )
+        assert len(transport.calls) == calls_after_first, (
+            f"a second call on an already-complete file made "
+            f"{len(transport.calls) - calls_after_first} more transport.get() call(s); a cache "
+            "hit must fetch zero bytes, not re-request the file"
+        )
+        second_status = getattr(second, "status", None) or (second.get("status") if isinstance(second, dict) else None)
+        assert second_status is not None and str(second_status).lower() in ("cached", "cache_hit", "cache-hit"), (
+            f"second call's result does not report a cache hit (got status={second_status!r} "
+            f"from {second!r}); a caller cannot distinguish 'skipped because cached' from "
+            "'downloaded again' without this being reported"
+        )
+        final_path = dest_dir / B3B_FAKE_FILENAME
+        assert final_path.read_bytes() == B3B_FAKE_CONTENT, (
+            "the cached file's content changed across the two calls"
+        )
+
+
+def check_b3b_4_locally_corrupted_cache_is_detected_by_hash_and_RAISES():
+    """A hand-corrupted cached file is caught by hash on the next call, and RAISES.
+
+    States the guarantee actually in force (see the section banner): ONC is
+    not known to serve a content checksum, so this checks LOCAL corruption
+    detection -- bytes on disk no longer match the hash recorded at download
+    time -- not a truncated-but-declared-complete server response, which is a
+    guarantee the API may not be able to provide.
+    """
+    _cfg, onc = _b3b_mod()
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _B3BFakeTransport({B3B_FAKE_FILENAME: B3B_FAKE_CONTENT})
+        onc.download_archive_file(
+            client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=transport, sleep=lambda _s: None,
+        )
+        final_path = dest_dir / B3B_FAKE_FILENAME
+        original = final_path.read_bytes()
+        corrupted = bytes([original[0] ^ 0xFF]) + original[1:]  # flip one byte, same LENGTH
+        final_path.write_bytes(corrupted)
+
+        raised = None
+        try:
+            onc.download_archive_file(
+                client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+                transport=transport, sleep=lambda _s: None,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the raise IS the contract; never AssertionError
+            raised = exc
+        assert raised is not None, (
+            "download_archive_file silently accepted (or silently re-downloaded over) a "
+            "cached file whose content no longer matches its recorded hash -- CLAUDE.md "
+            "invariant 2: a corrupted cache entry must RAISE, never be silently overwritten"
+        )
+        assert not isinstance(raised, AssertionError), str(raised)
+
+
+def check_b3b_5_three_429s_back_off_with_strictly_increasing_sleeps_then_succeed():
+    """Three simulated 429s produce strictly increasing recorded sleeps, then success.
+
+    Asserts on the RECORDED sleep durations the code itself asked for (an
+    injected `sleep=` callable), never on wall-clock -- this check must be
+    fast regardless of the real backoff schedule.
+    """
+    _cfg, onc = _b3b_mod()
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _B3BFakeTransport({B3B_FAKE_FILENAME: B3B_FAKE_CONTENT})
+        transport.fail_sequence = [429, 429, 429]
+        recorded_sleeps = []
+
+        result = onc.download_archive_file(
+            client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=transport, sleep=recorded_sleeps.append,
+        )
+        assert (dest_dir / B3B_FAKE_FILENAME).read_bytes() == B3B_FAKE_CONTENT, (
+            f"three 429s then a good response did not end in a complete file (result={result!r})"
+        )
+        assert len(recorded_sleeps) >= 3, (
+            f"only {len(recorded_sleeps)} backoff sleep(s) recorded for 3 simulated 429s: "
+            f"{recorded_sleeps!r} -- each 429 must be slept off, not retried immediately"
+        )
+        first_three = recorded_sleeps[:3]
+        assert all(b > a for a, b in zip(first_three, first_three[1:])), (
+            f"backoff sleeps {first_three!r} are not strictly increasing; exponential backoff "
+            "on repeated 429s must grow each attempt, even with jitter applied on top"
+        )
+        assert all(s > 0 for s in first_three), (
+            f"a non-positive backoff sleep was recorded: {first_three!r}"
+        )
+
+
+def check_b3b_6_permanently_absent_file_yields_a_structured_record_and_does_not_raise():
+    """A real 404 (permanently absent) returns a structured record; it never raises.
+
+    The record must carry enough for segment C's absent-file log to act on
+    without re-parsing an exception string: at minimum the filename and a
+    status distinguishing it from every other outcome.
+    """
+    _cfg, onc = _b3b_mod()
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _B3BFakeTransport({})
+        transport.absent_names = {B3B_FAKE_FILENAME}
+
+        result = onc.download_archive_file(
+            client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=transport, sleep=lambda _s: None,
+        )
+        assert result is not None, "an absent file must yield a record, not None"
+        status = getattr(result, "status", None) or (result.get("status") if isinstance(result, dict) else None)
+        assert status is not None and str(status).lower() == "absent", (
+            f"expected a status of 'absent' for a real 404, got {status!r} from {result!r}"
+        )
+        name_field = (
+            getattr(result, "filename", None)
+            or (result.get("filename") if isinstance(result, dict) else None)
+        )
+        assert name_field == B3B_FAKE_FILENAME, (
+            f"the absent record does not name the file it is about (got {name_field!r} from "
+            f"{result!r}); segment C's absent-file log needs this to act on it without "
+            "re-parsing a message"
+        )
+        assert not (dest_dir / B3B_FAKE_FILENAME).exists(), (
+            "a file appeared at the final path for a filename the transport reports absent"
+        )
+
+
+def check_b3b_7_onc_400_not_deployed_is_a_measured_zero_distinct_from_absent_and_error():
+    """Decision 0007's 'not deployed' 400 is its OWN outcome -- not absent, not error, no raise.
+
+    Matches the exact wording `_NO_DATA_POSSIBLE_MARKERS` already keys on for
+    listing, so the pull draws the identical measured-zero line A1e already
+    proved for the list, per decision 0007.
+    """
+    _cfg, onc = _b3b_mod()
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _B3BFakeTransport({})
+        transport.not_deployed_names = {B3B_FAKE_FILENAME}
+
+        raised = None
+        result = None
+        try:
+            result = onc.download_archive_file(
+                client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+                transport=transport, sleep=lambda _s: None,
+            )
+        except Exception as exc:  # noqa: BLE001 -- must NOT raise; caught to report clearly if it does
+            raised = exc
+        assert raised is None, (
+            f"a decision-0007 'not deployed' 400 raised {type(raised).__name__}: {raised}; "
+            "D7 already establishes this is a measured zero, not a failure, for listing -- the "
+            "pull must draw the same line, not regress to treating it as an error"
+        )
+        status = getattr(result, "status", None) or (result.get("status") if isinstance(result, dict) else None)
+        assert status is not None, f"no status on the result for a 0007 measured-zero 400: {result!r}"
+        status_l = str(status).lower()
+        assert status_l not in ("absent", "error", "downloaded", "cached"), (
+            f"a decision-0007 'not deployed' 400 was reported as status={status!r}; it must be "
+            "its OWN outcome (e.g. 'measured_zero'), distinguishable from a real 404 (absent), "
+            "a genuine failure, and a successful pull -- collapsing it into any of those loses "
+            "exactly the distinction decision 0007 exists to draw"
+        )
+        assert not (dest_dir / B3B_FAKE_FILENAME).exists(), (
+            "a file appeared at the final path for a span decision 0007 says can hold nothing"
+        )
+
+
+def check_b3b_8_no_bare_except_in_the_download_code():
+    """D8/invariant 5, extended to the pull: no bare `except:`/`except Exception:`.
+
+    Reuses A1b's exact scan so the download code is held to the identical
+    standard as the listing code it extends, not a looser one.
+    """
+    import inspect
+    _cfg, onc = _b3b_mod()
+    src = inspect.getsource(onc)
+    hits = [
+        f"line {n}: {line.strip()!r}"
+        for n, line in enumerate(src.splitlines(), 1)
+        if line.split("#", 1)[0].strip() in ("except:", "except Exception:")
+    ]
+    assert not hits, (
+        "boatphone/onc_client.py catches everything: " + "; ".join(hits)
+        + ". A swallowed 429/5xx or hash failure becomes indistinguishable from success "
+        "(invariant 5)"
+    )
+
+
+def check_b3b_9_never_writes_outside_the_temp_dest_dir_this_check_created():
+    """This check's own fixture never touches data/ -- guards the guard, not the coder.
+
+    A download primitive that is passed `dest_dir` and STILL writes to
+    `boatphone.paths.ONC_RAW_DIR` (or anywhere under data/) would corrupt an
+    immutable acquisition zone (CLAUDE.md invariant 2) the moment a caller's
+    dest_dir argument was ignored. This asserts nothing appeared under the
+    real data/raw/onc during a full run of the checks above.
+    """
+    import boatphone.paths as p
+    _cfg, onc = _b3b_mod()
+    before = set(p.ONC_RAW_DIR.rglob("*")) if p.ONC_RAW_DIR.exists() else set()
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "onc"
+        transport = _B3BFakeTransport({B3B_FAKE_FILENAME: B3B_FAKE_CONTENT})
+        onc.download_archive_file(
+            client=None, filename=B3B_FAKE_FILENAME, dest_dir=dest_dir,
+            transport=transport, sleep=lambda _s: None,
+        )
+    after = set(p.ONC_RAW_DIR.rglob("*")) if p.ONC_RAW_DIR.exists() else set()
+    assert after == before, (
+        f"the real ONC landing zone {p.ONC_RAW_DIR} changed during a dest_dir-scoped test run: "
+        f"{after - before} appeared. A check must never write under data/ (invariant 2); this "
+        "means download_archive_file ignored its dest_dir argument"
+    )
+
+
+# ---------------------------------------------------------------------------
 # B0.1 -- acquire and pin external artefacts (ONC selfsupervision_anomalies_onc)
 #
 # Contract (segment B0-1, milestone1/b0-model-viability). These artefacts are
@@ -6298,6 +7024,1230 @@ def check_b0_2a_calibratable_band_matches_bin_range_and_assert_calibratable_reje
         )
 
 
+# ---------------------------------------------------------------------------
+# B3-A -- the overpass-window TIME GATE for the PlanetScope bulk pull.
+# ---------------------------------------------------------------------------
+# Contract (acoustics_plan_v2 SS5 "B3 -- Bulk acquisition"): PlanetScope crosses
+# 09:30-11:30 local, padded 15 min each side to 09:15-11:45 `America/Vancouver`,
+# computed PER DATE with zoneinfo (never a fixed UTC offset, because the offset
+# itself changes across the DST transition inside the study window's May-Sep
+# season boundary and its shoulder months).
+#
+# Home chosen for the function under test: `boatphone/acquire.py`,
+# `overpass_window_utc(local_date) -> (start_utc, end_utc)`, per the brief that
+# assigned this check. Neither the module nor the function exists yet -- this
+# check is EXPECTED to fail with ModuleNotFoundError/AttributeError until B3-A's
+# implementation lands; that failure is reported distinctly from a wrong-value
+# AssertionError by scripts/checks.py's own harness (see `main()`), so a
+# not-implemented run and a wrong-implementation run are never confused.
+#
+# Window-edge constant names are a GUESS, flagged as such: boatphone/config.py
+# has no existing B3 constants to anchor on, so this check requires
+# PLANET_OVERPASS_WINDOW_START_LOCAL / _END_LOCAL (datetime.time) and
+# PLANET_OVERPASS_TZ_NAME (str) to exist there with the plan's provenance in a
+# comment. If the implementer picks different names, that is a legitimate
+# choice to make once, in one place -- this check's names should move with it,
+# not be treated as the contract.
+
+def _b3a_config():
+    """Import boatphone.config. ModuleNotFoundError/AttributeError here means
+    the B3-A window-edge constants are not yet defined -- the expected
+    pre-implementation state, not a bug in this check."""
+    import importlib
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    return importlib.import_module("boatphone.config")
+
+
+def _b3a_acquire():
+    """Import boatphone.acquire. ModuleNotFoundError here IS the expected
+    pre-coder failure -- B3-A has not been implemented yet."""
+    import importlib
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    return importlib.import_module("boatphone.acquire")
+
+
+# Test cases: (local y, m, d, expected UTC start (y,m,d,H,M), expected UTC end,
+# note). Expected values are LITERALS, hand-derived from America/Vancouver's
+# published DST rule (second Sunday in March / first Sunday in November,
+# transition at 02:00 local), NOT computed via zoneinfo here -- the point of a
+# time-base check is that it does not trust the same library the implementation
+# will use to produce its answer.
+#
+#   PDT (UTC-7) shoulder months: 09:15-11:45 PDT -> 16:15-18:45Z.
+#   2024-03-09 (day BEFORE the spring-forward, still PST/UTC-8): 17:15-19:45Z.
+#   2024-03-10 (day the transition occurs at 02:00 local, before 09:15 -> PDT):
+#       16:15-18:45Z -- the offset must have CHANGED from the day before.
+#   2024-11-02 (day BEFORE fall-back, still PDT/UTC-7): 16:15-18:45Z.
+#   2024-11-03 (day the transition occurs at 02:00 local -> PST/UTC-8):
+#       17:15-19:45Z -- the reverse change from the March pair.
+_B3A_CASES = (
+    (2024, 5, 15, (2024, 5, 15, 16, 15), (2024, 5, 15, 18, 45), "in-season PDT shoulder"),
+    (2024, 9, 15, (2024, 9, 15, 16, 15), (2024, 9, 15, 18, 45), "in-season PDT shoulder"),
+    (2025, 5, 15, (2025, 5, 15, 16, 15), (2025, 5, 15, 18, 45), "in-season PDT shoulder"),
+    (2025, 9, 15, (2025, 9, 15, 16, 15), (2025, 9, 15, 18, 45), "in-season PDT shoulder"),
+    (2024, 3, 9,  (2024, 3, 9, 17, 15),  (2024, 3, 9, 19, 45),  "day BEFORE spring-forward, PST"),
+    (2024, 3, 10, (2024, 3, 10, 16, 15), (2024, 3, 10, 18, 45), "day OF spring-forward, PDT"),
+    (2024, 11, 2, (2024, 11, 2, 16, 15), (2024, 11, 2, 18, 45), "day BEFORE fall-back, PDT"),
+    (2024, 11, 3, (2024, 11, 3, 17, 15), (2024, 11, 3, 19, 45), "day OF fall-back, PST"),
+)
+
+
+def check_b3a_1_config_window_edge_constants():
+    """Window edges (09:15/11:45 America/Vancouver) are NAMED constants in
+    boatphone/config.py, with the plan's provenance in a comment -- not
+    literals restated inside boatphone/acquire.py (CLAUDE.md invariant 6)."""
+    from datetime import time
+    cfg = _b3a_config()
+    for name in (
+        "PLANET_OVERPASS_WINDOW_START_LOCAL",
+        "PLANET_OVERPASS_WINDOW_END_LOCAL",
+        "PLANET_OVERPASS_TZ_NAME",
+    ):
+        assert hasattr(cfg, name), (
+            f"boatphone.config is missing {name} -- B3-A's overpass window must be a "
+            "named constant there, sourced from acoustics_plan_v2 SS5 (09:30-11:30 local "
+            "PlanetScope crossing, padded 15 min each side)"
+        )
+    assert cfg.PLANET_OVERPASS_WINDOW_START_LOCAL == time(9, 15), (
+        f"config.PLANET_OVERPASS_WINDOW_START_LOCAL is "
+        f"{cfg.PLANET_OVERPASS_WINDOW_START_LOCAL!r}; the plan fixes the padded start at "
+        "09:15 local (09:30 crossing - 15 min pad)"
+    )
+    assert cfg.PLANET_OVERPASS_WINDOW_END_LOCAL == time(11, 45), (
+        f"config.PLANET_OVERPASS_WINDOW_END_LOCAL is "
+        f"{cfg.PLANET_OVERPASS_WINDOW_END_LOCAL!r}; the plan fixes the padded end at "
+        "11:45 local (11:30 crossing + 15 min pad)"
+    )
+    assert cfg.PLANET_OVERPASS_TZ_NAME == "America/Vancouver", (
+        f"config.PLANET_OVERPASS_TZ_NAME is {cfg.PLANET_OVERPASS_TZ_NAME!r}, expected "
+        "'America/Vancouver' (acoustics_plan_v2 SS5)"
+    )
+
+
+def check_b3a_2_overpass_window_utc_matches_literal_expectations_per_date():
+    """overpass_window_utc(local_date) returns tz-aware UTC (start, end) that
+    matches hand-derived literals across shoulder-month dates AND both real
+    2024 DST transition days, with the offset CHANGING across each transition,
+    a fixed-offset implementation defeated, and every window exactly 150 min.
+
+    This is the B3-A time gate: decision 0002 requires the pipeline be proved
+    against known instants before anything downstream depends on it, and this
+    check is that proof for the overpass-window derivation specifically.
+    """
+    from datetime import date, datetime, time, timedelta, timezone
+    acq = _b3a_acquire()
+
+    results = {}
+    for y, m, d, exp_start, exp_end, note in _B3A_CASES:
+        local_date = date(y, m, d)
+        got = acq.overpass_window_utc(local_date)
+        assert isinstance(got, tuple) and len(got) == 2, (
+            f"overpass_window_utc({local_date}) returned {got!r}, expected a "
+            "(start_utc, end_utc) 2-tuple"
+        )
+        start_utc, end_utc = got
+        for label, val in (("start_utc", start_utc), ("end_utc", end_utc)):
+            assert isinstance(val, datetime), (
+                f"overpass_window_utc({local_date}) {label} is a {type(val).__name__}, "
+                "not a datetime -- decision 0002 requires tz-aware UTC datetimes end to end"
+            )
+            assert val.tzinfo is not None, (
+                f"overpass_window_utc({local_date}) {label} is NAIVE ({val!r}); decision "
+                "0002 rule 1 forbids a naive datetime crossing a function boundary"
+            )
+            assert val.utcoffset() == timedelta(0), (
+                f"overpass_window_utc({local_date}) {label} = {val!r} has utcoffset "
+                f"{val.utcoffset()}, not zero -- it must be UTC, not merely tz-aware "
+                f"({note})"
+            )
+
+        expected_start = datetime(*exp_start, tzinfo=timezone.utc)
+        expected_end = datetime(*exp_end, tzinfo=timezone.utc)
+        assert start_utc == expected_start, (
+            f"overpass_window_utc({local_date}) start_utc = {start_utc.isoformat()}, "
+            f"expected {expected_start.isoformat()} ({note}); 09:15 America/Vancouver "
+            "on this date, correctly zoned"
+        )
+        assert end_utc == expected_end, (
+            f"overpass_window_utc({local_date}) end_utc = {end_utc.isoformat()}, "
+            f"expected {expected_end.isoformat()} ({note}); 11:45 America/Vancouver "
+            "on this date, correctly zoned"
+        )
+        assert end_utc - start_utc == timedelta(minutes=150), (
+            f"overpass_window_utc({local_date}) spans {end_utc - start_utc}, expected "
+            "exactly 150 min (09:15-11:45 local is 2h30m) on EVERY date, including DST "
+            "transition days -- a window that changes DURATION across a transition is as "
+            "wrong as one that changes only its start"
+        )
+        results[local_date] = start_utc
+
+    # --- DST transition: the offset must CHANGE between consecutive days. ---
+    d_mar9, d_mar10 = date(2024, 3, 9), date(2024, 3, 10)
+    d_nov2, d_nov3 = date(2024, 11, 2), date(2024, 11, 3)
+    assert results[d_mar9].hour != results[d_mar10].hour, (
+        f"UTC start hour is the SAME across the March 2024 spring-forward transition "
+        f"({results[d_mar9].isoformat()} vs {results[d_mar10].isoformat()}); the "
+        "America/Vancouver offset changes from -8 to -7 across this pair and the UTC "
+        "window must move with it"
+    )
+    assert results[d_nov2].hour != results[d_nov3].hour, (
+        f"UTC start hour is the SAME across the November 2024 fall-back transition "
+        f"({results[d_nov2].isoformat()} vs {results[d_nov3].isoformat()}); the "
+        "America/Vancouver offset changes from -7 to -8 across this pair and the UTC "
+        "window must move with it"
+    )
+    # And it must be the reverse move: March goes PST->PDT (UTC start EARLIER by
+    # 1h), November goes PDT->PST (UTC start LATER by 1h). Compare TIME-OF-DAY
+    # (equivalently, subtract the whole calendar day separating the two dates
+    # first) rather than the raw datetime difference: mar9 -> mar10 and
+    # nov2 -> nov3 are each one calendar day apart, so the raw delta is always
+    # ~24h and the DST shift only shows up as +/-1h on top of that day.
+    mar_delta = (results[d_mar10] - results[d_mar9]) - timedelta(days=1)
+    assert mar_delta == timedelta(hours=-1), (
+        f"March transition time-of-day delta (after removing the 1-day gap between "
+        f"2024-03-09 and 2024-03-10) is {mar_delta}, expected -1h (PST -> PDT makes "
+        "the same local instant EARLIER in UTC)"
+    )
+    nov_delta = (results[d_nov3] - results[d_nov2]) - timedelta(days=1)
+    assert nov_delta == timedelta(hours=1), (
+        f"November transition time-of-day delta (after removing the 1-day gap "
+        f"between 2024-11-02 and 2024-11-03) is {nov_delta}, expected +1h (PDT -> "
+        "PST makes the same local instant LATER in UTC)"
+    )
+
+    # --- A fixed -7 or -8 literal offset cannot pass this check. ---
+    # Concretely: at least one pair of TESTED dates must yield different UTC
+    # start HOURS. A single hardcoded offset applied to every date would give
+    # every case the same UTC start hour (since the local start-of-day time is
+    # fixed at 09:15) -- so this assertion alone is enough to sink that mutant.
+    start_hours = {dt.hour for dt in results.values()}
+    assert len(start_hours) >= 2, (
+        f"every tested date produced the SAME UTC start hour ({start_hours}); a "
+        "per-date zoneinfo computation must disagree with itself across the DST "
+        "transition dates above, so this can only happen if a single fixed UTC "
+        "offset (e.g. -7 or -8) was substituted for real per-date zoneinfo lookup"
+    )
+
+
+def check_b3a_3_no_hardcoded_utc_offset_and_zoneinfo_is_used():
+    """No UTC-offset literal appears anywhere in B3-A source, and the module
+    genuinely uses `zoneinfo` -- not merely returns values that happen to
+    agree with it on the dates this check samples."""
+    import inspect
+    acq = _b3a_acquire()
+    try:
+        src = inspect.getsource(acq)
+    except OSError as exc:
+        raise AssertionError(f"could not read source of boatphone.acquire: {exc}") from exc
+
+    zoneinfo_tokens = ("zoneinfo", "ZoneInfo")
+    assert any(tok in src for tok in zoneinfo_tokens), (
+        "boatphone/acquire.py does not reference zoneinfo/ZoneInfo anywhere -- the "
+        "contract requires the window be computed per date with zoneinfo, not with a "
+        "fixed offset or a third-party tz library"
+    )
+
+    # Literal fixed-offset patterns a lazy implementation might use instead of a
+    # real zoneinfo lookup. Checked on the code with comments stripped, so a
+    # comment mentioning "-7 h" (as several exist elsewhere in this file) cannot
+    # false-positive.
+    forbidden_offset_patterns = (
+        "hours=7", "hours=-7", "hours=8", "hours=-8",
+        "hours=-7)", "hours=-8)",
+        "timedelta(hours=7)", "timedelta(hours=8)",
+        "timezone(timedelta(hours=-7))", "timezone(timedelta(hours=-8))",
+        "utcoffset=-7", "utcoffset=-8",
+    )
+    hits = []
+    for lineno, line in enumerate(src.splitlines(), 1):
+        code = line.split("#", 1)[0]
+        for pat in forbidden_offset_patterns:
+            if pat in code:
+                hits.append(f"acquire.py:{lineno}: {pat!r} in {line.strip()!r}")
+    assert not hits, (
+        "boatphone/acquire.py contains a literal fixed-UTC-offset pattern: "
+        + "; ".join(hits)
+        + " -- the contract requires the offset be DERIVED per date from zoneinfo, "
+        "never hardcoded, because the true offset changes across the DST transition"
+    )
+
+
+# ---------------------------------------------------------------------------
+# B3-C -- the bulk `.fft.gz` pull driver and absent-file log.
+# ---------------------------------------------------------------------------
+# Contract (`docs/plans/acoustics_plan_v2.md` SS5 "B3 -- Bulk acquisition",
+# CLAUDE.md invariants 3/5/6). A CLI at `scripts/pull_overpass_corpus.py` walks
+# every in-season (May-Sep) date, 2025 first then backwards toward 2020 (a
+# risks-table mitigation: if throughput falls below 1 file/sec the run may be
+# stopped early, and newest-first keeps the corpus useful at whatever depth it
+# reached), resolves EACH date's overpass window via B3-A's
+# `boatphone.acquire.overpass_window_utc` -- PER DATE, never once and reused --
+# lists via A1's listing code and downloads via B3-B's
+# `boatphone.onc_client.download_archive_file`. Resume is the DEFAULT path: a
+# bare re-run continues, with no `--resume` flag to forget. It emits a
+# manifest under `data/derived/` (requested/present/absent, bytes, hash, HTTP
+# status, attempt count per file) plus a provenance sidecar, and NEVER writes
+# a manifest without its provenance sidecar. A one-line sampling-conditionality
+# caveat is a named constant in `boatphone/config.py` and travels with the
+# manifest.
+#
+# THIS CODE DOES NOT EXIST YET (`scripts/pull_overpass_corpus.py` -- confirmed
+# absent). Every check below is therefore expected to FAIL until B3-C lands,
+# and each one goes through `_b3c_mod()` first, so a missing-module/missing-
+# attribute failure reads as "not implemented" and is never confused with
+# "implemented and wrong" (test-author brief).
+#
+# ASSUMED INTERFACE, stated because none of it can be read off an
+# implementation that does not exist. If B3-C lands with a different shape,
+# THESE CHECKS should move, not be treated as the contract:
+#
+#   iter_overpass_dates(start_year=2020, end_year=2025) -> Iterator[date]
+#       Every in-season (May-Sep) LOCAL calendar date, year-blocks ordered
+#       2025, 2024, ..., 2020 (descending), consistent with the risks-table
+#       mitigation.
+#
+#   build_parser() -> argparse.ArgumentParser
+#       No `--resume`/`--continue`-shaped flag anywhere on it: resuming a
+#       bare re-run is unconditional, not opt-in.
+#
+#   run(*, dates=None, dest_dir, manifest_dir, listing_fn, transport,
+#       client=None, sleep=time.sleep) -> dict
+#       `dates`: overrides `iter_overpass_dates()` -- the injection seam these
+#       checks use to drive the per-date window recomputation check without
+#       depending on real in-season data. `dest_dir`: B3-B's landing zone
+#       (passed straight through to `download_archive_file`). `manifest_dir`:
+#       where the manifest + provenance sidecar are written -- ALWAYS a temp
+#       dir in these checks, never `data/derived/` (invariant 2).
+#       `listing_fn(client, location_codes, start_utc, end_utc) ->
+#       (list[str], int)` -- the SAME 2-tuple shape (filenames, empty_chunks)
+#       `boatphone.onc_client.list_fft_files` actually returns, is A1's
+#       listing call, made INJECTABLE here exactly as `transport` made
+#       B3-B's network layer injectable -- no network, ever, in these checks.
+#       A fake that returns a bare list here diverges from the production
+#       callee's shape and is exactly the mismatch that let a TypeError
+#       (list vs. 2-tuple) through to the first real run; see check_b3c_2b.
+#       Returns the manifest dict actually written.
+#
+#   Manifest dict shape (a guess; the brief specifies the CONTENT, not the
+#   exact keys): `{"requested": int, "present": int, "absent": int,
+#   "files": [...], "absent_log": [{"filename": str, "reason": str}, ...],
+#   ...}`, with `requested == present + absent` EXACTLY -- a real 404 and a
+#   decision-0007 measured-zero both fall into the SAME absent bucket
+#   (distinguished only by `reason`), because the brief is explicit that there
+#   is no third bucket.
+#
+#   MANIFEST_BASENAME / PROVENANCE_BASENAME -- module-level string constants
+#   naming the two output files under `manifest_dir`, used by
+#   check_b3c_5 to sabotage ONLY the provenance path without guessing its name.
+#
+#   A `boatphone.config` constant whose NAME contains both "SAMPLING" and
+#   "CONDITION" (e.g. `PLANET_SAMPLING_CONDITIONALITY_STATEMENT`) holding the
+#   ~10:30-local / no-diurnal-claim / seasonal-only-within-band caveat
+#   verbatim, matched by substring rather than an assumed exact name so the
+#   implementer's naming choice does not sink this check.
+# ---------------------------------------------------------------------------
+
+B3C_SCRIPT_RELPATH = os.path.join("scripts", "pull_overpass_corpus.py")
+
+
+def _b3c_script_path():
+    path = REPO_ROOT / B3C_SCRIPT_RELPATH
+    assert path.is_file(), (
+        f"{B3C_SCRIPT_RELPATH} does not exist; B3-C (the bulk .fft.gz pull driver) is not "
+        "implemented yet (expected until the coder lands it -- see the B3-C contract "
+        "comment above)"
+    )
+    return path
+
+
+def _b3c_mod(*required):
+    """Import the entry point BY PATH (mirrors `_a1d_script_mod`'s convention).
+
+    scripts/ has no __init__.py, so this is not `import scripts.pull_overpass_corpus`.
+    A missing attribute here IS the expected pre-implementation failure.
+    """
+    import importlib.util
+    path = _b3c_script_path()
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    spec = importlib.util.spec_from_file_location("boatphone_b3c_entry_point", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # must be side-effect free at import
+    missing = [name for name in required if not hasattr(module, name)]
+    assert not missing, (
+        f"{B3C_SCRIPT_RELPATH} has no {missing}; see the B3-C ASSUMED INTERFACE comment "
+        "above for the exact entry-point surface these checks require"
+    )
+    return module
+
+
+def _b3c_fake_filenames(n):
+    return [
+        f"ICLISTENHF1266_202407{10 + i:02d}T000000.000Z.fft.gz"
+        for i in range(n)
+    ]
+
+
+def _b3c_find_string_value(obj, target):
+    """True if `target` appears as a substring somewhere inside `obj` (recursively)."""
+    if isinstance(obj, str):
+        return target in obj
+    if isinstance(obj, dict):
+        return any(_b3c_find_string_value(v, target) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_b3c_find_string_value(v, target) for v in obj)
+    return False
+
+
+def check_b3c_0_api_surface():
+    """run/iter_overpass_dates/build_parser exist (not-implemented gate for the rest of B3-C)."""
+    mod = _b3c_mod("run", "iter_overpass_dates", "build_parser")
+    for name in ("run", "iter_overpass_dates", "build_parser"):
+        assert callable(getattr(mod, name)), f"{B3C_SCRIPT_RELPATH}.{name} is not callable"
+
+
+def check_b3c_1_date_ordering_is_2025_descending_then_backwards_to_2020():
+    """Year-blocks run 2025, 2024, ..., down to 2020 -- so an interrupted run leaves
+    the NEWEST season complete, per the risks-table mitigation this ordering exists for."""
+    mod = _b3c_mod("iter_overpass_dates")
+    dates = list(mod.iter_overpass_dates())
+    assert dates, f"{B3C_SCRIPT_RELPATH}.iter_overpass_dates() yielded nothing"
+
+    year_blocks = []
+    for d in dates:
+        if not year_blocks or year_blocks[-1] != d.year:
+            year_blocks.append(d.year)
+    assert len(year_blocks) == len(set(year_blocks)), (
+        f"a year reappears non-contiguously in the date order: {year_blocks} -- an "
+        "interrupted run partway through must leave one clean prefix of complete "
+        "seasons, not a scattered mix"
+    )
+    assert year_blocks[0] == 2025, (
+        f"the FIRST year block is {year_blocks[0]}, expected 2025 -- newest-first is the "
+        "risks-table mitigation: if throughput drops below 1 file/sec and the run is "
+        "stopped early, the corpus must still be useful at whatever depth it reached"
+    )
+    assert year_blocks == sorted(year_blocks, reverse=True), (
+        f"year blocks {year_blocks} are not strictly descending"
+    )
+    assert year_blocks[-1] <= 2020, (
+        f"the date order does not reach back to 2020 (last block: {year_blocks[-1]})"
+    )
+
+    months = {d.month for d in dates}
+    import boatphone.config as _cfg
+    assert months <= set(_cfg.SEASON_MONTHS_UTC), (
+        f"iter_overpass_dates() yields month(s) {sorted(months - set(_cfg.SEASON_MONTHS_UTC))} "
+        f"outside config.SEASON_MONTHS_UTC ({_cfg.SEASON_MONTHS_UTC}) -- only May-Sep dates "
+        "are in scope for the PlanetScope-matched pull"
+    )
+
+
+def check_b3c_2_per_date_window_recomputation_is_never_hoisted_out_of_the_loop():
+    """THE highest-value assertion in this check (per the brief): the driver asks
+    for a DIFFERENT UTC window on a PST date than on a PDT date, proving the
+    window is recomputed per date via B3-A's overpass_window_utc rather than
+    hoisted out of the date loop and reused stale.
+
+    Pinned against the REAL boatphone.acquire.overpass_window_utc (already
+    implemented and proved by B3-A's own checks), not a mock -- so this fails
+    loudly against either a hoisted window OR a window computed some other,
+    wrong way.
+    """
+    mod = _b3c_mod("run")
+    import boatphone.acquire as acq
+    from datetime import date
+
+    d_pst = date(2024, 3, 9)   # day BEFORE spring-forward: America/Vancouver PST, UTC-8
+    d_pdt = date(2024, 3, 10)  # day OF spring-forward: America/Vancouver PDT, UTC-7
+    expected_pst = acq.overpass_window_utc(d_pst)
+    expected_pdt = acq.overpass_window_utc(d_pdt)
+    assert expected_pst != expected_pdt, (
+        "fixture sanity check failed: overpass_window_utc itself returned the same window "
+        "for a PST and a PDT date -- see B3-A's own checks, not this one"
+    )
+
+    calls = []
+
+    def fake_listing_fn(client, location_codes, start_utc, end_utc):
+        calls.append((start_utc, end_utc))
+        # Real shape: boatphone.onc_client.list_fft_files returns a 2-tuple,
+        # (filenames, empty_chunks), never a bare list -- widened to match
+        # after the seam/production-callee mismatch that let a TypeError
+        # through to the first real run (see check_b3c_2b below).
+        return [], 0
+
+    transport = _B3BFakeTransport({})
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "dest"
+        manifest_dir = pathlib.Path(tmp) / "manifest"
+        mod.run(
+            dates=[d_pst, d_pdt], dest_dir=dest_dir, manifest_dir=manifest_dir,
+            listing_fn=fake_listing_fn, transport=transport, client=None,
+            sleep=lambda _s: None,
+        )
+
+    assert len(calls) == 2, (
+        f"expected exactly one listing call per requested date (2), got {len(calls)}: {calls}"
+    )
+    assert calls[0] == expected_pst, (
+        f"listing window for {d_pst} was {calls[0]}, expected {expected_pst} "
+        "(overpass_window_utc(2024-03-09))"
+    )
+    assert calls[1] == expected_pdt, (
+        f"listing window for {d_pdt} was {calls[1]}, expected {expected_pdt} "
+        "(overpass_window_utc(2024-03-10))"
+    )
+    assert calls[0] != calls[1], (
+        f"the driver requested the SAME UTC window ({calls[0]}) for {d_pst} (PST) and "
+        f"{d_pdt} (PDT) -- the UTC window must shift by an hour across this DST "
+        "transition, so an identical window means overpass_window_utc was computed ONCE "
+        "and reused across the date loop instead of per date, reintroducing precisely "
+        "the bug B3-A exists to prevent (decision 0002)"
+    )
+
+
+def check_b3c_2b_run_drives_the_real_list_fft_files_not_a_narrower_fake():
+    """`run()` wired to the REAL `boatphone.onc_client.list_fft_files`, not a fake
+    of the injection seam -- the only check in this file that would have caught
+    the tuple/list blocker.
+
+    Every other B3-C check drives `run()` with a hand-written `listing_fn` that
+    returns whatever shape ITS author guessed (a bare list, until this check's
+    sibling edit widened them). The integration reviewer found the real bug
+    that guess hid: `list_fft_files` actually returns `(filenames,
+    empty_chunks)`, a 2-tuple, and `run()` iterated the raw return -- a
+    `TypeError` on the first real date, never observed here because the seam
+    and the production callee had different contracts and only the seam was
+    ever exercised. This check makes them the SAME callable: `listing_fn` is
+    `onc.list_fft_files` itself (allow_empty=True, since B3's per-date window
+    is the short 2.5 h overpass span decision 0016 governs, not the year-scale
+    span decision 0008 governs), called against `_StubONC`, a fake ONC
+    CLIENT -- not a fake of `run()`'s own listing_fn seam. A regression here
+    can only mean `run()`'s handling of `list_fft_files`'s real return shape
+    broke, not that some check's guessed fixture shape drifted from it.
+    """
+    mod = _b3c_mod("run")
+    _cfg, onc = _a1a_mods()
+    import boatphone.acquire as acq
+    from datetime import date, timedelta
+
+    d = date(2024, 7, 15)
+    start_utc, end_utc = acq.overpass_window_utc(d)
+    assert end_utc > start_utc, "fixture sanity check: overpass window must be non-empty"
+
+    in_window_names = [
+        _fft_name(start_utc + timedelta(minutes=5)),
+        _fft_name(start_utc + timedelta(minutes=45)),
+    ]
+    # _StubONC's requests are keyed by the YEAR it infers from dateFrom/dateTo,
+    # so files_by_year must be keyed on start_utc.year for list_fft_files'
+    # year-chunking to find them.
+    client = _StubONC(
+        files_by_year={start_utc.year: in_window_names},
+        locations=_folger_location_rows(),
+    )
+
+    def real_listing_fn(client, location_codes, start_utc, end_utc):
+        # allow_empty=True: this is B3's short per-date window, decision
+        # 0016's regime, not decision 0008's year-scale raise-on-empty.
+        return onc.list_fft_files(client, location_codes, start_utc, end_utc, allow_empty=True)
+
+    transport = _B3BFakeTransport({name: f"content-for-{name}".encode() * 8 for name in in_window_names})
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "dest"
+        manifest_dir = pathlib.Path(tmp) / "manifest"
+        manifest = mod.run(
+            dates=[d], dest_dir=dest_dir, manifest_dir=manifest_dir,
+            listing_fn=real_listing_fn, transport=transport, client=client,
+            sleep=lambda _s: None,
+        )
+
+    assert isinstance(manifest, dict), (
+        f"run() against the REAL list_fft_files return shape raised or returned "
+        f"{type(manifest).__name__}, not a dict -- this is the tuple/list mismatch check"
+    )
+    assert manifest.get("requested") == len(in_window_names), (
+        f"manifest['requested'] = {manifest.get('requested')}, expected "
+        f"{len(in_window_names)} -- run() must unpack list_fft_files's real "
+        "(filenames, empty_chunks) 2-tuple, not misread empty_chunks as a filename "
+        "or the tuple itself as a single filename"
+    )
+    assert manifest.get("present") == len(in_window_names), (
+        f"manifest['present'] = {manifest.get('present')}, expected "
+        f"{len(in_window_names)} downloaded files"
+    )
+
+
+def check_b3c_2c_empty_overpass_window_logs_an_absent_measured_zero_row():
+    """An empty 2.5 h overpass window is a MEASURED ZERO (decision 0016), not a
+    crash and not silently dropped from the manifest.
+
+    Decision 0016 exists because integration review found that a fully-empty
+    window previously produced NO `absent_log` entry at all -- `absent_log`
+    only recorded files that were listed and then not retrieved -- so an empty
+    window was invisible in BOTH buckets and `requested == present + absent`
+    quietly stopped being a statement about coverage. The fix makes an empty
+    window a counted RETRIEVAL UNIT: `requested` is incremented once for it
+    (in addition to once per listed filename), `present` is not, and a
+    dedicated `absent_log` row is written with `reason ==
+    _REASON_EMPTY_WINDOW`, `filename: None`, the local date, and both UTC
+    window edges (0016 SS3). Do NOT "correct" this back to `requested == 0`
+    for an empty window -- that is exactly the invisibility 0016 was written
+    to remove.
+
+    `run()` reaches this row via `EmptyListingError` when `listing_fn` has not
+    itself opted into `allow_empty=True` (0016 SS4) -- which is what this check
+    exercises, using the library default.
+    """
+    mod = _b3c_mod("run", "_REASON_EMPTY_WINDOW")
+    _cfg, onc = _a1a_mods()
+    import boatphone.acquire as acq
+    from datetime import date
+
+    d = date(2024, 7, 16)
+    start_utc, end_utc = acq.overpass_window_utc(d)
+    assert end_utc > start_utc, "fixture sanity check: overpass window must be non-empty"
+
+    client = _StubONC(
+        files_by_year={}, locations=_folger_location_rows(),
+    )  # no files at all -> a genuinely empty window
+
+    def real_listing_fn(client, location_codes, start_utc, end_utc):
+        # Deliberately the library DEFAULT (allow_empty=False) -- decision
+        # 0016 says a caller working at B3's per-date scale MUST pass
+        # allow_empty=True itself; this check exercises run()'s behaviour
+        # when it does not, i.e. list_fft_files raises EmptyListingError and
+        # run() is required (per the brief) to catch it per date.
+        return onc.list_fft_files(client, location_codes, start_utc, end_utc)
+
+    transport = _B3BFakeTransport({})
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "dest"
+        manifest_dir = pathlib.Path(tmp) / "manifest"
+        raised = None
+        try:
+            manifest = mod.run(
+                dates=[d], dest_dir=dest_dir, manifest_dir=manifest_dir,
+                listing_fn=real_listing_fn, transport=transport, client=client,
+                sleep=lambda _s: None,
+            )
+        except Exception as exc:  # noqa: BLE001 -- a raise here IS the failure being pinned against
+            raised = exc
+
+    assert raised is None, (
+        f"run() raised {raised!r} for a single date whose overpass window had zero files -- "
+        "decision 0016 requires an empty window to be a MEASURED ZERO, not an error that "
+        "takes down the whole corpus run over one quiet morning"
+    )
+    assert isinstance(manifest, dict), f"run() returned {type(manifest).__name__}, not a dict"
+
+    requested = manifest.get("requested")
+    present = manifest.get("present")
+    absent_log = manifest.get("absent_log")
+
+    # 0016 SS3: an empty window is ONE retrieval unit ONC answered "no file"
+    # for -- requested=1, present=0, absent=1 -- not requested=0. Asserting
+    # requested == 0 would re-mandate the invisibility 0016 fixes.
+    assert requested == 1 and present == 0, (
+        f"manifest for a single-date, zero-file overpass window is requested={requested}, "
+        f"present={present}, expected requested=1 (the empty window itself counted as one "
+        "retrieval unit per decision 0016 SS3) and present=0"
+    )
+    assert isinstance(absent_log, list) and len(absent_log) == 1, (
+        f"absent_log has {len(absent_log) if isinstance(absent_log, list) else type(absent_log)} "
+        "entries, expected exactly 1 -- decision 0016 requires the empty window to produce its "
+        "own absent_log row so it is visible in coverage accounting"
+    )
+    assert requested == present + len(absent_log), (
+        f"requested ({requested}) != present ({present}) + len(absent_log) "
+        f"({len(absent_log)}) -- decision 0016 SS3 requires this identity to hold EXACTLY as a "
+        "statement about coverage"
+    )
+
+    row = absent_log[0]
+    assert row.get("filename") is None, (
+        f"absent_log row for an empty window has filename={row.get('filename')!r}, expected "
+        "None -- no file was ever named for a window ONC listed nothing for"
+    )
+    assert row.get("reason") == mod._REASON_EMPTY_WINDOW, (
+        f"absent_log row for an empty window has reason={row.get('reason')!r}, expected "
+        f"{mod._REASON_EMPTY_WINDOW!r} -- it must be distinguishable from a 404 or a "
+        "decision-0007 not-yet-deployed zero by reason alone, per 0016 SS2"
+    )
+    assert row.get("local_date") == d.isoformat(), (
+        f"absent_log row local_date={row.get('local_date')!r}, expected {d.isoformat()!r}"
+    )
+    assert row.get("window_start_utc") == start_utc.isoformat(), (
+        f"absent_log row window_start_utc={row.get('window_start_utc')!r}, expected the actual "
+        f"UTC overpass window start {start_utc.isoformat()!r} -- 0016 SS2 requires both UTC "
+        "window edges on the row"
+    )
+    assert row.get("window_end_utc") == end_utc.isoformat(), (
+        f"absent_log row window_end_utc={row.get('window_end_utc')!r}, expected the actual "
+        f"UTC overpass window end {end_utc.isoformat()!r} -- 0016 SS2 requires both UTC "
+        "window edges on the row"
+    )
+
+
+def check_b3c_3_requested_equals_present_plus_absent_exactly_with_reasons():
+    """requested == present + absent EXACTLY -- no third bucket, nothing silently
+    dropped. A real 404 and a decision-0007 measured-zero both land in the SAME
+    absent bucket, each with a non-empty 'reason' segment C's log can act on."""
+    mod = _b3c_mod("run")
+    filenames = _b3c_fake_filenames(4)
+    transport = _B3BFakeTransport({
+        filenames[0]: b"payload-a" * 16,
+        filenames[1]: b"payload-b" * 16,
+    })
+    transport.absent_names = {filenames[2]}
+    transport.not_deployed_names = {filenames[3]}
+
+    def listing_fn(client, location_codes, start_utc, end_utc):
+        # Real 2-tuple shape: (filenames, empty_chunks), matching
+        # boatphone.onc_client.list_fft_files -- a bare list here would let
+        # the seam diverge from the production callee again.
+        return list(filenames), 0
+
+    from datetime import date
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "dest"
+        manifest_dir = pathlib.Path(tmp) / "manifest"
+        manifest = mod.run(
+            dates=[date(2024, 7, 1)], dest_dir=dest_dir, manifest_dir=manifest_dir,
+            listing_fn=listing_fn, transport=transport, client=None, sleep=lambda _s: None,
+        )
+
+    assert isinstance(manifest, dict), f"run() returned {type(manifest).__name__}, not a dict"
+    requested, present, absent = (manifest.get(k) for k in ("requested", "present", "absent"))
+    for key, val in (("requested", requested), ("present", present), ("absent", absent)):
+        assert isinstance(val, int), f"manifest[{key!r}] is {val!r}, expected an int count"
+    assert requested == len(filenames), (
+        f"manifest['requested'] = {requested}, expected {len(filenames)}"
+    )
+    assert present == 2, (
+        f"manifest['present'] = {present}, expected 2 (the two files that actually downloaded)"
+    )
+    assert absent == 2, (
+        f"manifest['absent'] = {absent}, expected 2 -- the real 404 AND the decision-0007 "
+        "measured-zero file both belong in the SAME absent bucket (no third bucket), "
+        "distinguished only by their 'reason'"
+    )
+    assert requested == present + absent, (
+        f"requested ({requested}) != present ({present}) + absent ({absent}); every listed "
+        "file must land in exactly one of these two buckets (CLAUDE.md invariant 5)"
+    )
+
+    absent_log = manifest.get("absent_log")
+    assert isinstance(absent_log, list) and len(absent_log) == 2, (
+        f"manifest['absent_log'] is {absent_log!r}, expected a 2-entry list naming the two "
+        "files ONC could not supply -- segment C's absent-file log is the stated consumer"
+    )
+    logged = {}
+    for entry in absent_log:
+        assert isinstance(entry, dict) and "filename" in entry, (
+            f"absent_log entry {entry!r} does not carry a 'filename'"
+        )
+        reason = entry.get("reason")
+        assert isinstance(reason, str) and reason.strip(), (
+            f"absent_log entry for {entry.get('filename')!r} has no non-empty 'reason': "
+            f"{entry!r} -- 'listed-but-not-downloaded' must always carry why"
+        )
+        logged[entry["filename"]] = reason
+    assert set(logged) == {filenames[2], filenames[3]}, (
+        f"absent_log names {set(logged)}, expected exactly {{filenames[2], filenames[3]}}"
+    )
+
+
+def check_b3c_4_rerun_with_no_flags_resumes_and_redownloads_nothing_complete():
+    """Resume is the DEFAULT path. `build_parser()` exposes no `--resume`-shaped
+    flag, and re-invoking `run()` with the identical arguments re-requests zero
+    bytes for files already complete -- exactly B3-B's cache-hit guarantee,
+    exercised here at the driver level with NOTHING extra passed."""
+    mod = _b3c_mod("run", "build_parser")
+
+    parser = mod.build_parser()
+    all_flags = set()
+    for action in parser._actions:
+        all_flags.update(action.option_strings)
+    resume_like = sorted(f for f in all_flags if "resume" in f.lower() or "continue" in f.lower())
+    assert not resume_like, (
+        f"build_parser() exposes {resume_like}; resume must be the UNCONDITIONAL default "
+        "behaviour of a bare re-run, with no flag to forget -- per the brief, there must "
+        "be no --resume flag at all"
+    )
+
+    filenames = _b3c_fake_filenames(3)
+    content = {fn: (f"content-for-{fn}".encode() * 12) for fn in filenames}
+    transport = _B3BFakeTransport(content)
+
+    def listing_fn(client, location_codes, start_utc, end_utc):
+        # Real 2-tuple shape: (filenames, empty_chunks), matching
+        # boatphone.onc_client.list_fft_files -- a bare list here would let
+        # the seam diverge from the production callee again.
+        return list(filenames), 0
+
+    from datetime import date
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "dest"
+        manifest_dir = pathlib.Path(tmp) / "manifest"
+        d1 = date(2024, 7, 1)
+
+        mod.run(
+            dates=[d1], dest_dir=dest_dir, manifest_dir=manifest_dir,
+            listing_fn=listing_fn, transport=transport, client=None, sleep=lambda _s: None,
+        )
+        calls_after_first_run = len(transport.calls)
+        assert calls_after_first_run > 0, "the first run() made no transport calls at all"
+
+        # Re-run with the IDENTICAL call, no extra argument, simulating a bare
+        # re-invocation of the CLI after a kill mid-run.
+        mod.run(
+            dates=[d1], dest_dir=dest_dir, manifest_dir=manifest_dir,
+            listing_fn=listing_fn, transport=transport, client=None, sleep=lambda _s: None,
+        )
+        new_calls = transport.calls[calls_after_first_run:]
+        assert not new_calls, (
+            f"re-running with no flags re-requested {len(new_calls)} byte range(s) for "
+            f"files already complete: {new_calls!r} -- resume must be the unconditional "
+            "default, not opt-in, and a killed-then-restarted run must download nothing "
+            "already finished"
+        )
+
+
+def check_b3c_5_manifest_never_written_without_its_provenance_sidecar():
+    """If the provenance sidecar cannot be written, no manifest lands either.
+
+    Sabotages ONLY the provenance sidecar's path (a directory placed exactly
+    where the provenance file must go), leaving the manifest's own path free,
+    so a driver that writes the manifest independently of provenance -- rather
+    than gating on it -- is caught.
+    """
+    mod = _b3c_mod("run", "PROVENANCE_BASENAME", "MANIFEST_BASENAME")
+    assert mod.PROVENANCE_BASENAME != mod.MANIFEST_BASENAME, (
+        "PROVENANCE_BASENAME and MANIFEST_BASENAME must name two DIFFERENT files"
+    )
+
+    filenames = _b3c_fake_filenames(2)
+    transport = _B3BFakeTransport({fn: b"x" * 10 for fn in filenames})
+
+    def listing_fn(client, location_codes, start_utc, end_utc):
+        # Real 2-tuple shape: (filenames, empty_chunks), matching
+        # boatphone.onc_client.list_fft_files -- a bare list here would let
+        # the seam diverge from the production callee again.
+        return list(filenames), 0
+
+    from datetime import date
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "dest"
+        manifest_dir = pathlib.Path(tmp) / "manifest"
+        manifest_dir.mkdir(parents=True)
+        # A DIRECTORY sits at the exact path the provenance sidecar must be
+        # written to, so any real write attempt there raises.
+        (manifest_dir / mod.PROVENANCE_BASENAME).mkdir()
+
+        raised = None
+        try:
+            mod.run(
+                dates=[date(2024, 7, 1)], dest_dir=dest_dir, manifest_dir=manifest_dir,
+                listing_fn=listing_fn, transport=transport, client=None, sleep=lambda _s: None,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the raise IS the expected outcome here
+            raised = exc
+        assert raised is not None, (
+            "run() returned normally even though the provenance sidecar could not be "
+            "written -- 'no manifest without provenance' requires this failure to surface, "
+            "never be swallowed (invariant 5)"
+        )
+        manifest_path = manifest_dir / mod.MANIFEST_BASENAME
+        assert not manifest_path.exists(), (
+            f"{manifest_path} exists even though the provenance sidecar failed to write -- "
+            "a manifest must never land without its provenance sidecar"
+        )
+
+
+def check_b3c_6_sampling_conditionality_is_one_named_constant_and_travels_with_the_manifest():
+    """The ~10:30-local sampling-conditionality sentence is ONE named constant in
+    boatphone/config.py (invariant 6), and the driver's output carries it
+    verbatim rather than a paraphrase."""
+    import boatphone.config as cfg
+    candidates = [n for n in dir(cfg) if "SAMPLING" in n and "CONDITION" in n]
+    assert candidates, (
+        "boatphone/config.py has no constant whose name contains both SAMPLING and "
+        "CONDITION -- the ~10:30-local, no-diurnal-claim, seasonal-only-within-band caveat "
+        "must be ONE named constant there so every downstream figure imports one sentence "
+        "rather than paraphrasing it (invariant 6)"
+    )
+    const_name = candidates[0]
+    statement = getattr(cfg, const_name)
+    assert isinstance(statement, str) and statement.strip(), (
+        f"config.{const_name} is not a non-empty string: {statement!r}"
+    )
+
+    mod = _b3c_mod("run")
+    filenames = _b3c_fake_filenames(1)
+    transport = _B3BFakeTransport({filenames[0]: b"z" * 8})
+
+    def listing_fn(client, location_codes, start_utc, end_utc):
+        # Real 2-tuple shape: (filenames, empty_chunks), matching
+        # boatphone.onc_client.list_fft_files -- a bare list here would let
+        # the seam diverge from the production callee again.
+        return list(filenames), 0
+
+    from datetime import date
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "dest"
+        manifest_dir = pathlib.Path(tmp) / "manifest"
+        result = mod.run(
+            dates=[date(2024, 7, 1)], dest_dir=dest_dir, manifest_dir=manifest_dir,
+            listing_fn=listing_fn, transport=transport, client=None, sleep=lambda _s: None,
+        )
+    assert _b3c_find_string_value(result, statement), (
+        f"run()'s returned manifest does not carry config.{const_name} verbatim anywhere "
+        "in its structure -- every downstream figure must import the ONE sentence, and the "
+        "manifest/provenance is where a reader would look for it"
+    )
+
+
+def check_b3c_8_absent_log_rows_carry_bin_identity_via_parse_file_coverage():
+    """Each absent_log row for a NAMED file must expose `bin_start_utc` /
+    `bin_end_utc`, and they must agree with `onc_client.parse_file_coverage()`
+    on that SAME filename -- 'the ONE place a filename becomes a time'
+    (onc_client.py ~L350). Segment D joins the absent log onto the uptime
+    calendar; if it had to re-derive bin identity from the filename itself,
+    that would be a SECOND path to the same fact, and the two paths drifting
+    is exactly the kind of silent join bug invariant 3 exists to prevent.
+
+    Drives run() with a real 404-shaped absent file (not an empty window --
+    `_REASON_EMPTY_WINDOW` rows carry no filename to derive bins from) so this
+    pins the case segment D actually needs: a NAMED absent file's row must
+    carry its own bin_start_utc/bin_end_utc, sourced through parse_file_coverage
+    and not invented some other way.
+    """
+    mod = _b3c_mod("run")
+    _cfg, onc = _a1a_mods()
+    assert hasattr(onc, "parse_file_coverage"), (
+        "boatphone.onc_client.parse_file_coverage is missing; it is the ONE place "
+        "a filename becomes a time and this check pins the absent log against it"
+    )
+
+    filename = _b3c_fake_filenames(1)[0]
+    expected_start, expected_end = onc.parse_file_coverage(filename)
+
+    # A transport that answers this filename with a 404, so the file lands in
+    # absent_log as a real absence rather than a measured zero or an error.
+    transport = _B3BFakeTransport({})
+    transport.absent_names.add(filename)
+
+    def listing_fn(client, location_codes, start_utc, end_utc):
+        return [filename], 0
+
+    from datetime import date
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "dest"
+        manifest_dir = pathlib.Path(tmp) / "manifest"
+        manifest = mod.run(
+            dates=[date(2024, 7, 1)], dest_dir=dest_dir, manifest_dir=manifest_dir,
+            listing_fn=listing_fn, transport=transport, client=None, sleep=lambda _s: None,
+        )
+
+    named_rows = [row for row in manifest.get("absent_log", []) if row.get("filename") == filename]
+    assert named_rows, (
+        f"no absent_log row for {filename!r} -- fixture sanity check failed (expected a "
+        "404-shaped absence for this filename)"
+    )
+    row = named_rows[0]
+    assert "bin_start_utc" in row and "bin_end_utc" in row, (
+        f"absent_log row for {filename!r} has no bin_start_utc/bin_end_utc: {sorted(row)}. "
+        "Segment D joins the absent log onto the 5-min UTC bin grid and must not re-derive "
+        "bin identity from the filename a second way (onc_client.py's parse_file_coverage "
+        "docstring: 'the ONE place a filename becomes a time')"
+    )
+    from datetime import datetime as _dt
+    got_start = row["bin_start_utc"]
+    got_end = row["bin_end_utc"]
+    got_start = _dt.fromisoformat(got_start) if isinstance(got_start, str) else got_start
+    got_end = _dt.fromisoformat(got_end) if isinstance(got_end, str) else got_end
+    assert got_start == expected_start, (
+        f"absent_log row's bin_start_utc {got_start} disagrees with "
+        f"parse_file_coverage({filename!r}) = {expected_start} -- a second path to the same "
+        "fact has drifted from the ONE place a filename becomes a time"
+    )
+    assert got_end == expected_end, (
+        f"absent_log row's bin_end_utc {got_end} disagrees with "
+        f"parse_file_coverage({filename!r}) = {expected_end}"
+    )
+
+
+def check_b3c_9_provenance_names_endpoint_absent_definition_dest_dir_season_and_checksum_caveat():
+    """The provenance sidecar must name: the ONC endpoint/base URL actually used,
+    an explicit definition of 'absent', dest_dir, the season months, the year
+    span (CORPUS_PULL_START_YEAR..END_YEAR), and a no-server-checksum caveat
+    sitting next to the sha256 values it qualifies.
+
+    Open item 1 from the B3 handoff. Without the endpoint, a future reader
+    cannot tell which ONC deployment served the bytes; without the year span
+    and season months a partial-corpus manifest cannot state its own scope;
+    without the checksum caveat next to sha256, a reader assumes ONC vouched
+    for the bytes when only a local hash did (0007/0007-style no-server-
+    checksum finding in the handoff, distinct from decision 0007's measured
+    zeros).
+    """
+    mod = _b3c_mod("run", "PROVENANCE_BASENAME")
+    import json
+    import boatphone.config as cfg
+
+    filenames = _b3c_fake_filenames(1)
+    transport = _B3BFakeTransport({filenames[0]: b"y" * 16})
+
+    def listing_fn(client, location_codes, start_utc, end_utc):
+        return list(filenames), 0
+
+    from datetime import date
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "dest"
+        manifest_dir = pathlib.Path(tmp) / "manifest"
+        mod.run(
+            dates=[date(2024, 7, 1)], dest_dir=dest_dir, manifest_dir=manifest_dir,
+            listing_fn=listing_fn, transport=transport, client=None, sleep=lambda _s: None,
+        )
+        provenance_path = manifest_dir / mod.PROVENANCE_BASENAME
+        assert provenance_path.is_file(), f"{provenance_path} was not written"
+        provenance = json.loads(provenance_path.read_text())
+
+        endpoint_keys = [k for k in provenance if "endpoint" in k.lower() or "base_url" in k.lower()
+                         or "baseurl" in k.lower()]
+        assert endpoint_keys and any(str(provenance[k]).strip() for k in endpoint_keys), (
+            f"provenance has no non-empty endpoint/base-URL key (checked names containing "
+            f"'endpoint'/'base_url'); got keys {sorted(provenance)}. A future reader cannot "
+            "tell which ONC deployment served the bytes (open item 1)"
+        )
+
+        absent_def_keys = [k for k in provenance if "absent" in k.lower() and "definition" in k.lower()
+                            or k.lower() in ("absent_definition", "absent_means", "definition_of_absent")]
+        assert absent_def_keys and any(str(provenance[k]).strip() for k in absent_def_keys), (
+            f"provenance has no explicit definition of what 'absent' means; got keys "
+            f"{sorted(provenance)} (open item 1)"
+        )
+
+        assert "dest_dir" in provenance and str(provenance["dest_dir"]).strip(), (
+            f"provenance has no non-empty 'dest_dir' key; got keys {sorted(provenance)}"
+        )
+
+        season_keys = [k for k in provenance if "season" in k.lower() and "month" in k.lower()]
+        assert season_keys and provenance[season_keys[0]], (
+            f"provenance has no season-months key; got keys {sorted(provenance)}"
+        )
+
+        year_keys = [k for k in provenance if "year" in k.lower()]
+        assert year_keys, (
+            f"provenance has no year-span key (expected something naming "
+            f"CORPUS_PULL_START_YEAR..END_YEAR); got keys {sorted(provenance)}"
+        )
+        found_span = any(
+            str(cfg.CORPUS_PULL_START_YEAR) in str(provenance[k])
+            and str(cfg.CORPUS_PULL_END_YEAR) in str(provenance[k])
+            for k in year_keys
+        ) or (
+            provenance.get("start_year") == cfg.CORPUS_PULL_START_YEAR
+            and provenance.get("end_year") == cfg.CORPUS_PULL_END_YEAR
+        )
+        assert found_span, (
+            f"no provenance year-span key states {cfg.CORPUS_PULL_START_YEAR}.."
+            f"{cfg.CORPUS_PULL_END_YEAR} (config.CORPUS_PULL_START_YEAR..END_YEAR); "
+            f"got {[(k, provenance[k]) for k in year_keys]}"
+        )
+
+        checksum_caveat_keys = [
+            k for k in provenance
+            if ("checksum" in k.lower() or "sha256" in k.lower())
+            and ("caveat" in k.lower() or "note" in k.lower() or "no_server" in k.lower())
+        ]
+        assert checksum_caveat_keys and any(str(provenance[k]).strip() for k in checksum_caveat_keys), (
+            f"provenance carries no no-server-checksum caveat next to the sha256 values it "
+            f"qualifies; got keys {sorted(provenance)}. ONC serves no server-side checksum "
+            "(no ETag, no Content-MD5) so integrity is a LOCAL sha256 only, and a reader must "
+            "not assume ONC vouched for the bytes"
+        )
+
+
+def check_b3c_10_two_manifest_writes_in_the_same_dest_do_not_collide():
+    """Two successive `run()` calls into the SAME manifest_dir must leave TWO
+    distinct manifest files on disk, not one overwriting the other. Open item 2
+    from the B3 handoff: MANIFEST_BASENAME/PROVENANCE_BASENAME are constants
+    and the plan explicitly contemplates a staged pull plus F's second pass, so
+    a fixed basename silently discards the first run's absent-file log.
+
+    This is written to accept EITHER settled contract (a run-stamped filename,
+    or a `runs/` subdirectory per invocation) -- it only pins the observable
+    behaviour: after two runs, glob for anything manifest-shaped and expect >=2
+    distinct paths, and each must be independently readable JSON.
+    """
+    mod = _b3c_mod("run")
+    import json
+    from datetime import date
+
+    def make_listing_fn(fn):
+        def listing_fn(client, location_codes, start_utc, end_utc):
+            return [fn], 0
+        return listing_fn
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "dest"
+        manifest_dir = pathlib.Path(tmp) / "manifest"
+
+        fn1 = _b3c_fake_filenames(1)[0]
+        transport1 = _B3BFakeTransport({fn1: b"a" * 8})
+        mod.run(
+            dates=[date(2024, 7, 1)], dest_dir=dest_dir, manifest_dir=manifest_dir,
+            listing_fn=make_listing_fn(fn1), transport=transport1, client=None,
+            sleep=lambda _s: None,
+        )
+        before = set(manifest_dir.rglob("*.json"))
+
+        fn2 = _b3c_fake_filenames(2)[1]
+        transport2 = _B3BFakeTransport({fn2: b"b" * 8})
+        mod.run(
+            dates=[date(2024, 7, 2)], dest_dir=dest_dir, manifest_dir=manifest_dir,
+            listing_fn=make_listing_fn(fn2), transport=transport2, client=None,
+            sleep=lambda _s: None,
+        )
+        after = set(manifest_dir.rglob("*.json"))
+
+        new_files = after - before
+        assert new_files, (
+            f"a second run() into the same manifest_dir produced no NEW json file "
+            f"(before={sorted(p.name for p in before)}, after={sorted(p.name for p in after)}) -- "
+            "the second run overwrote the first run's manifest+provenance in place rather than "
+            "landing under a run-stamped name or a runs/ subdirectory (open item 2)"
+        )
+        manifest_like = [p for p in after if "manifest" in p.name.lower()]
+        assert len(manifest_like) >= 2, (
+            f"expected >=2 distinct manifest-shaped files after two runs into the same "
+            f"manifest_dir, found {len(manifest_like)}: {sorted(p.name for p in manifest_like)} -- "
+            "a fixed MANIFEST_BASENAME overwrites the prior run's absent-file log, which the plan "
+            "explicitly needs to survive (a staged pull plus F's second pass)"
+        )
+        for p in manifest_like:
+            json.loads(p.read_text())  # each must be independently valid, not a half-write
+
+
+def check_b3c_11_corpus_resolver_finds_fft_extension_only_and_raises_when_absent():
+    """A SINGLE shared helper (e.g. `boatphone.acquire`) must resolve 'the
+    corpus files' -- not three notebook glob patterns (open item 3). It must:
+    (a) exist and be callable; (b) find files with `config.ARCHIVE_EXTENSION`
+    ('fft'), NOT `config.PRODUCT_EXTENSION` ('fft.gz') -- B3's corpus lands as
+    `*.fft` containing gzip bytes, and the handoff calls a `*.fft.gz` glob the
+    'trap' that finds ZERO files in the real pulled corpus; (c) raise clearly,
+    not silently return [], when the corpus directory/manifest is absent --
+    B5 must not read an empty corpus as 'zero vessels detected'.
+    """
+    import boatphone.acquire as acq
+    import boatphone.config as cfg
+
+    resolver_name = None
+    for candidate in ("resolve_corpus_files", "list_corpus_files", "corpus_files",
+                      "overpass_corpus_files", "find_corpus_files"):
+        if hasattr(acq, candidate) and callable(getattr(acq, candidate)):
+            resolver_name = candidate
+            break
+    assert resolver_name is not None, (
+        "boatphone.acquire has no single corpus-resolving helper (checked "
+        "resolve_corpus_files/list_corpus_files/corpus_files/overpass_corpus_files/"
+        "find_corpus_files). Open item 3: 'nothing on disk marks the corpus as "
+        "overpass-window-only... provide a helper that resolves the corpus *through* "
+        "the manifest', so B5 and any notebook share ONE glob, not three"
+    )
+    resolver = getattr(acq, resolver_name)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        empty_dir = pathlib.Path(tmp) / "nothing_here"
+        raised = None
+        result = None
+        try:
+            result = resolver(empty_dir)
+        except Exception as exc:  # noqa: BLE001 -- the raise IS the expected outcome
+            raised = exc
+        assert raised is not None, (
+            f"{resolver_name}() on an absent/empty corpus location returned "
+            f"{result!r} instead of raising -- B5 must not read an absent corpus as "
+            "'zero vessels detected'; silently returning [] makes that mistake possible "
+            "(open item 3)"
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = pathlib.Path(tmp) / "onc_raw"
+        corpus_dir.mkdir(parents=True)
+        real_name = f"ICLISTENHF1266_20240715T000136.000Z.{cfg.ARCHIVE_EXTENSION}"
+        trap_name = f"ICLISTENHF1266_20240715T000636.000Z.{cfg.PRODUCT_EXTENSION}"
+        (corpus_dir / real_name).write_bytes(b"gzip-bytes-stand-in")
+        (corpus_dir / trap_name).write_bytes(b"gzip-bytes-stand-in")
+
+        found = resolver(corpus_dir)
+        found_names = {pathlib.Path(f).name if not isinstance(f, str) else pathlib.Path(f).name
+                       for f in found}
+        assert real_name in found_names, (
+            f"{resolver_name}({corpus_dir}) did not find {real_name!r} (the "
+            f"config.ARCHIVE_EXTENSION={cfg.ARCHIVE_EXTENSION!r} file B3 actually pulls); "
+            f"got {found_names}"
+        )
+        assert trap_name not in found_names, (
+            f"{resolver_name}({corpus_dir}) found {trap_name!r}, a "
+            f"config.PRODUCT_EXTENSION={cfg.PRODUCT_EXTENSION!r} name -- the '.fft' vs "
+            "'.fft.gz' trap the handoff flags: B3's corpus lands as *.fft containing gzip "
+            "bytes, and a resolver that globs *.fft.gz finds ZERO files in the real corpus"
+        )
+
+
+def check_b3c_7_never_writes_under_the_real_data_dir_this_check_guards_the_guard():
+    """Guards the guard, not the coder (mirrors check_b3b_9): this check's own
+    fixture never touches the real data/derived/ or data/raw/onc, no matter
+    what run() does internally, because dest_dir/manifest_dir are ALWAYS a
+    temp dir here (invariant 2)."""
+    import boatphone.paths as p
+    mod = _b3c_mod("run")
+    before_raw = set(p.ONC_RAW_DIR.rglob("*")) if p.ONC_RAW_DIR.exists() else set()
+    before_derived = set(p.DERIVED_DIR.rglob("*")) if p.DERIVED_DIR.exists() else set()
+
+    filenames = _b3c_fake_filenames(2)
+    transport = _B3BFakeTransport({fn: b"w" * 8 for fn in filenames})
+
+    def listing_fn(client, location_codes, start_utc, end_utc):
+        # Real 2-tuple shape: (filenames, empty_chunks), matching
+        # boatphone.onc_client.list_fft_files -- a bare list here would let
+        # the seam diverge from the production callee again.
+        return list(filenames), 0
+
+    from datetime import date
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_dir = pathlib.Path(tmp) / "dest"
+        manifest_dir = pathlib.Path(tmp) / "manifest"
+        try:
+            mod.run(
+                dates=[date(2024, 7, 1)], dest_dir=dest_dir, manifest_dir=manifest_dir,
+                listing_fn=listing_fn, transport=transport, client=None, sleep=lambda _s: None,
+            )
+        except Exception:  # noqa: BLE001 -- only the untouched-data/ assertion matters here
+            pass
+
+    after_raw = set(p.ONC_RAW_DIR.rglob("*")) if p.ONC_RAW_DIR.exists() else set()
+    after_derived = set(p.DERIVED_DIR.rglob("*")) if p.DERIVED_DIR.exists() else set()
+    assert after_raw == before_raw, (
+        f"the real ONC landing zone {p.ONC_RAW_DIR} changed during a dest_dir-scoped test "
+        f"run: {after_raw - before_raw} appeared. A dest_dir argument must never be ignored "
+        "(invariant 2)"
+    )
+    assert after_derived == before_derived, (
+        f"the real derived-products dir {p.DERIVED_DIR} changed during a manifest_dir-"
+        f"scoped test run: {after_derived - before_derived} appeared. A manifest_dir "
+        "argument must never be ignored (invariant 2)"
+    )
+
+
 CHECKS = [
     ("A0.1 paths import is dependency-free", check_a0_1_paths_import_is_dependency_free),
     ("A0.1 paths exports are pathlib.Path", check_a0_1_paths_exports_are_paths),
@@ -6412,6 +8362,18 @@ CHECKS = [
     ("A8b absolute-level comparison across calibration boundary raises", check_a8b_absolute_level_across_calibration_boundary_raises),
     ("A8b level-invariant cross-domain comparison is allowed", check_a8b_level_invariant_comparison_is_allowed),
     ("A8b undeclared calibration state raises", check_a8b_undeclared_calibration_state_raises),
+    ("B3-B download_archive_file exists and is callable", check_b3b_0_api_surface),
+    ("B3-B interrupted transfer never leaves a corrupt FINAL file", check_b3b_1_interrupted_transfer_never_leaves_a_corrupt_final_file),
+    ("B3-B resume, Range honoured (206) == byte-identical uninterrupted pull", check_b3b_2a_resume_when_range_honoured_206_is_byte_identical_to_uninterrupted_pull),
+    ("B3-B resume, Range ignored (200) discards partial and restarts from zero", check_b3b_2b_resume_when_range_ignored_200_discards_and_restarts_from_zero),
+    ("B3-B DownloadRecord.http_status/.attempts correct per status", check_b3b_2c_download_record_carries_http_status_and_attempts_per_status),
+    ("B3-B second call on a complete file is a zero-byte cache hit", check_b3b_3_second_call_on_a_complete_file_is_a_zero_byte_cache_hit),
+    ("B3-B locally-corrupted cache is detected by hash and RAISES", check_b3b_4_locally_corrupted_cache_is_detected_by_hash_and_RAISES),
+    ("B3-B three 429s back off with strictly increasing sleeps, then succeed", check_b3b_5_three_429s_back_off_with_strictly_increasing_sleeps_then_succeed),
+    ("B3-B permanently-absent file yields a structured record, never raises", check_b3b_6_permanently_absent_file_yields_a_structured_record_and_does_not_raise),
+    ("B3-B D7 'not deployed' 400 is a measured zero, distinct from absent/error", check_b3b_7_onc_400_not_deployed_is_a_measured_zero_distinct_from_absent_and_error),
+    ("B3-B no bare except in the download code", check_b3b_8_no_bare_except_in_the_download_code),
+    ("B3-B this check itself never writes under data/ (guards the guard)", check_b3b_9_never_writes_outside_the_temp_dest_dir_this_check_created),
     ("B0.1 boatphone.paths exposes EXTERNAL_DIR/ONC_MODEL_DIR/CHECKPOINT_DIR", check_b0_1_paths_constants_exist_and_are_correct),
     ("B0.1 external/ is gitignored", check_b0_1_external_dir_is_gitignored),
     ("B0.1 provenance JSON exists, parses, tracked", check_b0_1_provenance_json_exists_and_parses),
@@ -6435,6 +8397,23 @@ CHECKS = [
     ("B0-2a no check pins a bin position tighter than +/-1 bin", check_b0_2a_no_check_asserts_a_bin_position_tighter_than_one_bin),
     ("B0-2a B5 preconditions: two ceilings (204/408) + censoring counters", check_b0_2a_b5_ceilings_and_censoring_counters_are_available),
     ("B0-2a calibratable band == bins 1-204; assert_calibratable rejects beyond (reuses models.py)", check_b0_2a_calibratable_band_matches_bin_range_and_assert_calibratable_rejects_beyond),
+    ("B3-A config window-edge constants (09:15/11:45 America/Vancouver)", check_b3a_1_config_window_edge_constants),
+    ("B3-A TIME GATE: overpass_window_utc matches literal UTC per date incl. DST pair (0002)", check_b3a_2_overpass_window_utc_matches_literal_expectations_per_date),
+    ("B3-A no hardcoded UTC offset; zoneinfo genuinely used", check_b3a_3_no_hardcoded_utc_offset_and_zoneinfo_is_used),
+    ("B3-C run/iter_overpass_dates/build_parser exist", check_b3c_0_api_surface),
+    ("B3-C date order 2025-descending-then-backwards-to-2020, in-season only", check_b3c_1_date_ordering_is_2025_descending_then_backwards_to_2020),
+    ("B3-C TIME GATE: per-date window recomputation is never hoisted (0002)", check_b3c_2_per_date_window_recomputation_is_never_hoisted_out_of_the_loop),
+    ("B3-C SEAM GATE: run() driven by the REAL list_fft_files, not a narrower fake", check_b3c_2b_run_drives_the_real_list_fft_files_not_a_narrower_fake),
+    ("B3-C empty overpass window is a measured zero, not a crash (0016)", check_b3c_2c_empty_overpass_window_logs_an_absent_measured_zero_row),
+    ("B3-C requested == present + absent EXACTLY, absent entries carry a reason", check_b3c_3_requested_equals_present_plus_absent_exactly_with_reasons),
+    ("B3-C no --resume flag; a bare re-run redownloads nothing complete", check_b3c_4_rerun_with_no_flags_resumes_and_redownloads_nothing_complete),
+    ("B3-C manifest never lands without its provenance sidecar", check_b3c_5_manifest_never_written_without_its_provenance_sidecar),
+    ("B3-C sampling-conditionality is one named config constant, carried in the manifest", check_b3c_6_sampling_conditionality_is_one_named_constant_and_travels_with_the_manifest),
+    ("B3-C this check itself never writes under data/ (guards the guard)", check_b3c_7_never_writes_under_the_real_data_dir_this_check_guards_the_guard),
+    ("B3-C absent_log rows carry bin identity via parse_file_coverage", check_b3c_8_absent_log_rows_carry_bin_identity_via_parse_file_coverage),
+    ("B3-C provenance names endpoint/absent-def/dest_dir/season/year-span/checksum caveat", check_b3c_9_provenance_names_endpoint_absent_definition_dest_dir_season_and_checksum_caveat),
+    ("B3-C two manifest writes in the same dest do not collide", check_b3c_10_two_manifest_writes_in_the_same_dest_do_not_collide),
+    ("B3-C ONE shared corpus resolver finds *.fft (not *.fft.gz), raises when absent", check_b3c_11_corpus_resolver_finds_fft_extension_only_and_raises_when_absent),
 ]
 
 
