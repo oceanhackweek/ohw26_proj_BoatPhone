@@ -29,6 +29,39 @@ Survivors by year, after gate 2:
 Glint angles 24.4°–45.3° (mean 35.1). `GLINT_FILTER` is `None`, so nothing was dropped —
 it only orders the review queue.
 
+### Acoustic coverage — checked, all 30 clear (2026-08-27)
+
+Isaac's instruction was to order archive dates in 2020–2025 only, and to avoid the four
+in-season hydrophone outages in `docs/derived/hydrophone_gaps.md`. **All 30 survivors pass.**
+Zero fall inside a documented no-data span, and the nearest approach is
+`20220816_182157_60_2457` at **146 h (6.1 days)** from an outage edge — far outside the
+±300 s uncertainty those edges carry. The gate-3 review time cannot be spent on a scene that
+turns out to have no acoustic counterpart.
+
+Two things this check is *not*. It is not the notebook's `ACOUSTIC_JOIN` block, which joins
+against a `hydrophone_detections.csv` that does not exist yet — coverage ("was the instrument
+recording?") and detection ("did it hear anything?") are different questions and only the
+first is answerable today. And it inherits the calendar's upper-bound bias: availability is
+listing-derived, so dropouts shorter than ~10 min are invisible to it. A scene can clear this
+check and still land on a holey minute. A4's pull is what settles that.
+
+Reproduce it from the gaps doc alone (`data/derived/hydrophone_uptime.csv` is gitignored and
+does not travel):
+
+```python
+import pandas as pd
+df = pd.read_csv("planet_folger/gate2_survivors.csv", parse_dates=["acquired"])
+GAPS = [("2023-08-27T22:55:00Z", "2023-09-06T15:10:00Z"),   # docs/derived/hydrophone_gaps.md
+        ("2023-09-22T09:15:00Z", "2023-09-26T18:10:00Z"),   # end EXCLUSIVE, edges +/-300 s
+        ("2023-09-07T11:30:00Z", "2023-09-11T17:10:00Z"),
+        ("2022-08-07T07:55:00Z", "2022-08-10T16:10:00Z")]
+hit = lambda t: any(pd.Timestamp(a) <= t < pd.Timestamp(b) for a, b in GAPS)
+assert not df["acquired"].map(hit).any()
+```
+
+**Re-run this on the final ordered set**, not just on the gate-2 pool — it is the last cheap
+check before quota is spent.
+
 ### Budgets
 
 | | spent | of | note |
@@ -185,21 +218,38 @@ detectable" — do not gate on it.
 4. **Year distribution is lopsided** — 2020 has 2 scenes against 2021's 8. Treat 2020 as a
    caveat, not a data point, in any interannual comparison. Stage 9 sorts by `aoi_clear` with
    no stratification.
-5. **Confirm bundle names** with `planet orders bundles` before switching off `visual`.
-6. **Tiles are screening only** — reprojected, lossy, no radiometry. Anything entering a
+5. **The season is restated in the notebook instead of imported.** `SUMMER = (6, 9)` in cell 3
+   duplicates a constant that `boatphone/config.py` already owns as `SEASON_MONTHS_UTC =
+   (5, 6, 7, 8, 9)`, which is the drift CLAUDE.md invariant 6 exists to prevent. The
+   narrowing to June–August may well be the right call for illumination — but it is
+   currently a silent restatement, not a stated decision, and it costs a third of the
+   candidate pool (see fallback 1). Fix is `from boatphone import config` plus an explicit
+   named constant carrying the reason for the narrowing. **Not done — the notebook was left
+   untouched deliberately** (see gotcha 1).
+6. **Confirm bundle names** with `planet orders bundles` before switching off `visual`.
+7. **Tiles are screening only** — reprojected, lossy, no radiometry. Anything entering a
    figure or measurement comes from the ordered scene.
 
 ### If the working set falls below 30 after gate 3
 
 Agreed fallback order — exhaust the cheap options first:
 
-1. **Spot-check gate-2 rejects.** UDM2's cloud model is tuned for land and misflags glint,
+1. **Search May and September — an unsearched third of the season.** `SUMMER = (6, 9)` in
+   cell 3 means June 1 → Sept 1 exclusive, so all 552 hits are month 06/07/08 (164/201/187)
+   and so are all 30 survivors. `boatphone.config.SEASON_MONTHS_UTC` is `(5, 6, 7, 8, 9)`.
+   A May or September scene is still a fully-containing 100%-coverage scene, which is why
+   this sits **above** admitting partials: a partial makes the detection *area* vary between
+   observations, a May scene does not. Search itself is free and the tile budget has ~86,000
+   of 98,249 left. Caveats: lower sun elevation at 48.8°N means more glint and worse
+   illumination at both ends, and September 2023 carries three of the four hydrophone
+   outages, so re-run the coverage check above on anything September adds.
+2. **Spot-check gate-2 rejects.** UDM2's cloud model is tuned for land and misflags glint,
    whitecaps and surf over water. A wrongly-rejected containing scene beats any partial, and
    previews already exist so it costs nothing.
-2. **Relax `CLEAR_MIN`** (0.95). Note the survivors are mostly exactly 1.000 and the next
+3. **Relax `CLEAR_MIN`** (0.95). Note the survivors are mostly exactly 1.000 and the next
    candidates below the line are 0.905 and 0.878, then a steep drop to 0.518 — so this buys
    little.
-3. **Admit partials** via `COVERAGE_TOLERANCE_M2`. Two scenes sit at ~9.5k and ~18k m²
+4. **Admit partials** via `COVERAGE_TOLERANCE_M2`. Two scenes sit at ~9.5k and ~18k m²
    missing, then the next jump is 150k–580k. Skip `20250810_194613_51_253d` regardless — it
    renders almost flat. Partials cost the same 100 km² and make the detection *area* vary
    between observations, so record `aoi_missing_m2` rather than rediscovering it later.
