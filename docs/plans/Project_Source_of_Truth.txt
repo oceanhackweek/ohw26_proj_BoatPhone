@@ -654,6 +654,48 @@ detector can subtract without a window subtracting its own vessel away), and
 figures P1 LTSA / P2 SPD / P3 seasonal spectra. Gitignored; regenerate with
 scripts/build_population_set.py then scripts/plot_population_set.py.
 
+HANDOFF POINTER. The full run-state handoff is at
+claude/run-phase/run-phase-milestone1-b3-bulk-acquisition.handoff.md -- which is
+GITIGNORED, so on a fresh clone this block is what you get. The essentials:
+
+  BRANCH milestone1/b3-bulk-acquisition IS RED AND PUSHED. DO NOT MERGE.
+  Run `python3 scripts/checks.py --all` -- 182 passed, 1 failed, 4 skipped,
+  0 not run. WITHOUT --all the runner stops at the first failure and 8 checks
+  silently never run; the earlier handoff mistook that for a blocker.
+
+  The one failure is check_b3c_12, and its recorded diagnosis is probably WRONG:
+  all 26,666 manifest paths resolve on disk and the library seam is correct, so
+  the failure looks like it reproduces through the check's fake transport rather
+  than shipping code. Read SS1 of docs/plans/b3-close-out-offline.md and decide
+  which side is broken BEFORE editing either.
+
+  TRAPS, each of which already cost time once:
+   - config.py:633-634's overpass window is still WRONG (09:15-11:45 local;
+     measured 11:17-12:49). Fixing it is SS3 of the close-out plan.
+   - decision numbers 0016/0017 are AMBIGUOUS in pre-merge text: optical keeps
+     them, acoustics renumbered to 0028/0029. See docs/decisions/README.md.
+   - corpus_file_index DEDUPLICATES (26,666 windows) while acquisition sees
+     26,756 files. Do not "fix" that back.
+   - one corpus file is EMPTY, so 26,665 are readable, not 26,666.
+   - never write off-strip windows into ONC_OVERPASS_CORPUS_DIR; they go to
+     ONC_LABELLED_WINDOW_DIR via scripts/pull_labelled_windows.py.
+   - levels are COUNTS, not dB (~0.52 counts/dB, non-linear). Anything written
+     before 2026-08-27 saying "dB" about product levels is wrong.
+
+  TWO CLAIMS MADE AND THEN WITHDRAWN THIS SESSION, recorded because the
+  withdrawn versions read more persuasively than the corrections:
+   1. "seasonal drift threatens the threshold" -- it does not; 1.99 counts over
+      all 26,665 windows, and the per-window baseline subtracts it first.
+   2. "the labelled window's elevation is far-field vessel contamination" -- the
+      control band says broadband (r = +0.847 with craft shift over 19 windows),
+      so sea state or flow noise. Decision 0027 amendments 1-3.
+
+  REGENERATE (all gitignored):
+    python3 scripts/build_population_set.py --workers 4   # ~20 min
+    python3 scripts/plot_population_set.py
+    python3 scripts/build_review_set.py                   # ~5 min
+    python3 scripts/run_b5_gate.py                        # 42 s
+
 STILL OPEN, TRACKED:
   1. Tonight, offline: docs/plans/b3-close-out-offline.md -- manifest schema
      migration WITHOUT the ~1h40m re-run, fix check_b3c_12, correct the
@@ -667,13 +709,29 @@ STILL OPEN, TRACKED:
   5. The targeted top-up pull (~210 files, ~60 MB, minutes) for the 17
      uncovered/partial scenes. Now clearly worth doing -- the product is proven.
 
-*** BLOCKING THE PROJECT: OPTICAL. *** Nothing has been ordered
-(CONFIRM_ORDER = False, zero pixels in the repo), gate-3 vessel review has not
-started, and the detector notebook is still developing against Sentinel-2. The
-acoustic side has a proven detector, a review set with empty image slots, and a
-detections.csv with vessel_in_scene blank. G1's false-positive rate, G2's size
-separability and G3's detection range ALL need those labels and nothing on the
-acoustic side substitutes for them.
+*** SUPERSEDED SAME DAY -- THE OPTICAL ARM LANDED. *** This block previously
+said optical blocked everything. It no longer does. main now carries imagery,
+boatphone/optical.py, boatphone/vessel_detect.py, and
+contributor_folders/malachymcc/planet_folger/detections.csv: 32,877 rows over 26
+scenes from Detector B, shipped explicitly as CANDIDATES, NOT A VESSEL LIST.
+
+FIRST OPTICAL-ACOUSTIC CROSS-CHECK, AND THEY AGREE. On the one scene carrying a
+human label (20210601_191849_05_2412, no vessels within 10 km2 ~ 1.78 km radius)
+the detector reports ZERO candidates inside that radius. Two independent
+instruments agreeing is worth more than either alone. It also reports 46
+candidates within 3 km and 588 within 6 km, so there IS traffic outside the
+reviewed area -- but decision 0027 amendment 3 already showed that window's
+sustained elevation is BROADBAND (control band rises with it, r = +0.847 across
+19 windows), so it is sea state or flow noise, not those vessels. Do not
+re-adopt the far-field reading without new evidence.
+
+WHAT NOW BLOCKS G1 IS THE JOIN, NOT THE INPUTS. Both sides exist and neither has
+been matched to the other. detections.csv has scene_id, acq_time_utc, lon/lat,
+range_km, size_class and a transient flag; the acoustic side has per-window
+band levels and events keyed by the same scene_id. B7 (matchup, splits) is the
+next real segment, and the honest first question is which of 32,877 candidates
+survive filtering -- 15,490 are flagged transient=1, and a scene with 8,257 rows
+is not 8,257 boats.
 
 Container note: this instance has 4 cores and 15.6 GB, not the 3.90 GB cgroup
 cap the plans assume. The full-corpus pass is ~10 minutes here.
