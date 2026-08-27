@@ -34,10 +34,21 @@ Where the start time comes from
 
 Frequency axis
     One-sided, bin ``k`` centred at ``k * FFT_BIN_WIDTH_HZ``, so bin 0 is DC and
-    bin 1 is 250 Hz (config.FFT_BIN_WIDTH_HZ, sourced there). See the module
-    report for measured evidence that ONC may instead intend bin ``k`` to span
-    ``[k*dF, (k+1)*dF)`` -- a half-bin (125 Hz) question that is open, not
-    settled.
+    bin 1 is 250 Hz. The 250 Hz bin WIDTH is confirmed on absolute physics (see
+    config.FFT_BIN_WIDTH_HZ). The CENTRE convention is not: ONC may instead
+    intend bin ``k`` to span ``[k*dF, (k+1)*dF)``, which would move every named
+    frequency up by half a bin. That question is OPEN, and it is carried, not
+    hidden: ``config.FFT_AXIS_CONVENTION`` names the assumption and
+    ``config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ`` (125 Hz, one-sided toward higher
+    frequency) is its price on every band edge. Use :func:`band_limit_product`
+    rather than ``models.band_limit`` directly, so the uncertainty travels with
+    the band.
+
+Censoring
+    ``levels_db`` is clipped into ``[0, 86]`` by the product itself -- at BOTH
+    ends. Upper censoring is real even on a quiet window, so
+    :func:`censoring_report` returns the per-window counts at each limit and
+    every band level should be reported next to them.
 
 Units
     ``levels_db`` is the product's own integer dB-like level. It is NOT dB re
@@ -64,15 +75,23 @@ import numpy as np
 
 from . import models
 from .config import (
-    FFT_38KHZ_LINE_BIN,
-    FFT_38KHZ_LINE_BIN_TOL,
+    FFT_AXIS_CONVENTION,
+    FFT_AXIS_OFFSET_UNCERTAINTY_HZ,
     FFT_BIN_WIDTH_HZ,
     FFT_CALIBRATED_BIN_RANGE,
     FFT_FRAME_SECONDS,
     FFT_N_BINS,
     FFT_N_FRAMES,
     FFT_PRODUCT_FS_HZ,
-    FFT_STRUCTURAL_ZERO_COL0,
+    FFT_DC_COL,
+    FFT_ECHOSOUNDER_BG_HIGH_BINS,
+    FFT_ECHOSOUNDER_BG_LOW_BINS,
+    FFT_ECHOSOUNDER_EXCESS_BINS,
+    FFT_ECHOSOUNDER_TEMPORAL_STD_SEARCH_BINS,
+    FFT_LEVEL_CEILING,
+    FFT_LEVEL_FLOOR,
+    FFT_ROLLOFF_ONSET_BIN,
+    FFT_ROLLOFF_TAIL_COLS,
     FFT_STRUCTURAL_ZERO_COLS_HIGH,
 )
 from .onc_client import parse_file_coverage
@@ -87,6 +106,10 @@ __all__ = [
     "calibrated_bin_range",
     "assert_calibratable",
     "assert_tone_at",
+    "band_limit_product",
+    "censoring_report",
+    "echosounder_centroid_bin",
+    "temporal_std_argmax_bin",
     "structural_zero_report",
 ]
 
@@ -390,22 +413,167 @@ def assert_tone_at(levels_db, freq_hz, t_utc_s, *,
 
 
 def structural_zero_report(levels_db) -> dict:
-    """Count the values that are NOT zero in the columns documented as structural zeros.
+    """Report the top of the band as the THREE regions it actually is.
 
-    Surfaces, rather than hides, the measured fact recorded in config: column 0
-    and columns 419-511 are almost-but-not-exactly zero in the real product.
-    Reporting only; this function never modifies anything.
+    Replaces a single "cols 419-511 are zero" summary that was wrong at both
+    ends. Reporting only; this function never modifies anything.
+
+    * ``hard_zero`` -- cols 425-511. A TRUE structural zero: 0 of 104,400 cells
+      nonzero on each local fixture. Any nonzero value here is a reader or
+      format failure, not a quiet ocean.
+    * ``rolloff_tail`` -- cols 419-424. The tail of the anti-alias skirt, NOT a
+      zero block: a handful of 1-6 counts, per-bin means decaying smoothly from
+      bin 405. There is no boundary at 419.
+    * ``dc_col`` -- col 0. NEAR-zero, not zero: 8-14 nonzero frames of 1200.
+    * ``rolloff_profile_bin_means`` -- the per-bin mean from just before
+      FFT_ROLLOFF_ONSET_BIN through 424. Its NON-INCREASING shape is the part
+      that actually catches a mis-strided or wrapped row; the counts above are
+      descriptive.
     """
     levels_db = np.asarray(levels_db, dtype=float)
-    lo, hi = FFT_STRUCTURAL_ZERO_COLS_HIGH
-    col0 = levels_db[:, FFT_STRUCTURAL_ZERO_COL0]
-    block = levels_db[:, lo:hi + 1]
+    zero_lo, zero_hi = FFT_STRUCTURAL_ZERO_COLS_HIGH
+    tail_lo, tail_hi = FFT_ROLLOFF_TAIL_COLS
+    col0 = levels_db[:, FFT_DC_COL]
+    hard = levels_db[:, zero_lo:zero_hi + 1]
+    tail = levels_db[:, tail_lo:tail_hi + 1]
+    profile_lo = FFT_ROLLOFF_ONSET_BIN - 3
+    profile = levels_db[:, profile_lo:tail_hi + 1].mean(axis=0)
     return {
-        "col0_nonzero": int(np.count_nonzero(col0)),
-        "col0_total": int(col0.size),
-        "col0_max": float(col0.max()) if col0.size else float("nan"),
-        "high_block_cols": (lo, hi),
-        "high_block_nonzero": int(np.count_nonzero(block)),
-        "high_block_total": int(block.size),
-        "high_block_max": float(block.max()) if block.size else float("nan"),
+        "dc_col": FFT_DC_COL,
+        "dc_nonzero": int(np.count_nonzero(col0)),
+        "dc_total": int(col0.size),
+        "dc_nonzero_fraction": float(np.count_nonzero(col0) / col0.size) if col0.size else float("nan"),
+        "dc_max": float(col0.max()) if col0.size else float("nan"),
+        "hard_zero_cols": (zero_lo, zero_hi),
+        "hard_zero_nonzero": int(np.count_nonzero(hard)),
+        "hard_zero_total": int(hard.size),
+        "hard_zero_max": float(hard.max()) if hard.size else float("nan"),
+        "rolloff_tail_cols": (tail_lo, tail_hi),
+        "rolloff_tail_nonzero": int(np.count_nonzero(tail)),
+        "rolloff_tail_total": int(tail.size),
+        "rolloff_tail_max": float(tail.max()) if tail.size else float("nan"),
+        "rolloff_tail_mean": float(tail.mean()) if tail.size else float("nan"),
+        "rolloff_profile_first_bin": profile_lo,
+        "rolloff_profile_bin_means": profile,
     }
+
+
+def band_limit_product(freq_hz, levels_db, band_hz, *, fs_hz=FFT_PRODUCT_FS_HZ):
+    """Band-limit a `.fft.gz` spectrum, CARRYING the axis-convention uncertainty.
+
+    A thin, deliberate wrapper over :func:`boatphone.models.band_limit` -- it
+    reimplements no band arithmetic (CLAUDE.md invariant 6). Its whole job is to
+    supply ``axis_offset_uncertainty_hz=FFT_AXIS_OFFSET_UNCERTAINTY_HZ``, so the
+    kept support is widened by 125 Hz at each edge and a band edge cannot
+    silently exclude a bin that the edge convention would have included.
+
+    Calling ``models.band_limit`` directly on a product spectrum is the bug this
+    exists to prevent: it would default to zero uncertainty, which is true of a
+    WAV axis and false of this one. Its correctness rests on the assumption
+    named in ``config.FFT_AXIS_CONVENTION`` ({convention!r}) being wrong by at
+    most half a bin.
+    """
+    return models.band_limit(
+        freq_hz, levels_db, fs_hz, band_hz,
+        axis_offset_uncertainty_hz=FFT_AXIS_OFFSET_UNCERTAINTY_HZ,
+    )
+
+
+band_limit_product.__doc__ = band_limit_product.__doc__.format(
+    convention=FFT_AXIS_CONVENTION
+)
+
+
+def censoring_report(levels_db) -> dict:
+    """Per-window counts of cells sitting AT the 0 floor and AT the 86 ceiling.
+
+    A B5 PRECONDITION, not a diagnostic nicety. The product's integer scale is
+    censored at both ends, so a mean or a percentile computed over it is biased
+    toward whichever limit is being hit, by an amount that is not boundable from
+    the censored data alone -- and the amount MOVES WITH AMBIENT, i.e. it is
+    confounded with the very signal a threshold is trying to detect.
+
+    Upper censoring is measured, not hypothetical: 3 cells at 86 on a QUIET
+    window of the local sample. A close vessel pass will clip far harder.
+
+    Reporting only -- nothing here modifies, clips or fills anything. Report
+    these counts ALONGSIDE every band level; a band level whose window has
+    ceiling hits is a lower bound, not a measurement.
+    """
+    levels_db = np.asarray(levels_db, dtype=float)
+    n = int(levels_db.size)
+    at_floor = int(np.count_nonzero(levels_db <= FFT_LEVEL_FLOOR))
+    at_ceiling = int(np.count_nonzero(levels_db >= FFT_LEVEL_CEILING))
+    return {
+        "n_cells": n,
+        "level_floor": FFT_LEVEL_FLOOR,
+        "level_ceiling": FFT_LEVEL_CEILING,
+        "n_at_floor": at_floor,
+        "n_at_ceiling": at_ceiling,
+        "fraction_at_floor": (at_floor / n) if n else float("nan"),
+        "fraction_at_ceiling": (at_ceiling / n) if n else float("nan"),
+    }
+
+
+def echosounder_centroid_bin(levels_db) -> float:
+    """Power-weighted centroid, in fractional bins, of the ~38 kHz echosounder hump.
+
+    The statistic the axis check asserts on. Stated once, here, so the check and
+    any notebook compute the SAME number:
+
+    1. ``P = mean(10 ** (levels_db / 10), axis=0)`` -- the mean in POWER, not
+       in the product's dB-like counts. Averaging counts would weight the
+       quiet frames like the pings.
+    2. A background that is a STRAIGHT LINE IN POWER between
+       ``median(P[120:135])`` and ``median(P[168:180])``, each placed at the
+       mean bin index of its own window.
+    3. ``excess = clip(P[135:170] - background, 0, None)``.
+    4. The power-weighted centroid of that excess.
+
+    CENTROID, NEVER ARGMAX. The feature is a ~5 kHz-wide hump quantised to
+    integer counts; its argmax is unstable at +/- 1 bin between two fixtures
+    five minutes apart (149 vs 150), while this centroid moved 0.19 bins
+    (150.36 vs 150.17). An argmax assertion would be a coin flip wearing the
+    costume of a measurement.
+
+    Raises
+    ------
+    ValueError
+        if the excess is everywhere zero -- there is no hump to locate, and
+        returning a background-weighted centroid would look like an answer.
+    """
+    levels_db = np.asarray(levels_db, dtype=float)
+    if levels_db.ndim != 2:
+        raise ValueError(f"levels_db must be 2-D (frames x bins), got {levels_db.shape}")
+    power = np.mean(10.0 ** (levels_db / 10.0), axis=0)
+
+    lo_a, lo_b = FFT_ECHOSOUNDER_BG_LOW_BINS
+    hi_a, hi_b = FFT_ECHOSOUNDER_BG_HIGH_BINS
+    ex_a, ex_b = FFT_ECHOSOUNDER_EXCESS_BINS
+    bg_lo = float(np.median(power[lo_a:lo_b]))
+    bg_hi = float(np.median(power[hi_a:hi_b]))
+    x_lo = float(np.mean(np.arange(lo_a, lo_b)))
+    x_hi = float(np.mean(np.arange(hi_a, hi_b)))
+    bins = np.arange(ex_a, ex_b, dtype=float)
+    background = bg_lo + (bg_hi - bg_lo) * (bins - x_lo) / (x_hi - x_lo)
+    excess = np.clip(power[ex_a:ex_b] - background, 0.0, None)
+
+    total = float(excess.sum())
+    if total <= 0.0:
+        raise ValueError(
+            f"no power excess over the straight-line background in bins {ex_a}-{ex_b}: "
+            "there is no echosounder hump in this window to take a centroid of"
+        )
+    return float((excess * bins).sum() / total)
+
+
+def temporal_std_argmax_bin(levels_db) -> int:
+    """Bin of peak per-bin temporal std within the echosounder search window.
+
+    The SECONDARY, weaker landmark: intermittency is what makes this source an
+    echosounder rather than a resonance. Asserted loosely (+/- several bins) --
+    it is a confirmation of character, not a position measurement.
+    """
+    levels_db = np.asarray(levels_db, dtype=float)
+    lo, hi = FFT_ECHOSOUNDER_TEMPORAL_STD_SEARCH_BINS
+    return int(lo + np.argmax(levels_db.std(axis=0)[lo:hi]))

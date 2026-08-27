@@ -377,7 +377,8 @@ def assert_comparable(
 # Spectrum band-limiting
 # ---------------------------------------------------------------------------
 
-def band_limit(freq_hz, level_db_re_1upa, fs_hz, band_hz):
+def band_limit(freq_hz, level_db_re_1upa, fs_hz, band_hz, *,
+               axis_offset_uncertainty_hz=0.0):
     """Mask an ALREADY-COMPUTED one-sided spectrum to ``band_hz``.
 
     Parameters
@@ -394,6 +395,25 @@ def band_limit(freq_hz, level_db_re_1upa, fs_hz, band_hz):
     band_hz : (lo_hz, hi_hz)
         Band to keep, inclusive of both edges (within
         :data:`BAND_EDGE_TOL_HZ`).
+    axis_offset_uncertainty_hz : float, keyword-only
+        How far ``freq_hz`` itself may be wrong, in Hz. The kept support is
+        WIDENED by this amount at BOTH edges, so a band edge cannot silently
+        exclude a bin that the other plausible axis convention would have
+        included.
+
+        Defaults to 0.0, which is correct only for an axis that is exact by
+        construction -- e.g. ``numpy.fft.rfftfreq`` on a WAV whose sample rate
+        was read from its header. It is NOT correct for the ONC ``.fft.gz``
+        product, whose centre-vs-edge convention is an open question worth
+        +/- 125 Hz on every band edge; callers of that product must pass
+        ``boatphone.config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ``, which
+        :func:`boatphone.fft_io.band_limit_product` does for them. This is a
+        parameter rather than a baked-in constant precisely because the two
+        cases are different: applying the product's uncertainty to a WAV
+        spectrum would widen a band that is not in fact uncertain.
+
+        The widening is applied to the MASK only. It never moves the Nyquist
+        check: a band the source cannot represent is still a caller error.
 
     Returns
     -------
@@ -432,7 +452,14 @@ def band_limit(freq_hz, level_db_re_1upa, fs_hz, band_hz):
             "was actually computed over (decision 0002 SS2)."
         )
 
-    mask = (freq_hz >= lo_hz - BAND_EDGE_TOL_HZ) & (freq_hz <= hi_hz + BAND_EDGE_TOL_HZ)
+    axis_offset_uncertainty_hz = float(axis_offset_uncertainty_hz)
+    if not np.isfinite(axis_offset_uncertainty_hz) or axis_offset_uncertainty_hz < 0.0:
+        raise ValueError(
+            "axis_offset_uncertainty_hz must be finite and non-negative, got "
+            f"{axis_offset_uncertainty_hz}"
+        )
+    slack_hz = BAND_EDGE_TOL_HZ + axis_offset_uncertainty_hz
+    mask = (freq_hz >= lo_hz - slack_hz) & (freq_hz <= hi_hz + slack_hz)
     kept = int(mask.sum())
     if kept == 0:
         raise ValueError(

@@ -5428,17 +5428,61 @@ B0_2A_N_BINS = 512
 B0_2A_BIN_WIDTH_HZ = 250.0
 B0_2A_FRAME_SECONDS = 0.25
 B0_2A_STRUCTURAL_ZERO_COL0 = 0
-B0_2A_STRUCTURAL_ZERO_COLS_HIGH = (419, 511)  # inclusive
-B0_2A_38KHZ_LINE_BIN = 152
-B0_2A_38KHZ_LINE_BIN_TOL = 1
 B0_2A_CALIBRATED_BIN_RANGE = (0, 205)  # inclusive; 10 Hz - 51.2 kHz
+
+# --- RESTATED 2026-08-27 by the B1a frequency-axis adjudication. -------------
+# These three facts were RESTATED, not relaxed. Each new number below is a
+# MEASUREMENT on the two local fixtures (2,400 frames) and, for the absolute
+# centre frequency, on the 128 kHz sample WAV -- which is an absolute frequency
+# reference needing no product axis at all. The two checks that used the old
+# statements were failing because the STATEMENTS were wrong, not the data.
+#
+# (1) The top of the band is THREE regions, not one "structural zero" block:
+#     425-511 is a hard zero (0 of 104,400 nonzero on EACH fixture); 419-424 is
+#     the tail of the anti-alias skirt (68 and 74 of 7,200 nonzero, max 6);
+#     column 0 is NEAR-zero (14 and 8 of 1,200 nonzero, max 3). The old
+#     (419, 511) was off by six columns and the old "col 0 == 0 exactly" was
+#     never true of real data.
+B0_2A_STRUCTURAL_ZERO_COLS_HIGH = (425, 511)  # inclusive; HARD zero
+B0_2A_ROLLOFF_TAIL_COLS = (419, 424)          # inclusive; skirt, not zero
+B0_2A_ROLLOFF_ONSET_BIN = 408
+B0_2A_DC_COL = 0
+B0_2A_DC_COL_MAX_LEVEL = 5              # measured 3 and 2
+B0_2A_DC_COL_MAX_NONZERO_FRACTION = 0.02  # measured 0.0117 and 0.0067
+B0_2A_ROLLOFF_TAIL_MAX_LEVEL = 10       # measured 6 and 5
+B0_2A_ROLLOFF_TAIL_MAX_MEAN_LEVEL = 0.05  # measured 0.0154 and 0.0149
+
+# (2) The "38 kHz line at bin 152" was NOMINAL-DERIVED (38000/250) and could not
+#     be reproduced by any statistic. It is a ~5 kHz-wide HUMP over bins 140-162
+#     whose source is genuinely near 37.65 kHz, measured on the WAV.
+B0_2A_ECHOSOUNDER_HUMP_BINS = (140, 162)
+B0_2A_ECHOSOUNDER_CENTROID_BIN_RANGE = (149.0, 152.0)   # measured 150.36, 150.17
+B0_2A_ECHOSOUNDER_ABS_CENTRE_HZ = 37650.0
+B0_2A_ECHOSOUNDER_ABS_CENTRE_TOL_HZ = 150.0
+B0_2A_ECHOSOUNDER_TEMPORAL_STD_ARGMAX_BIN_RANGE = (147, 155)  # measured 151, 150
+
+# (3) Centre-vs-edge is UNRESOLVED and is CARRIED, not resolved. The reader stays
+#     pinned to centres (freq_hz[1] == 250.0 exactly, below) but that is now a
+#     NAMED ASSUMPTION with a price: half a bin, one-sided toward higher
+#     frequency, on every band edge.
+#     NO CHECK IN THIS FILE MAY ASSERT A BIN POSITION TIGHTER THAN +/- 1 BIN
+#     until B1 settles the convention -- which is why (2) asserts a centroid
+#     inside a 3-bin window rather than an argmax at a bin.
+B0_2A_AXIS_CONVENTION = "centre"
+B0_2A_AXIS_OFFSET_UNCERTAINTY_HZ = 125.0
 
 # Names this segment expects boatphone/config.py to define. A GUESS at naming;
 # flagged, not hidden -- see the module note above.
 _B0_2A_CONFIG_NAMES = (
     "FFT_N_FRAMES", "FFT_N_BINS", "FFT_BIN_WIDTH_HZ", "FFT_FRAME_SECONDS",
     "FFT_STRUCTURAL_ZERO_COL0", "FFT_STRUCTURAL_ZERO_COLS_HIGH",
-    "FFT_38KHZ_LINE_BIN", "FFT_38KHZ_LINE_BIN_TOL", "FFT_CALIBRATED_BIN_RANGE",
+    "FFT_ROLLOFF_TAIL_COLS", "FFT_ROLLOFF_ONSET_BIN", "FFT_DC_COL",
+    "FFT_ECHOSOUNDER_HUMP_BINS", "FFT_ECHOSOUNDER_CENTROID_BIN_RANGE",
+    "FFT_ECHOSOUNDER_ABS_CENTRE_HZ",
+    "FFT_AXIS_CONVENTION", "FFT_AXIS_OFFSET_UNCERTAINTY_HZ",
+    "FFT_CALIBRATED_BIN_RANGE",
+    "FFT_B5_CALIBRATED_CEILING_BIN", "FFT_B5_RELATIVE_CEILING_BIN",
+    "FFT_LEVEL_FLOOR", "FFT_LEVEL_CEILING",
 )
 
 # Tolerances, named and justified (CLAUDE.md invariant 3 -- explicit, with a reason).
@@ -5517,9 +5561,22 @@ def check_b0_2a_config_constants_match_settled_facts():
         "FFT_FRAME_SECONDS": B0_2A_FRAME_SECONDS,
         "FFT_STRUCTURAL_ZERO_COL0": B0_2A_STRUCTURAL_ZERO_COL0,
         "FFT_STRUCTURAL_ZERO_COLS_HIGH": B0_2A_STRUCTURAL_ZERO_COLS_HIGH,
-        "FFT_38KHZ_LINE_BIN": B0_2A_38KHZ_LINE_BIN,
-        "FFT_38KHZ_LINE_BIN_TOL": B0_2A_38KHZ_LINE_BIN_TOL,
+        "FFT_ROLLOFF_TAIL_COLS": B0_2A_ROLLOFF_TAIL_COLS,
+        "FFT_ROLLOFF_ONSET_BIN": B0_2A_ROLLOFF_ONSET_BIN,
+        "FFT_DC_COL": B0_2A_DC_COL,
+        "FFT_ECHOSOUNDER_HUMP_BINS": B0_2A_ECHOSOUNDER_HUMP_BINS,
+        "FFT_ECHOSOUNDER_CENTROID_BIN_RANGE": B0_2A_ECHOSOUNDER_CENTROID_BIN_RANGE,
+        "FFT_ECHOSOUNDER_ABS_CENTRE_HZ": B0_2A_ECHOSOUNDER_ABS_CENTRE_HZ,
+        "FFT_AXIS_CONVENTION": B0_2A_AXIS_CONVENTION,
+        "FFT_AXIS_OFFSET_UNCERTAINTY_HZ": B0_2A_AXIS_OFFSET_UNCERTAINTY_HZ,
         "FFT_CALIBRATED_BIN_RANGE": B0_2A_CALIBRATED_BIN_RANGE,
+        # The two B5 ceilings, kept apart on purpose: 205 is where CALIBRATION
+        # stops (51.2 kHz), 408 is where the instrument response stops being
+        # ocean (~102 kHz). Nothing above 408 may enter a B5 statistic.
+        "FFT_B5_CALIBRATED_CEILING_BIN": B0_2A_CALIBRATED_BIN_RANGE[1],
+        "FFT_B5_RELATIVE_CEILING_BIN": B0_2A_ROLLOFF_ONSET_BIN,
+        "FFT_LEVEL_FLOOR": 0,
+        "FFT_LEVEL_CEILING": 86,
     }
     present = {k: v for k, v in expected.items() if hasattr(cfg, k)}
     if not present:
@@ -5750,76 +5807,375 @@ def check_b0_2a_synthetic_tone_wrong_hour_offset_is_rejected():
         )
 
 
+def _b0_2a_fixture_levels(fixture_index=0):
+    """Read one real fixture, or SkipCheck if the acquisition is not on this host."""
+    sample = REPO_ROOT / "data" / SAMPLE_DIR_NAME
+    if not sample.is_dir():
+        raise SkipCheck(f"acquisition directory absent: {sample}")
+    missing = [n for n in FIXTURE_FFT_NAMES if not (sample / n).is_file()]
+    if missing:
+        raise SkipCheck(f"fixture .fft.gz files absent from {sample}: {missing}")
+    cfg, fft_io = _b0_2a_fft_io()
+    path = sample / FIXTURE_FFT_NAMES[fixture_index]
+    product = fft_io.read_fft_gz(path)
+    return cfg, fft_io, path, product
+
+
 def check_b0_2a_real_fixture_shape_and_structural_zeros():
-    """Data-dependent: a REAL .fft.gz from the local sample is 1200x512, with the
-    documented structural zeros (column 0, columns 419-511), and t_utc_s[0]
-    is an absolute UTC instant, not a relative offset."""
-    sample = REPO_ROOT / "data" / SAMPLE_DIR_NAME
-    if not sample.is_dir():
-        raise SkipCheck(f"acquisition directory absent: {sample}")
-    missing = [n for n in FIXTURE_FFT_NAMES if not (sample / n).is_file()]
-    if missing:
-        raise SkipCheck(f"fixture .fft.gz files absent from {sample}: {missing}")
+    """Data-dependent: a REAL .fft.gz is 1200x512 with the top of the band behaving
+    as the THREE regions it actually has, and t_utc_s[0] an absolute UTC instant.
 
+    RESTATED, NOT RELAXED. This check previously asserted "column 0 is all zero"
+    and "columns 419-511 are all zero" and failed on real data. Both statements
+    were wrong: 419-424 is the tail of the anti-alias skirt (nonzero by a few
+    counts), and column 0 is near-zero rather than zero. The response is a
+    HARDER assertion where the data supports one -- 425-511 is now required to
+    be EXACTLY zero everywhere, on the strength of 208,800 cells measured across
+    both fixtures -- and a bounded assertion where it does not.
+
+    Every check runs over BOTH fixtures, not one: a bound tuned on a single file
+    is a description of that file.
+    """
+    cfg, fft_io, _path, _product = _b0_2a_fixture_levels(0)
+    for name in FIXTURE_FFT_NAMES:
+        path = REPO_ROOT / "data" / SAMPLE_DIR_NAME / name
+        product = fft_io.read_fft_gz(path)
+        levels = np.asarray(product.levels_db)
+        assert levels.shape == (B0_2A_N_FRAMES, B0_2A_N_BINS), (
+            f"{name}: read_fft_gz().levels_db has shape {levels.shape}, expected "
+            f"({B0_2A_N_FRAMES}, {B0_2A_N_BINS}) (frames x bins, settled fact)"
+        )
+
+        # (a) HARD structural zero, 425-511. Any nonzero value is a reader or
+        #     format failure -- there is no "quiet ocean" reading of a column
+        #     the product generator never writes to.
+        lo, hi = B0_2A_STRUCTURAL_ZERO_COLS_HIGH
+        block = levels[:, lo:hi + 1]
+        assert np.all(block == 0), (
+            f"{name}: columns {lo}-{hi} are NOT exactly zero -- "
+            f"{np.count_nonzero(block)} of {block.size} cells nonzero, max "
+            f"{block.max()}. Measured 0 of 104,400 on each local fixture, so a "
+            "nonzero value here is a reader/format failure (a mis-strided or "
+            "column-major reading), not data."
+        )
+
+        # (b) The DC column is NEAR-zero, bounded -- not exactly zero.
+        col0 = levels[:, B0_2A_DC_COL]
+        nonzero_fraction = np.count_nonzero(col0) / col0.size
+        assert col0.max() <= B0_2A_DC_COL_MAX_LEVEL, (
+            f"{name}: column {B0_2A_DC_COL} reaches {col0.max()}, above the bound "
+            f"{B0_2A_DC_COL_MAX_LEVEL} (measured max 3 and 2 on the two fixtures). "
+            "Real content in the DC column would mean the axis is not what we think."
+        )
+        assert nonzero_fraction <= B0_2A_DC_COL_MAX_NONZERO_FRACTION, (
+            f"{name}: column {B0_2A_DC_COL} is nonzero in {nonzero_fraction:.4f} of "
+            f"frames, above the bound {B0_2A_DC_COL_MAX_NONZERO_FRACTION} "
+            "(measured 0.0117 and 0.0067)"
+        )
+
+        # (c) The roll-off tail, 419-424: bounded, and -- the assertion that
+        #     actually catches a bug -- NON-INCREASING in per-bin mean across
+        #     the whole skirt. A mis-strided or wrapped row moves a bin mean by
+        #     order 1; the bound alone would not notice, the shape does.
+        tail_lo, tail_hi = B0_2A_ROLLOFF_TAIL_COLS
+        tail = levels[:, tail_lo:tail_hi + 1]
+        assert tail.max() <= B0_2A_ROLLOFF_TAIL_MAX_LEVEL, (
+            f"{name}: roll-off tail columns {tail_lo}-{tail_hi} reach {tail.max()}, "
+            f"above the bound {B0_2A_ROLLOFF_TAIL_MAX_LEVEL} (measured 6 and 5)"
+        )
+        assert tail.mean() <= B0_2A_ROLLOFF_TAIL_MAX_MEAN_LEVEL, (
+            f"{name}: roll-off tail columns {tail_lo}-{tail_hi} have mean "
+            f"{tail.mean():.5f}, above the bound {B0_2A_ROLLOFF_TAIL_MAX_MEAN_LEVEL} "
+            "(measured 0.0154 and 0.0149)"
+        )
+        report = fft_io.structural_zero_report(levels)
+        profile = np.asarray(report["rolloff_profile_bin_means"], dtype=float)
+        first_bin = int(report["rolloff_profile_first_bin"])
+        # Tolerance = one count in one frame, the smallest step the product can
+        # express. At the far end of the skirt the mean is quantised to
+        # multiples of 1/1200 and its ordering there is integer noise, not
+        # physics -- fixture ...000004 has bin 423 at 0.0000 and bin 424 at
+        # 0.0008. This is a quantisation floor, NOT a loosened bound: it is
+        # three orders of magnitude below the order-1 step a stride bug makes.
+        tol = float(getattr(cfg, "FFT_ROLLOFF_MONOTONIC_TOL_LEVEL"))
+        steps = np.diff(profile)
+        offenders = [
+            (first_bin + i, float(profile[i]), float(profile[i + 1]))
+            for i, d in enumerate(steps) if d > tol
+        ]
+        assert not offenders, (
+            f"{name}: the per-bin mean level across the anti-alias skirt (bins "
+            f"{first_bin}-{tail_hi}) is NOT non-increasing; it rises at "
+            f"(bin, mean, next_mean) = {offenders} by more than the one-count "
+            f"quantisation step {tol:.6f}. The skirt is one continuous filter "
+            "response, so a rise in it is the signature of a mis-strided or "
+            "wrapped row -- exactly the failure a cell-count bound would miss."
+        )
+
+        freq_hz = np.asarray(product.freq_hz, dtype=float)
+        t_utc_s = np.asarray(product.t_utc_s, dtype=float)
+        assert freq_hz.shape == (B0_2A_N_BINS,), (
+            f"{name}: freq_hz shape {freq_hz.shape}, expected ({B0_2A_N_BINS},)"
+        )
+        assert t_utc_s.shape == (B0_2A_N_FRAMES,), (
+            f"{name}: t_utc_s shape {t_utc_s.shape}, expected ({B0_2A_N_FRAMES},)"
+        )
+        # A relative axis would start at 0.0; a real 2026 UTC instant is >> 1e9.
+        assert t_utc_s[0] > 1_000_000_000.0, (
+            f"{name}: t_utc_s[0] = {t_utc_s[0]} looks like a relative offset, "
+            "not an absolute UTC epoch second"
+        )
+
+
+def check_b0_2a_real_fixture_echosounder_hump_centroid():
+    """Data-dependent: the ~38 kHz echosounder hump's POWER-EXCESS CENTROID lands
+    in bins 149.0-152.0 on both real fixtures -- a real-data confirmation of the
+    frequency mapping, independent of the synthetic-tone checks.
+
+    RESTATED, NOT RELAXED, and in two ways it is STRONGER than the "line at bin
+    152 +/- 1" it replaces:
+
+      * the old target was NOMINAL-DERIVED (38000 / 250 = 152) and could not be
+        reproduced by ANY statistic on either fixture -- mean-argmax read 150 and
+        149, temporal-std argmax 150 and 151, ping-excess centroid 150.8 and
+        151.0. The check was failing because the target was wrong.
+      * the statistic is now a CENTROID, not an argmax. The feature is a ~5 kHz
+        hump quantised to integer counts, and its argmax is unstable at +/- 1 bin
+        between two files five minutes apart (149 vs 150) while the centroid
+        moved 0.19 bins (150.36 vs 150.17). Asserting on an argmax at +/- 1 bin
+        was a coin flip; asserting a centroid inside a 3-bin window is a
+        measurement with a reproducible value behind it.
+
+    WHAT THIS CHECK IS FOR: rejecting a 2x MAPPING ERROR, where it discriminates
+    by ~150 bins. It is deliberately NOT tight enough to adjudicate centre-vs-edge
+    (a half-bin question) -- under edge the hump reads 37.70 kHz and under centre
+    37.58 kHz, and which is closer flips with the background model and the assumed
+    dB scale. See check_b0_2a_axis_uncertainty_is_carried.
+    """
+    _cfg, fft_io, _path, _product = _b0_2a_fixture_levels(0)
+    lo_bin, hi_bin = B0_2A_ECHOSOUNDER_CENTROID_BIN_RANGE
+    hump_lo, hump_hi = B0_2A_ECHOSOUNDER_HUMP_BINS
+    std_lo, std_hi = B0_2A_ECHOSOUNDER_TEMPORAL_STD_ARGMAX_BIN_RANGE
+    centroids = {}
+    for name in FIXTURE_FFT_NAMES:
+        path = REPO_ROOT / "data" / SAMPLE_DIR_NAME / name
+        levels = np.asarray(fft_io.read_fft_gz(path).levels_db)
+        centroid = float(fft_io.echosounder_centroid_bin(levels))
+        centroids[name] = centroid
+        assert lo_bin <= centroid <= hi_bin, (
+            f"{name}: the power-excess centroid of the echosounder hump is at bin "
+            f"{centroid:.3f}, outside the expected {lo_bin}-{hi_bin} (measured "
+            f"150.36 and 150.17). At {B0_2A_BIN_WIDTH_HZ} Hz/bin that names "
+            f"{centroid * B0_2A_BIN_WIDTH_HZ / 1000:.2f} kHz for a source measured "
+            f"ABSOLUTELY on the 128 kHz sample WAV at "
+            f"{B0_2A_ECHOSOUNDER_ABS_CENTRE_HZ / 1000:.2f} kHz +/- "
+            f"{B0_2A_ECHOSOUNDER_ABS_CENTRE_TOL_HZ} Hz -- so a miss here is a "
+            "frequency-MAPPING error, not a source that moved."
+        )
+        # The hump must lie inside its stated extent, or "the centroid" is being
+        # taken over the wrong feature.
+        assert hump_lo <= centroid <= hump_hi, (
+            f"{name}: centroid {centroid:.3f} is outside the stated hump extent "
+            f"bins {hump_lo}-{hump_hi}"
+        )
+        # SECONDARY, WEAKER: intermittency is what makes this an echosounder and
+        # not a resonance. Asserted over an 8-bin window, deliberately loose.
+        std_bin = int(fft_io.temporal_std_argmax_bin(levels))
+        assert std_lo <= std_bin <= std_hi, (
+            f"{name}: the bin of peak per-bin TEMPORAL STD is {std_bin}, outside "
+            f"{std_lo}-{std_hi} (measured 151 and 150). This is the intermittency "
+            "signature; if the loudest bin and the most variable bin are not the "
+            "same feature, the hump is not the echosounder."
+        )
+
+    # The centroid's whole value is that it is STABLE where the argmax is not.
+    # If two windows five minutes apart disagree by more than a bin, this
+    # statistic is not measuring the source and the bound above is luck.
+    spread = max(centroids.values()) - min(centroids.values())
+    assert spread <= 1.0, (
+        f"the power-excess centroid moved {spread:.3f} bins between fixtures "
+        f"({centroids}); measured 0.19. A centroid that unstable is not a "
+        "position measurement and must not be used as an axis check."
+    )
+
+
+def check_b0_2a_axis_uncertainty_is_carried():
+    """The centre-vs-edge question is CARRIED, not silently resolved.
+
+    freq_hz[1] == 250.0 stays pinned -- the reader must be deterministic -- but
+    that is a NAMED ASSUMPTION (config.FFT_AXIS_CONVENTION), not a settled fact.
+    The B1a adjudication put it at roughly 60/40 toward ONC meaning bin EDGES,
+    which would move every named frequency up by half a bin. Nothing in the
+    evidence is strong enough to act on, and nothing is weak enough to ignore.
+
+    This check exists so that a later edit cannot quietly drop the open question
+    by deleting the constant or by ceasing to apply it. It asserts BOTH:
+      (a) the uncertainty is declared and strictly positive; and
+      (b) boatphone.models.band_limit ACTUALLY WIDENS its kept support by it --
+          measured by band-limiting a real product spectrum with and without it
+          and requiring the widened call to keep bins the narrow one drops.
+    A constant that is defined but never applied is worse than no constant: it
+    documents a caution the code does not take.
+    """
     cfg, fft_io = _b0_2a_fft_io()
-    path = sample / FIXTURE_FFT_NAMES[0]
-    product = fft_io.read_fft_gz(path)
-    levels = np.asarray(product.levels_db)
-    assert levels.shape == (B0_2A_N_FRAMES, B0_2A_N_BINS), (
-        f"{path.name}: read_fft_gz().levels_db has shape {levels.shape}, expected "
-        f"({B0_2A_N_FRAMES}, {B0_2A_N_BINS}) (frames x bins, settled fact)"
+    import boatphone.models as bm
+
+    uncertainty_hz = float(getattr(cfg, "FFT_AXIS_OFFSET_UNCERTAINTY_HZ"))
+    assert uncertainty_hz > 0.0, (
+        "config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ is "
+        f"{uncertainty_hz}; the centre-vs-edge convention is UNRESOLVED (B1a "
+        "adjudication) and a zero uncertainty asserts it is settled. If it has "
+        "genuinely been settled -- by ONC's own product definition, by the "
+        "two-bin-split census over the B3 corpus, or by the WAV centroid once B1 "
+        "pins counts to dB -- then delete this check together with the constant "
+        "and record the decision. Do not just zero the number."
     )
-    assert np.all(levels[:, B0_2A_STRUCTURAL_ZERO_COL0] == 0), (
-        f"{path.name}: column {B0_2A_STRUCTURAL_ZERO_COL0} is not all-zero "
-        f"(structural zero, settled fact); nonzero count "
-        f"{np.count_nonzero(levels[:, B0_2A_STRUCTURAL_ZERO_COL0])}"
+    assert uncertainty_hz <= 0.5 * B0_2A_BIN_WIDTH_HZ + 1e-9, (
+        f"config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ is {uncertainty_hz} Hz, more than "
+        f"half a bin ({0.5 * B0_2A_BIN_WIDTH_HZ} Hz). The open question is only "
+        "which point of a bin the axis names; it cannot be worth more than half a "
+        "bin, and a larger value would be hiding a different problem."
     )
-    lo, hi = B0_2A_STRUCTURAL_ZERO_COLS_HIGH
-    block = levels[:, lo:hi + 1]
-    assert np.all(block == 0), (
-        f"{path.name}: columns {lo}-{hi} are not all-zero (structural zero, "
-        f"settled fact); nonzero count {np.count_nonzero(block)}"
+    assert getattr(cfg, "FFT_AXIS_CONVENTION") == B0_2A_AXIS_CONVENTION, (
+        f"config.FFT_AXIS_CONVENTION is {getattr(cfg, 'FFT_AXIS_CONVENTION')!r}, "
+        f"expected {B0_2A_AXIS_CONVENTION!r} -- the reader is pinned to bin "
+        "centres so that it is deterministic; changing it changes every frequency "
+        "this project has ever named and needs a decision record, not an edit."
     )
 
-    freq_hz = np.asarray(product.freq_hz, dtype=float)
-    t_utc_s = np.asarray(product.t_utc_s, dtype=float)
-    assert freq_hz.shape == (B0_2A_N_BINS,), (
-        f"{path.name}: freq_hz shape {freq_hz.shape}, expected ({B0_2A_N_BINS},)"
+    # The pin itself still holds: bin 1 is exactly 250 Hz.
+    freq_hz = np.asarray(fft_io.frequency_axis_hz(), dtype=float)
+    assert freq_hz[1] == B0_2A_BIN_WIDTH_HZ, (
+        f"frequency_axis_hz()[1] = {freq_hz[1]}, expected exactly "
+        f"{B0_2A_BIN_WIDTH_HZ}; the reader must stay deterministic even while the "
+        "convention it encodes is an open question"
     )
-    assert t_utc_s.shape == (B0_2A_N_FRAMES,), (
-        f"{path.name}: t_utc_s shape {t_utc_s.shape}, expected ({B0_2A_N_FRAMES},)"
+
+    # (b) The uncertainty is APPLIED, not merely declared. Band edges chosen to
+    #     sit inside a bin, so widening by 125 Hz demonstrably changes the answer.
+    spectrum = np.zeros_like(freq_hz)
+    band_hz = (B0_2A_BIN_WIDTH_HZ * 8 + 100.0, B0_2A_BIN_WIDTH_HZ * 40 - 100.0)
+    narrow_freq, _ = bm.band_limit(
+        freq_hz, spectrum, B0_2A_BIN_WIDTH_HZ * 2 * B0_2A_N_BINS, band_hz
     )
-    # A relative axis would start at 0.0; a real 2026 UTC instant is >> 1e9.
-    assert t_utc_s[0] > 1_000_000_000.0, (
-        f"{path.name}: t_utc_s[0] = {t_utc_s[0]} looks like a relative offset, "
-        "not an absolute UTC epoch second"
+    widened_freq, _ = bm.band_limit(
+        freq_hz, spectrum, B0_2A_BIN_WIDTH_HZ * 2 * B0_2A_N_BINS, band_hz,
+        axis_offset_uncertainty_hz=uncertainty_hz,
+    )
+    assert widened_freq.size > narrow_freq.size, (
+        f"boatphone.models.band_limit kept {widened_freq.size} bins with "
+        f"axis_offset_uncertainty_hz={uncertainty_hz} and {narrow_freq.size} "
+        "without it -- it is NOT widening its support by the declared axis "
+        "uncertainty. The constant exists but the code ignores it, which is the "
+        "exact failure this check was written to prevent."
+    )
+    assert widened_freq[0] < narrow_freq[0] and widened_freq[-1] > narrow_freq[-1], (
+        f"band_limit widened only one edge: narrow {narrow_freq[0]}-"
+        f"{narrow_freq[-1]} Hz vs widened {widened_freq[0]}-{widened_freq[-1]} Hz. "
+        "The uncertainty is one-sided in FREQUENCY (the true centre may be half a "
+        "bin higher) but that makes BOTH band edges uncertain, so both must widen."
+    )
+
+    # And the product's own consumer must pass it, so a caller cannot get the
+    # narrow behaviour by accident.
+    prod_freq, _ = fft_io.band_limit_product(freq_hz, spectrum, band_hz)
+    assert prod_freq.size == widened_freq.size, (
+        f"fft_io.band_limit_product kept {prod_freq.size} bins where band_limit "
+        f"with the declared uncertainty kept {widened_freq.size}; the product's "
+        "band-limiter must carry FFT_AXIS_OFFSET_UNCERTAINTY_HZ for its callers"
     )
 
 
-def check_b0_2a_real_fixture_38khz_line_lands_in_expected_bin():
-    """Data-dependent: the known 38 kHz echosounder line lands at bin 152 +/- 1
-    in the real fixture -- an independent, real-data confirmation of the
-    frequency axis, beyond the synthetic-tone checks above."""
-    sample = REPO_ROOT / "data" / SAMPLE_DIR_NAME
-    if not sample.is_dir():
-        raise SkipCheck(f"acquisition directory absent: {sample}")
-    missing = [n for n in FIXTURE_FFT_NAMES if not (sample / n).is_file()]
-    if missing:
-        raise SkipCheck(f"fixture .fft.gz files absent from {sample}: {missing}")
+def check_b0_2a_no_check_asserts_a_bin_position_tighter_than_one_bin():
+    """No B0-2a check may pin a bin position tighter than +/- 1 bin.
 
+    A structural guard on this file itself, not on the data. While centre-vs-edge
+    is open, the axis is only known to half a bin, and the echosounder hump is
+    only reproducible to about 0.2 bins on a 5 kHz feature. A check asserting a
+    tighter position would fail for a reason that has nothing to do with the
+    pipeline being wrong -- and, worse, would look like it had SETTLED the
+    convention.
+
+    Enforced on the declared tolerance constants rather than by parsing code:
+    the echosounder centroid window and the temporal-std window must each be at
+    least two bins wide.
+    """
+    lo, hi = B0_2A_ECHOSOUNDER_CENTROID_BIN_RANGE
+    assert hi - lo >= 2.0, (
+        f"B0_2A_ECHOSOUNDER_CENTROID_BIN_RANGE spans {hi - lo} bins, tighter than "
+        "the +/- 1 bin the open centre-vs-edge convention permits"
+    )
+    std_lo, std_hi = B0_2A_ECHOSOUNDER_TEMPORAL_STD_ARGMAX_BIN_RANGE
+    assert std_hi - std_lo >= 2, (
+        f"B0_2A_ECHOSOUNDER_TEMPORAL_STD_ARGMAX_BIN_RANGE spans {std_hi - std_lo} "
+        "bins, tighter than the +/- 1 bin permitted"
+    )
+    assert not hasattr(_b0_2a_cfg(), "FFT_38KHZ_LINE_BIN"), (
+        "boatphone.config still defines FFT_38KHZ_LINE_BIN. It was a NOMINAL-derived "
+        "single-bin target (38000/250 = 152) that no statistic reproduced, and it has "
+        "been replaced by FFT_ECHOSOUNDER_* -- leaving it defined invites a second, "
+        "wrong definition of the same landmark (CLAUDE.md invariant 6)"
+    )
+
+
+def check_b0_2a_b5_ceilings_and_censoring_counters_are_available():
+    """B5 PRECONDITION: the two ceilings are declared SEPARATELY, and per-window
+    censoring counts are reportable.
+
+    Two distinct limits, which a single "max bin" would conflate:
+      * the CALIBRATED ceiling, bin 205 (51.2 kHz) -- above it no absolute
+        dB re 1 uPa exists at all;
+      * the UNCALIBRATED/RELATIVE ceiling, bin 408 (~102 kHz) -- above it even a
+        relative statistic is meaningless, because bins 409-424 are the
+        instrument's anti-alias skirt and are FLOOR-CENSORED (99.94% of cells at
+        zero). Averaging them turns "we cannot measure this" into a number, and
+        the bias is upward by an unboundable amount.
+
+    And the censoring counters: the product's integer scale is clipped into
+    [0, 86] at BOTH ends. Upper censoring is measured, not hypothetical -- 3
+    cells at 86 on a QUIET window of the local sample, and a close vessel pass
+    (the event of interest) will clip far harder. A band level with ceiling hits
+    is a lower bound, not a measurement, so the counts must travel with it.
+    """
     cfg, fft_io = _b0_2a_fft_io()
-    path = sample / FIXTURE_FFT_NAMES[0]
-    product = fft_io.read_fft_gz(path)
-    levels = np.asarray(product.levels_db)
-    mean_spectrum = levels.mean(axis=0)
-    lo_bin = max(0, B0_2A_38KHZ_LINE_BIN - 5)
-    hi_bin = min(B0_2A_N_BINS, B0_2A_38KHZ_LINE_BIN + 6)
-    window = mean_spectrum[lo_bin:hi_bin]
-    peak_bin = lo_bin + int(np.argmax(window))
-    assert abs(peak_bin - B0_2A_38KHZ_LINE_BIN) <= B0_2A_38KHZ_LINE_BIN_TOL, (
-        f"{path.name}: mean-spectrum peak in the 38 kHz search window is at bin "
-        f"{peak_bin}, expected {B0_2A_38KHZ_LINE_BIN} +/- {B0_2A_38KHZ_LINE_BIN_TOL} "
-        "(the documented 38 kHz echosounder line, acoustics_plan_v2 SS3)"
+    calibrated_ceiling = int(getattr(cfg, "FFT_B5_CALIBRATED_CEILING_BIN"))
+    relative_ceiling = int(getattr(cfg, "FFT_B5_RELATIVE_CEILING_BIN"))
+    assert calibrated_ceiling == B0_2A_CALIBRATED_BIN_RANGE[1], (
+        f"FFT_B5_CALIBRATED_CEILING_BIN is {calibrated_ceiling}, expected "
+        f"{B0_2A_CALIBRATED_BIN_RANGE[1]} (bin 205 == 51.2 kHz, where the "
+        "pre-deployment calibration file stops)"
+    )
+    assert relative_ceiling == B0_2A_ROLLOFF_ONSET_BIN, (
+        f"FFT_B5_RELATIVE_CEILING_BIN is {relative_ceiling}, expected "
+        f"{B0_2A_ROLLOFF_ONSET_BIN} (the anti-alias roll-off onset, ~102 kHz)"
+    )
+    assert calibrated_ceiling < relative_ceiling, (
+        "the calibrated ceiling must be BELOW the relative one; if they are equal "
+        "or inverted the two limits have been conflated, which is how an "
+        "uncalibratable bin ends up inside a dB re 1 uPa number"
+    )
+
+    _cfg, fft_io, path, product = _b0_2a_fixture_levels(0)
+    report = fft_io.censoring_report(product.levels_db)
+    for key in ("n_at_floor", "n_at_ceiling", "n_cells",
+                "fraction_at_floor", "fraction_at_ceiling"):
+        assert key in report, f"censoring_report() does not report {key!r}: {report}"
+    assert report["n_cells"] == B0_2A_N_FRAMES * B0_2A_N_BINS, (
+        f"censoring_report() counted {report['n_cells']} cells, expected "
+        f"{B0_2A_N_FRAMES * B0_2A_N_BINS}"
+    )
+    # The counter must actually COUNT, not return zeros: this window is known to
+    # be censored at both ends. If either count is zero the counter is broken,
+    # and a broken censoring counter reads exactly like clean data.
+    assert report["n_at_floor"] > 0, (
+        f"{path.name}: censoring_report() found 0 cells at the {getattr(cfg, 'FFT_LEVEL_FLOOR')} "
+        "floor, but 18.7% of this window's cells are measured at it"
+    )
+    assert report["n_at_ceiling"] > 0, (
+        f"{path.name}: censoring_report() found 0 cells at the "
+        f"{getattr(cfg, 'FFT_LEVEL_CEILING')} ceiling, but 3 cells of this QUIET "
+        "window are measured at it. Upper censoring is real and a counter that "
+        "reports none of it is worse than no counter."
     )
 
 
@@ -6012,8 +6368,11 @@ CHECKS = [
     ("B0-2a SYNTHETIC TONE positive control (freq+time+level)", check_b0_2a_synthetic_tone_positive_control_survives_axis_mapping),
     ("B0-2a WRONG-BIN-FAILS: offset tone claim is rejected", check_b0_2a_synthetic_tone_wrong_bin_offset_is_rejected),
     ("B0-2a WRONG-TIME-FAILS: +1h shifted claim is rejected", check_b0_2a_synthetic_tone_wrong_hour_offset_is_rejected),
-    ("B0-2a real fixture: shape 1200x512 + structural zeros (data-dependent)", check_b0_2a_real_fixture_shape_and_structural_zeros),
-    ("B0-2a real fixture: 38 kHz line at bin 152+/-1 (data-dependent)", check_b0_2a_real_fixture_38khz_line_lands_in_expected_bin),
+    ("B0-2a real fixture: shape 1200x512 + 3-region band top (data-dependent)", check_b0_2a_real_fixture_shape_and_structural_zeros),
+    ("B0-2a real fixture: echosounder hump CENTROID in bins 149-152 (data-dependent)", check_b0_2a_real_fixture_echosounder_hump_centroid),
+    ("B0-2a centre-vs-edge uncertainty is CARRIED (+/-125 Hz applied, not just declared)", check_b0_2a_axis_uncertainty_is_carried),
+    ("B0-2a no check pins a bin position tighter than +/-1 bin", check_b0_2a_no_check_asserts_a_bin_position_tighter_than_one_bin),
+    ("B0-2a B5 preconditions: two ceilings (205/408) + censoring counters", check_b0_2a_b5_ceilings_and_censoring_counters_are_available),
     ("B0-2a calibratable band == bins 0-205; assert_calibratable rejects beyond (reuses models.py)", check_b0_2a_calibratable_band_matches_bin_range_and_assert_calibratable_rejects_beyond),
 ]
 

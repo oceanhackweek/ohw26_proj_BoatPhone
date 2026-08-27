@@ -54,10 +54,11 @@ also produces (CLAUDE.md invariant 4). Every headline number below is paired wit
   **filename** (`onc_client.parse_file_coverage`) -- the decompressed payload carries no header, no
   timestamp and no sample rate at all. Null checks (tone ladder, frame-shuffle, alternate time
   bases) run and reported in the B0-2a-impl log. Two checks remain deliberately failing as
-  data-dependent findings (structural zero columns are not exactly zero; the 38 kHz line measures
-  at bin 150-151, not 152) and a third convention question (edge- vs centre-binning, +-125 Hz on
-  every band edge) is open and under separate adjudication -- **do not touch `fft_io.py`,
-  `config.py` or the B0-2a checks outside that adjudication.**
+  data-dependent findings, now **adjudicated and closed** by B1a -- see §3.1-3.3. Both contracts
+  were **restated to match measured reality**, not weakened: the top of the band is three regions
+  (with a *harder* exact-zero assertion over cols 425-511), and the 38 kHz "line" is a hump asserted
+  by power-excess centroid. The third question -- edge- vs centre-binning, +-125 Hz on every band
+  edge -- is **still open** and is now *carried* in code rather than resolved (§3.2).
 
 ### The finding that reshapes everything else
 
@@ -113,7 +114,9 @@ are 40/40 green and mutation-tested against eight deliberate sabotages.
 
 | Fact | Source |
 |---|---|
-| **250 Hz per bin** (1024-pt FFT at 256 kHz, 512 bins over 0-128 kHz). Bin 1 = 250 Hz | v1 §"What changed since rev. 3" -- three independent confirmations |
+| **250 Hz per bin** (1024-pt FFT at 256 kHz, 512 bins over 0-128 kHz) | v1 §"What changed since rev. 3", **re-confirmed B1a** on three absolute measurements on the 128 kHz sample WAV (below) |
+| **Echosounder source centre = 37,650 +- 150 Hz** (not 38.0 kHz) | B1a, measured **absolutely on the 128 kHz WAV** -- no product axis involved. `FFT_ECHOSOUNDER_ABS_CENTRE_HZ` |
+| ~~Anti-alias shoulder onset at bin 408 confirms the mapping~~ | **STRUCK as mapping evidence, B1a** -- see below. Retained only as a structural check |
 | Calibration file covers **10 Hz - 51.2 kHz only** = bins 0-205. Bins 206-417 are uncalibratable | the file's own header |
 | Decidecade bands resolved only **above ~2.2 kHz**; no hybrid-millidecade compliance | 250 Hz bins; a decidecade band at *f* is ~0.23*f* wide |
 | **~42 dB unexplained shape difference** across 250 Hz -> 2 kHz survives the remapping | v1 §A2 -- still open, gated in B1 |
@@ -121,6 +124,123 @@ are 40/40 green and mutation-tested against eight deliberate sabotages.
 | ONC 400s of the "not deployed during range" form are **measured zeros** | decision 0007 |
 | An empty listing over a deployed span is a **measured zero**, not a failure | decision 0008 |
 | Study window **2020-02-18** (calibration validity) -> **2026-03-14** (deployment end) | calibration file; `hydrophone_gaps.md` |
+
+### 3.1 What confirms 250 Hz/bin -- and what was struck (B1a, 2026-08-27)
+
+**Struck: the anti-alias shoulder.** v1 counted the shoulder onset near bin 408
+(`408 x 250 Hz = 102 kHz = 0.4 x 256 kHz`) as one of three independent confirmations of the
+250 Hz/bin mapping. It is **information-free** for that purpose. The shoulder sits at `0.4 x fs`
+and the bin width is `fs / 1024`, so the shoulder bin is `0.4 x 1024 = 409.6` **for any `fs`
+whatsoever**. It is exactly as consistent with 125 Hz/bin as with 250 Hz/bin and never
+discriminated between them. Recorded here rather than quietly deleted, because "three independent
+confirmations" is the kind of claim that gets cited later: it was two. The shoulder survives as a
+**structural** check only (`FFT_ROLLOFF_ONSET_BIN = 408`) -- it still catches a mis-strided read.
+
+**Replaced by three absolute measurements.** The sample WAV
+(`ICLISTENHF1266_20260313T000000.029Z_..._000500.029Z.wav`) is **128 kHz / 24-bit mono** -- it sees
+0-64 kHz and states frequencies without reference to the product's axis at all. Against it:
+
+| Measurement on the WAV | Predicted at 250 Hz/bin | Predicted at 125 Hz/bin | Result |
+|---|---|---|---|
+| The bins 140-162 feature | 35.0-40.5 kHz | 17.5-20.3 kHz | **+14 dB hump measured at 35-40.5 kHz**; <= 2.4 dB at 17.5-20.3 kHz |
+| The bins 399/400 spur | 99.8-100.1 kHz (above WAV Nyquist) | 49.8-50.1 kHz | **Nothing at 49.8-50.1 kHz** (<= 0.11 dB) |
+| The bins 322-329 feature | 80.5-82.3 kHz (above WAV Nyquist) | 40.2-41.2 kHz | **Nothing at 40.2-41.2 kHz** (<= 0.30 dB) |
+
+250 Hz/bin is therefore confirmed on physics, not on arithmetic about the product.
+
+**The 38 kHz landmark is restated.** "A line at bin 152 +- 1" was **nominal-derived**
+(`38000 / 250 = 152`) and no statistic reproduces it on either fixture. The feature is a
+**~5 kHz-wide hump over bins 140-162**, +14 dB over the band median, whose source measures
+**37,634 Hz** by power-excess centroid on the WAV (stable to 2 Hz across the file's two halves) and
+peaks in per-band temporal std at 37,672 Hz with 11.0 dB of variation -- the intermittency that
+makes it an echosounder and not a resonance. Consistent with an ASL AZFP 38 kHz ping (a 300 us
+pulse gives a ~3.3 kHz sinc mainlobe) or an EK80 sweep on an ES38-class transducer (nominal
+34-45 kHz). "38 kHz" was always a nominal label. The check now asserts a **power-excess centroid**
+in bins 149.0-152.0 (measured 150.36 and 150.17), never an argmax -- the argmax of a 5 kHz hump
+quantised to integer counts flips between 149 and 150 across two files five minutes apart, while
+the centroid moved 0.19 bins. Its job is to reject a **2x mapping error**, where it discriminates
+by ~150 bins.
+
+### 3.2 OPEN: centre-vs-edge binning -- +-125 Hz on every band edge
+
+**Not settled, and deliberately not settled by fiat.** The reader stays pinned to bin **centres**
+(`frequency_axis_hz()[1] == 250.0` exactly) because it must be deterministic, but that is now a
+**named assumption** (`FFT_AXIS_CONVENTION = "centre"`), not a settled fact. B1a put it at roughly
+60/40 toward ONC meaning bin **edges** (bin *k* spanning `[k*dF, (k+1)*dF)`), which would move
+every named frequency up by half a bin.
+
+- *For edge*: a narrow, reproducible spur straddles bins 399/400 with a power centroid of 399.47 /
+  399.52 on two files five minutes apart -- a tone exactly halfway between two bin **centres**,
+  which under the edge convention is the round 100.000 kHz. 512 bins of 250 Hz also tile
+  `[0, 128000)` exactly under edge, and there demonstrably *is* a low-frequency filter (the 42 dB
+  deficit above).
+- *For centre*: a 1024-pt real FFT gives 513 bins (DC..Nyquist); a 512-column product is most
+  naturally that with Nyquist dropped, `k = 0..511` at centres `k*dF` -- which makes column 0 the
+  DC bin and explains its near-exact zero far more economically than a high-pass.
+- *Not evidence*: the 100 kHz roundness is a **prior**, not a measurement. Of six narrowband lines
+  found, the other five are round under neither convention, and there is no plausible 100 kHz
+  source at Folger (AZFP: 38/67/125/200/455/769 kHz; ADCPs: 300/600/1200 kHz). The WAV cross-check
+  is **circular until B1 pins counts to dB**: the implied offset swings from -0.10 to +0.89 bins as
+  the assumed level scale moves from 0.25 to 3.0 dB/count, i.e. clean across both hypotheses.
+- *Also not evidence*: the echosounder hump. Under edge it reads 37.70 kHz and under centre
+  37.58 kHz, and which is closer flips with the background model and the dB scale.
+
+**Consequence, carried not hidden:** `FFT_AXIS_OFFSET_UNCERTAINTY_HZ = 125.0` (one-sided, toward
+higher frequency). **Every band-edge consumer widens its support by it** --
+`models.band_limit(..., axis_offset_uncertainty_hz=...)`, supplied automatically by
+`fft_io.band_limit_product`. `check_b0_2a_axis_uncertainty_is_carried` asserts both that the
+constant is positive and that `band_limit` *actually widens*, so a later edit cannot silently drop
+the open question. **No check may assert a bin position tighter than +-1 bin until this settles.**
+
+B5 is **not blocked**, provided it carries the +-125 Hz and puts no band edge inside a narrow
+feature. B6's calibration interpolation inherits <= 125 Hz of error: negligible above ~2 kHz where
+the calibration curve is flat, non-negligible only in bins 1-4, which the 42 dB low-frequency
+anomaly already gates.
+
+**To resolve, in order:** (a) **ask ONC for the product definition** -- one sentence settles it,
+free, and it is already B1 step 4; (b) a **scale-free two-bin-split census** over the B3 corpus --
+histogram the sub-bin centroid fraction of every narrow (<= 2-bin) line; a cluster at half-integers
+means edge, at integers means centre, and it uses only the two-bin ratio so no level scale is
+needed; (c) once B1 pins counts to dB, re-run the WAV centroid comparison.
+
+### 3.3 The top of the band is THREE regions, and the level scale is censored
+
+Measured over both fixtures (2,400 frames). The single "zeros at col 0 and 419-511" statement was
+wrong at **both** ends.
+
+| Region | Constant | Measured | Assertion |
+|---|---|---|---|
+| cols **425-511** | `FFT_STRUCTURAL_ZERO_COLS_HIGH` | 0 of 104,400 nonzero on **each** fixture | **HARD exact zero** -- any nonzero raises (reader/format failure) |
+| cols **419-424** | `FFT_ROLLOFF_TAIL_COLS` | 68 / 74 of 7,200 nonzero, max 6 | bounded (max <= 10, mean <= 0.05) **and per-bin mean over bins 405-424 non-increasing** |
+| col **0** | `FFT_DC_COL` | 14 / 8 of 1,200 nonzero, max 3 | bounded (max <= 5, nonzero fraction <= 0.02) -- **not** exactly zero |
+
+The old `(419, 511)` was **off by six columns**: 419-424 is the tail of one continuous anti-alias
+skirt whose per-bin mean runs smoothly from 9.8 at bin 405 through 0.28 at 418 to ~0.001 at 424.
+There is no boundary at 419. The **monotonicity** assertion is the one that earns its keep -- a
+mis-strided or wrapped row moves a bin mean by order 1, which a cell-count bound would not notice.
+(One correction to the B1a ledger: the tail is *not* strictly monotonic. On fixture `...000004`
+bin 423 has mean 0.0000 and bin 424 has mean 0.0008 -- one count in one frame out of 1200. At the
+far end of the skirt the mean is quantised to multiples of 1/1200 and its ordering is integer
+noise, so the assertion carries a tolerance of exactly one count in one frame,
+`FFT_ROLLOFF_MONOTONIC_TOL_LEVEL`, three orders of magnitude below any real bug.)
+
+**Two ceilings, kept apart in `config.py`:**
+
+- `FFT_B5_CALIBRATED_CEILING_BIN = 205` (51.2 kHz) -- above it, no absolute dB re 1 uPa exists.
+- `FFT_B5_RELATIVE_CEILING_BIN = 408` (~102 kHz) -- **nothing above bin 408 may enter a B5
+  statistic**, even a relative one. Bins 409-424 are instrument response, not ocean; they are
+  **floor-censored** (99.94% of cells at 0), so any mean over them is a censoring artefact biased
+  upward by an unboundable amount -- averaging them converts "we cannot measure this" into a
+  number.
+
+**Upper censoring is real, not hypothetical.** `levels_db` is the product's own uncalibrated
+integer scale, clipped into `[0, 86]` at **both** ends. Three cells sit at the 86 ceiling in bins
+140-165 of fixture `...000004`, on a **quiet ambient** window; a close vessel pass -- the event of
+interest -- will clip far harder. `fft_io.censoring_report()` returns the per-window counts at
+each limit, and **every B5 band level must be reported next to them**: a band level from a window
+with ceiling hits is a lower bound, not a measurement, and every threshold or regression built on
+these levels must be censoring-aware.
+
 
 ---
 
@@ -442,8 +562,9 @@ re-executing a notebook top-to-bottom in a fresh kernel.
 | What | How | Pass criterion |
 |---|---|---|
 | **Synthetic control** | Tone of known level, frequency and time pushed through `.fft.gz` -> model input | Lands in the right bin and the right `t_utc_s` (invariant 3) |
-| FFT reader -- structure | Row/bin counts; zero-column periodicity | 1200 x 512; zeros at col 0 and 419-511 |
-| FFT reader -- mapping | 38 kHz echosounder line; anti-alias shoulder | Line at bin 152 +/- 1; shoulder onset ~ bin 408 |
+| FFT reader -- structure | Row/bin counts; the three top-of-band regions (§3.3) | 1200 x 512; **exact** zero over cols 425-511; col 0 and cols 419-424 bounded; skirt mean non-increasing over bins 405-424 |
+| FFT reader -- mapping | Echosounder-hump power-excess **centroid** (§3.1); WAV absolute cross-check | Centroid in bins 149.0-152.0; hump at 35-40.5 kHz on the 128 kHz WAV. Shoulder onset ~ bin 408 is a **structural** check only -- struck as mapping evidence |
+| FFT reader -- axis convention | `check_b0_2a_axis_uncertainty_is_carried` (§3.2) | `FFT_AXIS_OFFSET_UNCERTAINTY_HZ > 0` **and** `band_limit` demonstrably widens by it; no check pins a bin tighter than +-1 |
 | FFT reader -- magnitude | Product bin *b* vs WAV bin *2b*, bins 1-205, censoring-aware, loud window | Slope ~ 1; intercept characterised; convention documented |
 | Time alignment | Cross-correlate on the 38 kHz transient | Lag resolved to < 1 frame (0.25 s) |
 | Calibration coverage | Assert every absolute-level output falls in bins 1-205 | Violations raise, enforced in `calibrate.py` |
