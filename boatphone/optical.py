@@ -372,6 +372,11 @@ DETECTION_CORNER_FIELDS: tuple[str, ...] = (
     "nir_peak", "nir_x_water", "nir_bright_px", "nir_fill", "nir_support",
     "possible_false_positive", "nir_threshold_rho",
     "slice_px", "imgsz", "conf_threshold", "channel_order", "weights_file",
+    # radiometry is 'toa' or 'sr'. It belongs with the other provenance columns
+    # because it moves the result more than any of them: same scene, same config,
+    # 46 detections on TOA against 17 on SR. Two files without this column cannot
+    # be told apart after the fact.
+    "radiometry",
 )
 
 # The same file without the NIR annotation: strictly what the model produced.
@@ -993,7 +998,7 @@ def boxes_to_corner_records(boxes: Iterable[tuple[Sequence[float], float]],
 
         cfg = config or {}
         for key in ("slice_px", "imgsz", "conf_threshold", "channel_order",
-                    "weights_file"):
+                    "weights_file", "radiometry"):
             row[key] = cfg.get(key, "")
         rows.append(row)
     return rows, threshold
