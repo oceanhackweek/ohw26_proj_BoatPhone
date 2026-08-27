@@ -54,6 +54,7 @@ __all__ = [
     "level_slope_counts_per_min",
     "spectral_centroid_hz",
     "percentile_spectra_counts",
+    "band_baseline_from_per_bin_ambient",
     "BandExcess",
     "UnrepresentableBandError",
     "relative_ceiling_hz",
@@ -544,3 +545,41 @@ def level_slope_counts_per_min(level_counts, window_seconds: float,
     per_second = savgol_filter(level_counts, window_length=window_frames,
                                polyorder=polyorder, deriv=1, delta=float(frame_seconds))
     return per_second * 60.0
+
+
+def band_baseline_from_per_bin_ambient(freq_hz, ambient_per_bin, band_hz):
+    """Reduce a PER-BIN ambient spectrum to one band baseline.
+
+    The bridge between a corpus-derived ambient (per frequency bin, estimated
+    over thousands of windows) and :func:`band_excess`, which wants a single
+    number. Reduced with the SAME median-over-in-band-bins rule
+    ``band_level_series`` uses, so the baseline and the level it is subtracted
+    from are the same kind of quantity -- mixing two reductions here would put a
+    systematic offset into every excess.
+
+    WHY A SECOND BASELINE EXISTS AT ALL. ``ambient_baseline_counts`` takes the
+    10th percentile of the window's OWN trace, which is robust and needs no
+    external input, but has one failure it cannot detect: a window occupied by a
+    vessel throughout raises its own baseline and suppresses its own detection.
+    A baseline estimated across the corpus does not, because no single pass moves
+    it. The two disagree exactly where that matters, and the disagreement is
+    itself the diagnostic -- so both are reported and neither replaces the other.
+
+    The ambient must come from a comparable population (same season, same
+    instrument state). Passing a 2020 ambient to a 2025 window would import a
+    seasonal offset as if it were signal.
+    """
+    freq_hz = np.asarray(freq_hz, dtype=float)
+    ambient_per_bin = np.asarray(ambient_per_bin, dtype=float)
+    if ambient_per_bin.shape != freq_hz.shape:
+        raise ValueError(
+            f"ambient has {ambient_per_bin.shape} values for a {freq_hz.shape} "
+            "frequency axis; refusing to broadcast or trim one to fit the other"
+        )
+    assert_band_representable(band_hz, label="band_baseline_from_per_bin_ambient")
+    kept_freq_hz, _ = band_limit_product(freq_hz, ambient_per_bin, band_hz)
+    in_band = np.isin(freq_hz, kept_freq_hz)
+    if not in_band.any():
+        raise UnrepresentableBandError(
+            f"band {tuple(float(b) for b in band_hz)} Hz kept no bins")
+    return float(np.median(ambient_per_bin[in_band]))
