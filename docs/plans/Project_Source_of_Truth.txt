@@ -205,6 +205,66 @@ Neve (Aug 27) -- Option C detection stack landed; scope decided; two silent bugs
   disk today -- it is open in a live Jupyter session and an autosave clobber already cost Malachy
   a full session), then Detector A's first real run the moment a scene lands.
 
+Malachy (Aug 27, evening) -- NEVE: YOUR IMAGERY IS DELIVERED, AND TWO DECISIONS ARE YOURS:
+
+CONTEXT FIRST, because two premises in your entry above have changed:
+- "BLOCKED ON DATA, NOT ON CODE. No imagery is delivered." No longer true. 26 PlanetScope
+  scenes are on disk as analytic_sr_udm2 -- 26 SR clips (4-band, NIR is band 4) and 26 UDM2
+  masks, 2020-2025, 23 PSB.SD / 3 PS2.SD, aoi_clear 0.9854-1.0000, all cleared against the
+  hydrophone gaps. Manifest committed at contributor_folders/malachymcc/planet_folger/
+  manifest_folger_202608.csv (tracked; the 1.2 GB of imagery is not, ask me for it).
+- "At BATCH_SIZE 26 there is no quota for it. It is being rehearsed on Sentinel-2 instead."
+  Also no longer true -- the section 5 paired VISUAL controls were ordered and delivered:
+  20200730_192942_71_1059 (PS2.SD) and 20250630_193824_56_24db (PSB.SD), one per instrument.
+  Both renderings of both acquisitions are on disk, so section 5.4 can run on real
+  PlanetScope. Keep the S2 rehearsal as an independent check in the model's NATIVE domain,
+  but it no longer has to stand in for the real test.
+
+DECISION 1 -- THE FIXED SCALE (section 5.2). read_visual() at vessel_detect.py:98-107 still
+applies the 2-98% percentile stretch. Section 5.2 says that path becomes the PRIMARY input and
+the stretch must be replaced by the fixed TCI scaling. Until it is, section 5.4 cannot be run
+honestly: a run today would be testing the percentile stretch, which section 5.1 explicitly
+rejects for making radiometry depend on scene content. This is the single blocker on the whole
+section 5/6 chain. Your file, your call -- I have not touched it.
+
+DECISION 2 -- AGPL. The repo is MIT, ultralytics and yolo11s_tci.pt are AGPL-3.0, and there is
+still no decision record. It gates using the weights at all, so it blocks the same chain. This
+was Wednesday's task.
+
+WHAT I ALREADY MEASURED, so you do not repeat it: the radiometric half of 5.4, on both paired
+scenes, pixel-level, no model needed. THE TWO RENDERINGS DO NOT MATCH, and not by a scale
+factor. On both scenes -- different instruments, five years apart -- blue FALLS while red and
+green RISE (20200730 water R 1.0->9.9, G 2.0->17.6, B 21.0->14.1; 20250630 R 22->28, G 34->40,
+B 52->38). A single multiplier cannot do that; Planet's `visual` is applying per-band colour
+correction and a black point, not a linear rescale. Channel order was verified first, so this
+is not a section 6.1 inversion: visual is R,G,B,Alpha and analytic is B,G,R,NIR.
+Note 20250630's OVERALL bias is -0.4 DN, which reads as a clean pass -- only the per-band split
+exposes it. Do not judge this on an aggregate mean.
+
+That does NOT fail 5.4, whose criterion is detection count and box positions; a detector may be
+robust to a colour shift this size. It does raise the odds of the "diverge badly" branch.
+
+SUGGESTED SEQUENCE, once the two decisions land: run 5.4 UNFITTED first, on the plain fixed TCI
+scaling. That is the plan's actual test and it is what section 3's headline claim needs -- recall
+of the PRETRAINED model. Only if it diverges, fit a per-band affine SR->visual, and fit it on ONE
+paired scene and test on the OTHER, because fitting and testing on the same two scenes passes by
+construction (the same circularity section 9.4 already names for k). One control per instrument
+was chosen precisely so that leave-one-out is available. Report both numbers: the gap between
+unfitted and fitted separates how much of the transfer gap is radiometric from how much is the
+model not seeing 3 m hulls. A fitted transform is not retraining, but it does tune the model's
+input, so section 13's "recall is measured, not improved" needs a sentence about it.
+
+TWO SMALL CORRECTIONS to your entry, both measured against the live Planet spec:
+- `analytic_sr` is NOT a PSScene bundle and is not in any working SINGLE_RASTER_BUNDLES set --
+  that list was wrong and would have failed at order time. PSScene has exactly two bundles worth
+  anything here: `visual` (1 raster) and `analytic_sr_udm2` (SR + xml + UDM2). The latter is the
+  only route to NIR, and UDM2 inside it is free -- a unified bundle draws quota once.
+- Because UDM2 now arrives IN-BUNDLE and CLIPPED, your note that "the free UDM2 arrives as a FULL
+  scene, not clipped, so it must be windowed at read time" does not apply to these deliveries.
+  Check find_udm2()/read_udm2_clear() against a real file before assuming a window is needed.
+- Confirmed for you: ortho_analytic_4b_sr exists on BOTH instruments in the batch, and we ordered
+  4-band, so NIR is band 4 everywhere. The 8-band band-8 caveat does not apply.
+
 
 Project Goals:
 
