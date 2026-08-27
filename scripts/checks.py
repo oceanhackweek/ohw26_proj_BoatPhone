@@ -19,6 +19,7 @@ credential checks write only into a temp directory that they remove.
 
 from __future__ import annotations
 
+import inspect
 import os
 import pathlib
 import subprocess
@@ -27,12 +28,25 @@ import tempfile
 import textwrap
 import traceback
 
+import numpy as np  # present on the hub (CLAUDE.md "Environment"); used only by A8b
+
 # ---------------------------------------------------------------------------
 # Constants (no magic numbers/strings -- source in comment)
 # ---------------------------------------------------------------------------
 
 # This file lives at <repo>/scripts/checks.py, so the repo root is two parents up.
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+# Running `python3 scripts/checks.py` puts scripts/ on sys.path, not the repo
+# root, so an in-process `import boatphone` would fail with ModuleNotFoundError
+# regardless of whether the module under test is correct. The A0 checks dodge
+# this by importing in a child process with cwd=REPO_ROOT; the A8b checks import
+# directly (they pass numpy arrays across the call, which does not survive a
+# subprocess boundary), so the root goes on the path here. Appended, not
+# prepended: an installed `boatphone` still wins, which is what a user of the
+# package would get.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.append(str(REPO_ROOT))
 
 # The on-disk acquisition directory name. Source: `ls data/` on the OHW hub --
 # the name contains literal SPACES and must not be silently normalised.
@@ -826,6 +840,1180 @@ def check_a0_5_python_constraint_admits_314():
 
 
 # ---------------------------------------------------------------------------
+# A8a -- VTUAD facts gate
+#
+# Contract: before any VTUAD-derived constant lands in boatphone/config.py, the
+# facts backing it must be written down in docs/vtuad-facts.md, each one carrying
+# an independently-checkable source URL and a retrieval date -- NOT inherited
+# from docs/plans/accoutics_plan.md or a previous agent's say-so.
+#
+# Expected markdown table shape (the coder writing docs/vtuad-facts.md in the
+# next step must match this exactly, since the parser below is intentionally
+# not a general markdown parser):
+#
+#   | key | value | source | retrieved |
+#   |-----|-------|--------|-----------|
+#   | sample_rate_hz | 32000 (uniform across corpus) | https://... | 2026-08-27 |
+#   | ... one row per key in VTUAD_REQUIRED_FACT_KEYS ...
+#
+# Column headers are matched case-insensitively; column ORDER must be
+# key, value, source, retrieved (extra trailing columns, e.g. `notes`, are
+# tolerated and ignored). `source` must be an http(s) URL -- a bare repo-
+# relative path (e.g. `docs/plans/accoutics_plan.md`) is exactly the failure
+# mode this check exists to catch, so it is rejected explicitly.
+# ---------------------------------------------------------------------------
+
+VTUAD_FACTS_DOC = REPO_ROOT / "docs" / "vtuad-facts.md"
+
+# The eleven facts A8a requires, independently sourced. Source: A8a contract
+# (segment description), not inherited from any existing BoatPhone doc.
+VTUAD_REQUIRED_FACT_KEYS = [
+    "sample_rate_hz",
+    "file_format",
+    "clip_duration_s",
+    "clip_count",
+    "band_populated_hz",
+    "label_schema",
+    "licence",
+    "total_size_bytes",
+    "smallest_downloadable_unit_bytes",
+    "download_mechanism",
+    "precomputed_features_available",
+]
+
+
+class VtuadFactsTableError(AssertionError):
+    """Raised by _parse_vtuad_facts_table for a malformed or absent table."""
+
+
+def _split_row(line: str) -> list[str]:
+    cells = line.strip()
+    if cells.startswith("|"):
+        cells = cells[1:]
+    if cells.endswith("|"):
+        cells = cells[:-1]
+    return [c.strip() for c in cells.split("|")]
+
+
+def _parse_vtuad_facts_table() -> dict[str, dict[str, str]]:
+    """Parse docs/vtuad-facts.md into {key: {"value":..., "source":..., "retrieved":...}}.
+
+    Deliberately narrow: only recognizes the pipe-table shape documented above.
+    Raises VtuadFactsTableError (a distinct type from a missing/empty row) if the
+    file is absent or no such table can be found, so failure modes stay legible.
+    """
+    if not VTUAD_FACTS_DOC.is_file():
+        raise VtuadFactsTableError(f"{VTUAD_FACTS_DOC} does not exist")
+
+    text = VTUAD_FACTS_DOC.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    header_idx = None
+    for i, line in enumerate(lines):
+        if "|" not in line:
+            continue
+        cells = [c.lower() for c in _split_row(line)]
+        if cells[:4] == ["key", "value", "source", "retrieved"]:
+            header_idx = i
+            break
+    if header_idx is None:
+        raise VtuadFactsTableError(
+            f"{VTUAD_FACTS_DOC} contains no `| key | value | source | retrieved |` table "
+            "(header row not found, case-insensitive, in that column order)"
+        )
+
+    # Row after the header is expected to be the `|---|---|---|---|` separator.
+    body_start = header_idx + 1
+    if body_start < len(lines) and set(lines[body_start].replace("|", "").strip()) <= set("-: "):
+        body_start += 1
+
+    rows: dict[str, dict[str, str]] = {}
+    for line in lines[body_start:]:
+        if "|" not in line or not line.strip():
+            continue
+        if not line.strip().startswith("|"):
+            break  # table ended
+        cells = _split_row(line)
+        if len(cells) < 4:
+            continue
+        key, value, source, retrieved = cells[0], cells[1], cells[2], cells[3]
+        rows[key] = {"value": value, "source": source, "retrieved": retrieved}
+    return rows
+
+
+def check_a8a_facts_doc_exists():
+    """docs/vtuad-facts.md exists and contains a parseable facts table.
+
+    Expected to FAIL right now: the doc does not exist yet.
+    """
+    try:
+        rows = _parse_vtuad_facts_table()
+    except VtuadFactsTableError as exc:
+        raise AssertionError(str(exc)) from exc
+    assert rows, f"{VTUAD_FACTS_DOC} has a facts table but it has zero rows"
+
+
+def check_a8a_all_required_keys_present_and_populated():
+    """Every required fact key is present, has a non-empty value, and a URL source.
+
+    Distinguishes three failure modes explicitly, per key:
+      - MISSING: the key has no row at all
+      - EMPTY VALUE: the row exists but `value` is blank
+      - BAD SOURCE: `source` is blank, or is not an http(s) URL (e.g. a
+        repo-relative path such as `docs/plans/accoutics_plan.md`), or
+        `retrieved` is blank
+    """
+    try:
+        rows = _parse_vtuad_facts_table()
+    except VtuadFactsTableError as exc:
+        raise AssertionError(
+            f"cannot check required keys, no parseable table: {exc}"
+        ) from exc
+
+    problems = []
+    for key in VTUAD_REQUIRED_FACT_KEYS:
+        if key not in rows:
+            problems.append(f"{key}: MISSING -- no row for this key")
+            continue
+        row = rows[key]
+        if not row["value"].strip():
+            problems.append(f"{key}: EMPTY VALUE -- row exists but value column is blank")
+        source = row["source"].strip()
+        if not source:
+            problems.append(f"{key}: BAD SOURCE -- source column is blank")
+        elif not (source.startswith("http://") or source.startswith("https://")):
+            problems.append(
+                f"{key}: BAD SOURCE -- source {source!r} is not an http(s) URL "
+                "(a repo-relative path is not an independent source)"
+            )
+        if not row["retrieved"].strip():
+            problems.append(f"{key}: BAD SOURCE -- retrieved-date column is blank")
+
+    assert not problems, (
+        f"{VTUAD_FACTS_DOC} fails the facts gate for "
+        f"{len({p.split(':')[0] for p in problems})} key(s):\n      " + "\n      ".join(problems)
+    )
+
+
+def check_a8a_config_constants_match_facts_doc():
+    """boatphone.config's VTUAD_* constants equal the values stated in the facts doc.
+
+    This is the drift check: a doc that says one sample rate while downstream
+    code uses another must fail here, not surface later as a silently
+    mis-resampled feature. Constants are imported from boatphone.config -- the
+    source markdown is never re-read textually by the code under test.
+
+    Ambiguity flagged rather than guessed silently: the exact string/number
+    formatting of the doc's `value` cell (e.g. "32000 Hz" vs "32000") is not
+    prescribed by the A8a contract, so this check compares the *numeric*
+    portion of sample_rate_hz / total_size_bytes and the config constant,
+    and does substring containment for label_schema's zone radii and class
+    names. The coder implementing the doc + config should keep the value cell
+    parseable in that spirit.
+    """
+    try:
+        rows = _parse_vtuad_facts_table()
+    except VtuadFactsTableError as exc:
+        raise AssertionError(
+            f"cannot check constants against facts doc, no parseable table: {exc}"
+        ) from exc
+
+    missing_rows = [k for k in ("sample_rate_hz", "label_schema", "total_size_bytes")
+                     if k not in rows]
+    assert not missing_rows, (
+        f"facts doc is missing required rows needed for the drift check: {missing_rows}"
+    )
+
+    out = _child_ok(_run_child("""
+        import json
+        import boatphone.config as cfg
+        names = [
+            "VTUAD_SAMPLE_RATE_HZ", "VTUAD_LABEL_SCHEMA",
+            "VTUAD_ZONE_RADII_M", "VTUAD_TOTAL_SIZE_BYTES",
+        ]
+        missing = [n for n in names if not hasattr(cfg, n)]
+        present = {n: repr(getattr(cfg, n)) for n in names if hasattr(cfg, n)}
+        print(json.dumps({"missing": missing, "present": present}))
+    """), "boatphone.config VTUAD constants")
+    import json
+    result = json.loads(out.strip().splitlines()[-1])
+    assert not result["missing"], (
+        "boatphone/config.py is missing VTUAD constants required by the A8a contract: "
+        f"{result['missing']} (VTUAD_SAMPLE_RATE_HZ, VTUAD_LABEL_SCHEMA, "
+        "VTUAD_ZONE_RADII_M, VTUAD_TOTAL_SIZE_BYTES)"
+    )
+
+    def _leading_int(s: str):
+        digits = ""
+        for ch in s.strip():
+            if ch.isdigit():
+                digits += ch
+            elif digits:
+                break
+        return int(digits) if digits else None
+
+    mismatches = []
+
+    doc_rate = _leading_int(rows["sample_rate_hz"]["value"])
+    cfg_rate = eval(result["present"]["VTUAD_SAMPLE_RATE_HZ"])
+    if doc_rate is None or cfg_rate != doc_rate:
+        mismatches.append(
+            f"sample_rate_hz: doc says {rows['sample_rate_hz']['value']!r}, "
+            f"boatphone.config.VTUAD_SAMPLE_RATE_HZ = {cfg_rate!r}"
+        )
+
+    doc_size = _leading_int(rows["total_size_bytes"]["value"])
+    cfg_size = eval(result["present"]["VTUAD_TOTAL_SIZE_BYTES"])
+    if doc_size is None or cfg_size != doc_size:
+        mismatches.append(
+            f"total_size_bytes: doc says {rows['total_size_bytes']['value']!r}, "
+            f"boatphone.config.VTUAD_TOTAL_SIZE_BYTES = {cfg_size!r}"
+        )
+
+    doc_schema = rows["label_schema"]["value"]
+    cfg_schema = eval(result["present"]["VTUAD_LABEL_SCHEMA"])
+    if str(cfg_schema) not in doc_schema and doc_schema not in str(cfg_schema):
+        mismatches.append(
+            f"label_schema: doc says {doc_schema!r}, "
+            f"boatphone.config.VTUAD_LABEL_SCHEMA = {cfg_schema!r} -- neither contains the other"
+        )
+
+    assert not mismatches, (
+        "boatphone/config.py VTUAD constants DRIFT from docs/vtuad-facts.md:\n      "
+        + "\n      ".join(mismatches)
+    )
+
+
+# ---------------------------------------------------------------------------
+# A8b -- band-matching contract (boatphone/models.py)
+#
+# Contract: VTUAD and Folger have different sample rates and different populated
+# bands. Comparing a feature computed on one against a feature computed on the
+# other is only meaningful over their COMMON support -- the intersection of the
+# two populated bands, further clipped to the Nyquist frequency of the LOWER of
+# the two sample rates (a frequency neither instrument's spectrum can even
+# represent cannot be "common"). boatphone/models.py does not exist yet; every
+# check below is EXPECTED TO FAIL until it is written. That is the point
+# (see the A0 module docstring at the top of this file for why).
+#
+# API surface asserted below is a GUESS at what A8b will implement, made
+# explicit rather than smuggled in, per the segment description:
+#   - common_support_hz(vtuad_band_hz, vtuad_fs_hz, folger_band_hz, folger_fs_hz)
+#       -> (lo_hz, hi_hz); raises (any Exception naming both input bands and the
+#       resulting empty/degenerate intersection) when there is no usable overlap.
+#   - assert_band_matched(band_hz, common_band_hz, *, label="") -> None;
+#       raises unless band_hz IS the (already band-limited) common_band_hz --
+#       this is the guard against comparing a feature that was never restricted
+#       to the intersection.
+#   - band_limit(freq_hz, level_db_re_1upa, fs_hz, band_hz) -> (freq_hz, level_db_re_1upa)
+#       masks a one-sided spectrum to band_hz; raises if band_hz exceeds the
+#       Nyquist of fs_hz rather than silently clipping (decision 0002 SS2: never
+#       silently misinterpret a sample rate).
+# If A8b's coder chooses different names, these checks fail loudly naming the
+# missing attribute -- which is exactly the legible failure this segment wants,
+# not a silent pass.
+#
+# Folger side is PINNED (not a free parameter): usable support >= 250 Hz,
+# calibrated <= 51.2 kHz -- both stated directly in the A8b segment contract,
+# and independently cross-checked against docs/plans/accoutics_plan.md, which
+# states the supplied calibration file stops at 51,200 Hz (line ~30) and that
+# the WAV acquisition stream runs at 128 kHz (line ~32; the *other* stream in
+# that file, the 256 kHz .fft.gz product, is not what "calibrated <=51.2 kHz"
+# is pinned against here since the calibration curve itself only reaches 51.2
+# kHz regardless of which stream is sampled).
+# ---------------------------------------------------------------------------
+
+FOLGER_BAND_HZ = (250.0, 51200.0)
+FOLGER_FS_HZ = 128000.0
+
+# FABRICATED VTUAD inputs -- deliberately NOT read from docs/vtuad-facts.md or
+# boatphone/config.py (those are A8a's concern, may be mid-edit by another
+# agent right now, and might not even be populated yet). The whole reason A8b
+# can be built before VTUAD facts land is that the VTUAD band/rate are
+# PARAMETERS, not constants baked into models.py -- these two check-local
+# values, plus a second, differently-shaped pair below, exist to prove that.
+VTUAD_BAND_HZ_A = (100.0, 16000.0)
+VTUAD_FS_HZ_A = 32000.0
+VTUAD_BAND_HZ_B = (500.0, 8000.0)
+VTUAD_FS_HZ_B = 16000.0
+
+# Hand-computed expected intersections (source: arithmetic on the two constants
+# above, not on any code under test):
+#   A: intersect((250,51200),(100,16000)) = (250,16000);
+#      clip to Nyquist(min(128000,32000)) = 16000 Hz -> unchanged -> (250,16000)
+EXPECTED_COMMON_A = (250.0, 16000.0)
+#   B: intersect((250,51200),(500,8000)) = (500,8000);
+#      clip to Nyquist(min(128000,16000)) = 8000 Hz -> unchanged -> (500,8000)
+EXPECTED_COMMON_B = (500.0, 8000.0)
+
+# A VTUAD band with NO overlap with Folger's usable floor (250 Hz), to exercise
+# the empty-intersection contract.
+VTUAD_BAND_HZ_DISJOINT = (10.0, 200.0)
+VTUAD_FS_HZ_DISJOINT = 4000.0
+
+# Exact-arithmetic tolerance for the intersection/clip computation itself (pure
+# min/max on the four input numbers above -- no accumulated floating error is
+# expected beyond machine epsilon; 1e-6 is generous, not tuned).
+BAND_EDGE_TOL_HZ = 1e-6
+
+# Positive-case tone. Chosen to sit strictly inside BOTH EXPECTED_COMMON_A and
+# EXPECTED_COMMON_B so one tone exercises both fabricated VTUAD inputs.
+TEST_TONE_HZ = 4000.0
+TEST_TONE_LEVEL_DB_RE_1UPA = -20.0  # arbitrary reference level; only the round-trip matters
+
+# Frequency tolerance for recovering the tone bin after band-limiting. Both
+# sides below use a 1-SECOND analysis window (N == fs samples), so bin spacing
+# is exactly 1 Hz at ANY sample rate and TEST_TONE_HZ (4000.0, an integer) is
+# bin-centred with zero spectral leakage on both grids. The tolerance is set to
+# that resolution, not to zero, so a reporter that returns "the bin's centre
+# frequency" rather than the DFT index isn't punished for a distinction that
+# doesn't exist here by construction.
+FREQ_TOL_HZ = 1.0
+
+# Level tolerance for the same round-trip. Justification: with the tone bin-
+# centred (see above), the only remaining error source is floating-point
+# summation inside the Hann-window coherent-gain normalization (<< 0.1 dB in
+# practice). A convention bug (one-sided vs two-sided, or a missing window-gain
+# division) shows up as 3 dB (factor of 2) or worse, and decision 0002 SS4
+# requires that convention be *named*, not assumed -- named below in
+# _one_sided_spectrum_db. 0.2 dB leaves headroom without hiding either bug.
+LEVEL_TOL_DB = 0.2
+
+
+def _one_sided_spectrum_db(fs_hz: float, tones_hz_db: list[tuple[float, float]]):
+    """Build a one-sided level spectrum containing the given (freq_hz, level_db) tones.
+
+    STATED CONVENTION (decision 0002 SS4 -- named at this boundary, not assumed):
+      - a 1-second Hann-windowed analysis window (N = fs_hz samples), so the bin
+        spacing is exactly 1 Hz regardless of fs_hz;
+      - ONE-SIDED magnitude spectrum via numpy.fft.rfft;
+      - COHERENT-GAIN amplitude normalization: level_db = 20*log10(2*|X[k]| / sum(w))
+        for interior bins (DC and Nyquist are not doubled -- this check never
+        probes either);
+      - reference 1 uPa: the synthetic waveform's amplitude units ARE uPa
+        directly. This deliberately does NOT exercise the ICLISTEN calibration
+        chain (that is the pre-existing, separate calibration-gate segment) --
+        flagged here rather than silently conflated with it. A8b's contract is
+        band-matching arithmetic, not calibration.
+
+    Returns (freq_hz, level_db_re_1upa) as numpy arrays.
+    """
+    n = int(round(fs_hz))
+    t = np.arange(n) / fs_hz
+    x = np.zeros(n)
+    for freq_hz, level_db in tones_hz_db:
+        amp = 10.0 ** (level_db / 20.0)
+        x = x + amp * np.sin(2.0 * np.pi * freq_hz * t)
+    w = np.hanning(n)
+    window_gain = np.sum(w)
+    spectrum = np.fft.rfft(x * w)
+    freq_hz_out = np.fft.rfftfreq(n, d=1.0 / fs_hz)
+    mag = np.abs(spectrum)
+    scale = np.full_like(mag, 2.0 / window_gain)
+    scale[0] = 1.0 / window_gain
+    scale[-1] = 1.0 / window_gain
+    with np.errstate(divide="ignore"):
+        level_db_out = 20.0 * np.log10(np.maximum(mag * scale, 1e-300))
+    return freq_hz_out, level_db_out
+
+
+def check_a8b_models_module_exists():
+    """boatphone/models.py exists at all.
+
+    Expected to FAIL right now: the module does not exist. Written as its own
+    check, ahead of every other A8b check, so the very first failure names the
+    real cause (a missing file) rather than an opaque ImportError buried in a
+    child-process traceback.
+    """
+    path = REPO_ROOT / "boatphone" / "models.py"
+    assert path.is_file(), (
+        f"{path} does not exist yet -- A8b (band-matching contract) has not been "
+        "implemented. Every other 'A8b' check below is expected to fail for the "
+        "same reason until this file is written."
+    )
+
+
+def check_a8b_common_support_is_intersection_clipped_to_lower_nyquist():
+    """common_support_hz() == intersection of the two bands, clipped to the lower Nyquist."""
+    import boatphone.models as bm
+    got = bm.common_support_hz(
+        VTUAD_BAND_HZ_A, VTUAD_FS_HZ_A, FOLGER_BAND_HZ, FOLGER_FS_HZ
+    )
+    lo, hi = got
+    exp_lo, exp_hi = EXPECTED_COMMON_A
+    assert abs(lo - exp_lo) <= BAND_EDGE_TOL_HZ and abs(hi - exp_hi) <= BAND_EDGE_TOL_HZ, (
+        f"common_support_hz({VTUAD_BAND_HZ_A}, {VTUAD_FS_HZ_A}, {FOLGER_BAND_HZ}, "
+        f"{FOLGER_FS_HZ}) = {got}, expected {EXPECTED_COMMON_A} "
+        "(intersection of the two bands, clipped to Nyquist(min(fs_a, fs_b)))"
+    )
+
+
+def check_a8b_common_support_moves_with_vtuad_input():
+    """Anti-hardcoding: two different fabricated VTUAD bands give two different intersections.
+
+    A models.py that ignores its vtuad_band_hz/vtuad_fs_hz arguments (e.g. one
+    that always returns the Folger band, or a constant it embedded itself)
+    fails this even though it might coincidentally pass the single-case check
+    above.
+    """
+    import boatphone.models as bm
+    got_a = bm.common_support_hz(VTUAD_BAND_HZ_A, VTUAD_FS_HZ_A, FOLGER_BAND_HZ, FOLGER_FS_HZ)
+    got_b = bm.common_support_hz(VTUAD_BAND_HZ_B, VTUAD_FS_HZ_B, FOLGER_BAND_HZ, FOLGER_FS_HZ)
+    assert got_a != got_b, (
+        "common_support_hz() returned the SAME intersection "
+        f"({got_a}) for two different VTUAD bands/rates "
+        f"({VTUAD_BAND_HZ_A}/{VTUAD_FS_HZ_A} vs {VTUAD_BAND_HZ_B}/{VTUAD_FS_HZ_B}); "
+        "the VTUAD side is not being read from its arguments"
+    )
+    for got, expected, label in (
+        (got_a, EXPECTED_COMMON_A, "A"),
+        (got_b, EXPECTED_COMMON_B, "B"),
+    ):
+        lo, hi = got
+        exp_lo, exp_hi = expected
+        assert abs(lo - exp_lo) <= BAND_EDGE_TOL_HZ and abs(hi - exp_hi) <= BAND_EDGE_TOL_HZ, (
+            f"case {label}: common_support_hz() = {got}, expected {expected}"
+        )
+
+
+def check_a8b_empty_intersection_raises_naming_both_bands():
+    """A VTUAD band with zero overlap with Folger's usable floor must RAISE, naming both bands."""
+    import boatphone.models as bm
+    try:
+        got = bm.common_support_hz(
+            VTUAD_BAND_HZ_DISJOINT, VTUAD_FS_HZ_DISJOINT, FOLGER_BAND_HZ, FOLGER_FS_HZ
+        )
+    except Exception as exc:
+        msg = str(exc)
+        missing = [
+            token for token in (str(VTUAD_BAND_HZ_DISJOINT), str(FOLGER_BAND_HZ))
+            if token not in msg
+        ]
+        assert not missing, (
+            "common_support_hz() raised on a disjoint VTUAD band, but the message "
+            f"does not name {missing}: {msg!r} -- the message must name BOTH input "
+            "bands (and the empty intersection) so a diagnosing human isn't left "
+            "guessing which side was wrong"
+        )
+    else:
+        raise AssertionError(
+            f"common_support_hz({VTUAD_BAND_HZ_DISJOINT}, {VTUAD_FS_HZ_DISJOINT}, "
+            f"{FOLGER_BAND_HZ}, {FOLGER_FS_HZ}) returned {got} for bands with NO "
+            "overlap; it must raise, not return a degenerate/empty band as a number"
+        )
+
+
+def check_a8b_assert_band_matched_raises_on_unmatched_comparison():
+    """assert_band_matched() raises when a side was never limited to the common support.
+
+    Positive half: comparing the ALREADY-matched band against itself must NOT
+    raise -- otherwise the guard is unconditional and checks nothing.
+    Negative half (the one that matters per decision 0002 SS5): comparing the
+    raw, un-band-limited Folger band against the common support -- exactly the
+    mistake this contract exists to catch -- must raise.
+    """
+    import boatphone.models as bm
+    # Positive half: must NOT raise.
+    try:
+        bm.assert_band_matched(EXPECTED_COMMON_A, EXPECTED_COMMON_A)
+    except Exception as exc:
+        raise AssertionError(
+            "assert_band_matched(common, common) raised "
+            f"{type(exc).__name__}: {exc}; a matched comparison must pass"
+        ) from exc
+    # Negative half: MUST raise.
+    try:
+        bm.assert_band_matched(FOLGER_BAND_HZ, EXPECTED_COMMON_A)
+    except Exception:
+        pass
+    else:
+        raise AssertionError(
+            f"assert_band_matched({FOLGER_BAND_HZ}, {EXPECTED_COMMON_A}) returned "
+            "without raising; comparing the raw Folger band against the common "
+            "support (i.e. a feature never band-limited to the intersection) "
+            "must RAISE, not quietly pass"
+        )
+
+
+def check_a8b_band_limit_signature_names_conventions():
+    """band_limit()'s signature names freq_hz / level_db_re_1upa / fs_hz (decision 0002 SS4)."""
+    import boatphone.models as bm
+    params = set(inspect.signature(bm.band_limit).parameters)
+    required = {"freq_hz", "level_db_re_1upa", "fs_hz"}
+    missing = sorted(required - params)
+    assert not missing, (
+        f"boatphone.models.band_limit's signature is missing named parameters {missing} "
+        f"(got {sorted(params)}); decision 0002 SS4 requires a function taking a "
+        "frequency, a level, or a sample rate to name that convention in its "
+        "signature -- `f` or `x` is not `freq_hz`"
+    )
+
+
+def check_a8b_band_limit_positive_tone_survives_with_matching_level_and_freq():
+    """A tone inside the common band survives band-limiting on BOTH sides, level and freq intact.
+
+    Generated independently at Folger's fs and at each fabricated VTUAD fs;
+    band-limited to that pairing's common support; the recovered peak must
+    match TEST_TONE_HZ / TEST_TONE_LEVEL_DB_RE_1UPA within the stated tolerances
+    on both sides.
+    """
+    import boatphone.models as bm
+
+    cases = [
+        ("Folger", FOLGER_FS_HZ, EXPECTED_COMMON_A),
+        ("VTUAD-A", VTUAD_FS_HZ_A, EXPECTED_COMMON_A),
+        ("VTUAD-B", VTUAD_FS_HZ_B, EXPECTED_COMMON_B),
+    ]
+    failures = []
+    for label, fs_hz, band_hz in cases:
+        freq_hz, level_db = _one_sided_spectrum_db(
+            fs_hz, [(TEST_TONE_HZ, TEST_TONE_LEVEL_DB_RE_1UPA)]
+        )
+        out_freq, out_level = bm.band_limit(
+            freq_hz=freq_hz, level_db_re_1upa=level_db, fs_hz=fs_hz, band_hz=band_hz
+        )
+        out_freq = np.asarray(out_freq)
+        out_level = np.asarray(out_level)
+        assert out_freq.size > 0, f"{label}: band_limit() returned an empty band"
+        peak_idx = int(np.argmax(out_level))
+        peak_freq, peak_level = float(out_freq[peak_idx]), float(out_level[peak_idx])
+        if abs(peak_freq - TEST_TONE_HZ) > FREQ_TOL_HZ:
+            failures.append(
+                f"{label}: peak at {peak_freq} Hz, expected {TEST_TONE_HZ} Hz "
+                f"+/- {FREQ_TOL_HZ} Hz"
+            )
+        if abs(peak_level - TEST_TONE_LEVEL_DB_RE_1UPA) > LEVEL_TOL_DB:
+            failures.append(
+                f"{label}: peak level {peak_level:.3f} dB re 1uPa, expected "
+                f"{TEST_TONE_LEVEL_DB_RE_1UPA} dB +/- {LEVEL_TOL_DB} dB "
+                "(a 3 dB+ miss here means a one-sided/two-sided or window-gain "
+                "convention mismatch, not numerical noise)"
+            )
+    assert not failures, "; ".join(failures)
+
+
+def check_a8b_band_limit_excludes_out_of_band_tones():
+    """A tone below Folger support, and one above the lower Nyquist, must NOT appear in output.
+
+    Both tones are injected into the FOLGER-fs spectrum (fs is high enough that
+    both frequencies exist there) and the spectrum is band-limited to
+    EXPECTED_COMMON_A, whose lower Nyquist bound (16000 Hz, from VTUAD_FS_HZ_A)
+    is stricter than Folger's own Nyquist (64000 Hz) -- exactly the case that
+    proves band_limit is using the COMMON band, not each side's own Nyquist.
+    """
+    import boatphone.models as bm
+    below_support_hz = 100.0  # < Folger's 250 Hz floor
+    above_lower_nyquist_hz = 20000.0  # > EXPECTED_COMMON_A's 16000 Hz ceiling, < Folger's own 64000 Hz Nyquist
+    freq_hz, level_db = _one_sided_spectrum_db(
+        FOLGER_FS_HZ,
+        [
+            (TEST_TONE_HZ, TEST_TONE_LEVEL_DB_RE_1UPA),
+            (below_support_hz, TEST_TONE_LEVEL_DB_RE_1UPA),
+            (above_lower_nyquist_hz, TEST_TONE_LEVEL_DB_RE_1UPA),
+        ],
+    )
+    out_freq, _ = bm.band_limit(
+        freq_hz=freq_hz, level_db_re_1upa=level_db, fs_hz=FOLGER_FS_HZ, band_hz=EXPECTED_COMMON_A
+    )
+    out_freq = np.asarray(out_freq)
+    lo, hi = EXPECTED_COMMON_A
+    leaked = out_freq[(out_freq < lo - FREQ_TOL_HZ) | (out_freq > hi + FREQ_TOL_HZ)]
+    assert leaked.size == 0, (
+        f"band_limit(..., band_hz={EXPECTED_COMMON_A}) returned {leaked.size} "
+        f"frequency bin(s) outside the band, including {sorted(leaked.tolist())[:5]}; "
+        f"a tone at {below_support_hz} Hz (below Folger support) or "
+        f"{above_lower_nyquist_hz} Hz (above the lower Nyquist) leaked through"
+    )
+
+
+def check_a8b_band_limit_rejects_band_exceeding_source_nyquist():
+    """band_hz reaching above fs_hz's own Nyquist must RAISE, not silently clip (decision 0002 SS2)."""
+    import boatphone.models as bm
+    fs_hz = VTUAD_FS_HZ_A  # 32000 Hz -> Nyquist 16000 Hz
+    band_exceeding_nyquist_hz = (250.0, 20000.0)  # 20000 > 16000
+    freq_hz, level_db = _one_sided_spectrum_db(fs_hz, [(TEST_TONE_HZ, TEST_TONE_LEVEL_DB_RE_1UPA)])
+    try:
+        result = bm.band_limit(
+            freq_hz=freq_hz, level_db_re_1upa=level_db, fs_hz=fs_hz,
+            band_hz=band_exceeding_nyquist_hz,
+        )
+    except Exception:
+        pass
+    else:
+        raise AssertionError(
+            f"band_limit(fs_hz={fs_hz}, band_hz={band_exceeding_nyquist_hz}) returned "
+            f"{result!r} instead of raising; the requested band's upper edge "
+            f"(20000 Hz) exceeds this source's own Nyquist (16000 Hz) -- that must "
+            "be rejected explicitly, not silently clipped or misinterpreted"
+        )
+
+
+# ---------------------------------------------------------------------------
+# A8b (calibration half) -- band-matching is NECESSARY BUT NOT SUFFICIENT.
+#
+# Added during A8b implementation, after A8a established from primary sources
+# that VTUAD ships raw uncalibrated PCM (no sensitivity, no gain, no reference,
+# plus a per-segment "normalized" step in the authors' pipeline) while Folger
+# levels are calibrated dB re 1 uPa -- see the calibration section of
+# docs/vtuad-facts.md. A transfer gap measured on an ABSOLUTE-LEVEL feature
+# across that boundary is a calibration artefact that looks exactly like a
+# domain shift, which is precisely the silent corruptor decision 0002 exists to
+# prevent. The three checks below prove the guard bites: it must RAISE on the
+# unsafe comparison, PASS the level-invariant one, and REFUSE to proceed when a
+# side's calibration state was never declared.
+#
+# Calibration states are FABRICATED here in the same spirit as the bands above
+# (nothing read from boatphone/config.py), except that the enum member names
+# themselves are the API under test.
+# ---------------------------------------------------------------------------
+
+
+def check_a8b_absolute_level_across_calibration_boundary_raises():
+    """An absolute-level VTUAD<->Folger comparison must RAISE (calibrated vs counts)."""
+    import boatphone.models as bm
+    try:
+        bm.assert_comparable(
+            EXPECTED_COMMON_A, EXPECTED_COMMON_A, EXPECTED_COMMON_A,
+            calibration_a=bm.CalibrationState.CALIBRATED_DB_RE_1UPA,
+            calibration_b=bm.CalibrationState.UNCALIBRATED_COUNTS,
+            feature_kind=bm.FeatureKind.ABSOLUTE_LEVEL,
+            label_a="Folger", label_b="VTUAD",
+        )
+    except Exception as exc:
+        msg = str(exc)
+        for token in ("Folger", "VTUAD"):
+            assert token in msg, (
+                "assert_comparable() raised on an absolute-level comparison across "
+                f"the calibration boundary but the message does not name {token!r}: "
+                f"{msg!r}"
+            )
+    else:
+        raise AssertionError(
+            "assert_comparable() allowed an ABSOLUTE_LEVEL comparison between a "
+            "CALIBRATED_DB_RE_1UPA side and an UNCALIBRATED_COUNTS side over a "
+            "correctly matched band. Band-matching alone does not make those "
+            "comparable: the difference would be set by unknown sensitivity/gain, "
+            "indistinguishable from a real domain shift, and would not look wrong."
+        )
+
+
+def check_a8b_level_invariant_comparison_is_allowed():
+    """The escape hatch works: a LEVEL_INVARIANT feature crosses the boundary fine.
+
+    Without this half the calibration guard could be unconditional (refuse
+    everything), which would check nothing and block the one comparison that is
+    currently safe.
+    """
+    import boatphone.models as bm
+    try:
+        bm.assert_comparable(
+            EXPECTED_COMMON_A, EXPECTED_COMMON_A, EXPECTED_COMMON_A,
+            calibration_a=bm.CalibrationState.CALIBRATED_DB_RE_1UPA,
+            calibration_b=bm.CalibrationState.UNCALIBRATED_COUNTS,
+            feature_kind=bm.FeatureKind.LEVEL_INVARIANT,
+            label_a="Folger", label_b="VTUAD",
+        )
+    except Exception as exc:
+        raise AssertionError(
+            "assert_comparable() refused a LEVEL_INVARIANT comparison over a matched "
+            f"band ({type(exc).__name__}: {exc}); level-invariant features are the "
+            "only currently safe VTUAD<->Folger comparison and must be permitted"
+        ) from exc
+
+
+def check_a8b_undeclared_calibration_state_raises():
+    """A side whose calibration state was never declared must RAISE, not default to 'fine'."""
+    import boatphone.models as bm
+    try:
+        bm.assert_comparable(
+            EXPECTED_COMMON_A, EXPECTED_COMMON_A, EXPECTED_COMMON_A,
+            calibration_a=bm.CalibrationState.CALIBRATED_DB_RE_1UPA,
+            calibration_b=None,
+            feature_kind=bm.FeatureKind.LEVEL_INVARIANT,
+            label_a="Folger", label_b="VTUAD",
+        )
+    except Exception:
+        pass
+    else:
+        raise AssertionError(
+            "assert_comparable() accepted calibration_b=None; an undeclared "
+            "calibration state must raise (decision 0002 SS3 -- state the "
+            "convention at the boundary), never silently assume a default"
+        )
+
+
+# ---------------------------------------------------------------------------
+# A8c -- minimal acquisition plan + loader (boatphone/vtuad.py)
+#
+# Contract (segment description, condensed):
+#   1. A subset selector producing a MANIFEST: one row per intended file, with
+#      url / byte size / scenario / split / class / a one-line justification.
+#      Pinned: every label class from docs/vtuad-facts.md's label_schema
+#      appears; the manifest's summed byte total equals the sum of its rows;
+#      train/test groups are disjoint (mirroring A9's overpass_id hygiene, so
+#      an in-domain number stays honest).
+#   2. A byte-total estimator with a RUNTIME budget assertion: under a named
+#      VTUAD_DOWNLOAD_BUDGET_BYTES, AND under a named fraction of
+#      CURRENTLY-FREE space, re-measured at call time (never a hardcoded
+#      snapshot -- the ~1.3 TB free figure is shared with teammates and with
+#      A4's ongoing hydrophone pull).
+#   3. A loader that fails clearly when data is absent: raises, naming both the
+#      expected path and the command that would fetch it.
+#   4. The loader reads sample rate from each file and REJECTS (never
+#      resamples) a file whose rate differs from VTUAD_SAMPLE_RATE_HZ
+#      (decision 0002 SS2).
+#
+# boatphone/vtuad.py does not exist yet -- every check below is EXPECTED TO
+# FAIL for that reason (see the A0 module docstring for why that's the point).
+#
+# CORRECTION carried over from the original plan: a HEAD-only Content-Length
+# pre-download cross-check against live URLs is NOT possible (A8a: the files
+# sit behind a paid IEEE DataPort Subscriber login, served as presigned S3
+# URLs -- no anonymous HEAD). No check below touches the network or downloads
+# anything, including a "small test download". Instead: the manifest must
+# record WHERE each size figure came from (source + retrieved date, same shape
+# as the A8a facts table), and a post-download verification entry point must
+# exist for a human to run after the files are actually on disk -- exercised
+# here only up to "the function exists with a plausible signature"; anything
+# that needs the actual ZIPs SKIPs cleanly, in the same idiom as A0.6.
+#
+# API surface below is a GUESS at what A8c will implement, made explicit
+# rather than smuggled in (same policy as the A8b docstring above):
+#   - build_manifest() -> list[dict], one dict per intended file, each with at
+#     least the keys: "url", "size_bytes", "scenario", "class", "split",
+#     "group_id", "justification", "source", "retrieved". "group_id" is the
+#     unit that must not straddle train/test (mirrors A9's overpass_id).
+#   - VTUAD_DOWNLOAD_BUDGET_BYTES: int module constant.
+#   - VTUAD_FREE_SPACE_FRACTION_MAX: float module constant in (0, 1].
+#   - free_space_bytes(path) -> int; a thin, LIVE wrapper (this project has no
+#     other stdlib mechanism for free disk space than shutil.disk_usage, so
+#     that call is what "live" is checked against below).
+#   - assert_download_fits(total_bytes, target_dir) -> None; raises
+#     VtuadBudgetError naming both total_bytes and the free-space number when
+#     either the fixed budget or the live-free-space fraction is exceeded.
+#   - VtuadBudgetError(Exception).
+#   - VtuadDataMissingError(FileNotFoundError); load_clip(path) raises it,
+#     naming the path and a fetch hint, when the path does not exist.
+#   - load_clip(path) -> object exposing at least a `sample_rate_hz` (or
+#     `.sample_rate_hz`) read from the file's own header.
+#   - VtuadSampleRateError(Exception); raised by load_clip on a rate mismatch
+#     against VTUAD_SAMPLE_RATE_HZ, naming both rates.
+#   - verify_downloaded_files(manifest, data_dir) -> callable entry point for
+#     post-download size/checksum verification; existence and signature only
+#     are pinned here (no real ZIPs in this repo to verify against).
+# If A8c's coder picks different names, these checks fail loudly naming the
+# missing attribute -- the legible failure this segment wants, not a silent
+# pass.
+# ---------------------------------------------------------------------------
+
+VTUAD_MODULE_PATH = REPO_ROOT / "boatphone" / "vtuad.py"
+
+# Independent transcription of docs/vtuad-facts.md's label_schema row
+# (retrieved 2026-08-27), same rationale as SAMPLE_DIR_NAME above: a checker
+# that imports the very constant it is validating checks nothing.
+VTUAD_CLASSES_INDEPENDENT = [
+    "background", "cargo", "tanker", "tug", "passengership",
+]
+
+# Independent transcription of the three scenario archive names and their
+# listed (10^9-byte) sizes, from docs/vtuad-facts.md total_size_bytes /
+# smallest_downloadable_unit_bytes rows (2026-08-27). NOT imported from
+# boatphone.config.VTUAD_ZONE_RADII_M -- this exists to give the manifest
+# check something independently-sourced to compare against.
+VTUAD_SCENARIOS_INDEPENDENT = [
+    ("inclusion_2000_exclusion_4000", 3_310_000_000),
+    ("inclusion_3000_exclusion_5000", 5_830_000_000),
+    ("inclusion_4000_exclusion_6000", 4_400_000_000),
+]
+
+# The "stop and ask before downloading this much" threshold already invoked by
+# boatphone/config.py's smallest_downloadable_unit_bytes comment (source:
+# the approved A8 acquisition plan / working agreement). A
+# VTUAD_DOWNLOAD_BUDGET_BYTES anywhere near this would defeat the point of a
+# MINIMAL acquisition plan, so it is asserted comfortably below it, not just
+# "less than".
+VTUAD_STOP_AND_ASK_CEILING_BYTES = 150_000_000_000
+
+# A tiny synthetic WAV's sample rate, deliberately DIFFERENT from
+# VTUAD_SAMPLE_RATE_HZ (32000), used to prove rejection rather than silent
+# resampling. 16000 Hz is itself a plausible real hydrophone rate -- chosen
+# specifically so a loader that "clamps to the nearest known-good rate" cannot
+# accidentally look correct.
+WRONG_SAMPLE_RATE_HZ = 16000
+
+# Sanity self-check that shutil.disk_usage is even in the standard library on
+# this interpreter, so a SKIP has a distinguishable cause from a real failure.
+import shutil as _shutil_probe  # noqa: E402 -- deliberately local; only used for the assert below
+assert hasattr(_shutil_probe, "disk_usage"), (
+    "shutil.disk_usage is unavailable in this interpreter; the live-free-space "
+    "check below has no standard-library mechanism to test against"
+)
+
+
+def check_a8c_vtuad_module_exists():
+    """boatphone/vtuad.py exists at all.
+
+    Expected to FAIL right now: the module does not exist. Written first, same
+    reasoning as check_a8b_models_module_exists -- the first failure should
+    name the real cause (missing file), not an opaque ImportError.
+    """
+    assert VTUAD_MODULE_PATH.is_file(), (
+        f"{VTUAD_MODULE_PATH} does not exist yet -- A8c (minimal acquisition "
+        "plan + loader) has not been implemented. Every other 'A8c' check "
+        "below is expected to fail for the same reason until this file is "
+        "written."
+    )
+
+
+def check_a8c_manifest_covers_every_label_class():
+    """build_manifest() names every VTUAD label class from docs/vtuad-facts.md."""
+    import boatphone.vtuad as bv
+    manifest = bv.build_manifest()
+    assert manifest, "build_manifest() returned an empty manifest"
+    present_classes = {row.get("class") for row in manifest}
+    missing = sorted(c for c in VTUAD_CLASSES_INDEPENDENT if c not in present_classes)
+    assert not missing, (
+        f"build_manifest() omits label class(es) {missing} named in "
+        f"docs/vtuad-facts.md's label_schema row; got classes {sorted(present_classes)}"
+    )
+
+
+def check_a8c_manifest_byte_total_equals_sum_of_rows():
+    """The manifest's reported total equals the sum of its own per-row sizes.
+
+    Guards against a manifest whose summary total drifts from what the rows
+    actually add up to -- exactly the kind of silent inconsistency that would
+    later make a budget check pass on the wrong number.
+    """
+    import boatphone.vtuad as bv
+    manifest = bv.build_manifest()
+    assert manifest, "build_manifest() returned an empty manifest"
+    row_sizes = [row.get("size_bytes") for row in manifest]
+    missing_sizes = [i for i, s in enumerate(row_sizes) if not isinstance(s, int) or s <= 0]
+    assert not missing_sizes, (
+        f"build_manifest() rows at index {missing_sizes} have a missing/non-positive "
+        "size_bytes; every row must carry a real byte size"
+    )
+    summed = sum(row_sizes)
+    reported = bv.estimate_download_bytes(manifest)
+    assert reported == summed, (
+        f"estimate_download_bytes(manifest) = {reported}, but summing the manifest's "
+        f"own size_bytes rows gives {summed}; the estimator and the manifest must agree"
+    )
+
+
+def check_a8c_manifest_train_test_groups_are_disjoint():
+    """No group_id (mirrors A9's overpass_id) appears in both the train and test splits.
+
+    A group straddling both splits is exactly the leak that makes an in-domain
+    number dishonest: whatever unit `group_id` denotes (vessel encounter, MMSI,
+    scenario file -- build_manifest()'s choice) must not be partially in train
+    and partially in test.
+    """
+    import boatphone.vtuad as bv
+    manifest = bv.build_manifest()
+    assert manifest, "build_manifest() returned an empty manifest"
+    missing_fields = [
+        i for i, row in enumerate(manifest)
+        if "split" not in row or "group_id" not in row
+    ]
+    assert not missing_fields, (
+        f"manifest rows at index {missing_fields} are missing 'split' and/or "
+        "'group_id' -- both are required to check train/test hygiene"
+    )
+    splits = {row["split"] for row in manifest}
+    assert {"train", "test"} <= splits, (
+        f"manifest splits are {sorted(splits)}; both 'train' and 'test' must be present "
+        "for a disjointness check to mean anything"
+    )
+    by_group: dict = {}
+    for row in manifest:
+        by_group.setdefault(row["group_id"], set()).add(row["split"])
+    leaking = sorted(g for g, s in by_group.items() if len(s) > 1)
+    assert not leaking, (
+        f"group_id(s) {leaking} appear in BOTH train and test splits; "
+        "train/test groups must be disjoint (mirrors A9's overpass_id hygiene rule)"
+    )
+
+
+def check_a8c_manifest_records_size_provenance():
+    """Every row states WHERE its size figure came from, and when it was retrieved.
+
+    Stand-in for the HEAD-request cross-check that isn't possible against a
+    presigned, login-gated URL (A8a). The manifest must instead be honest about
+    its size figures coming from the landing-page listing, same shape as the
+    A8a facts table (source URL + retrieved date), not invented.
+    """
+    import boatphone.vtuad as bv
+    manifest = bv.build_manifest()
+    assert manifest, "build_manifest() returned an empty manifest"
+    bad = []
+    for i, row in enumerate(manifest):
+        source = str(row.get("source", "")).strip()
+        retrieved = str(row.get("retrieved", "")).strip()
+        if not (source.startswith("http://") or source.startswith("https://")):
+            bad.append(f"row {i}: source {source!r} is not an http(s) URL")
+        if not retrieved:
+            bad.append(f"row {i}: retrieved date is blank")
+        if not str(row.get("justification", "")).strip():
+            bad.append(f"row {i}: justification is blank")
+    assert not bad, "manifest provenance problems:\n      " + "\n      ".join(bad)
+
+
+def check_a8c_budget_constant_is_named_and_manifest_fits_under_it():
+    """VTUAD_DOWNLOAD_BUDGET_BYTES exists, is well below the stop-and-ask ceiling,
+    and the manifest's own total fits under it.
+    """
+    import boatphone.vtuad as bv
+    assert hasattr(bv, "VTUAD_DOWNLOAD_BUDGET_BYTES"), (
+        "boatphone.vtuad has no VTUAD_DOWNLOAD_BUDGET_BYTES constant"
+    )
+    budget = bv.VTUAD_DOWNLOAD_BUDGET_BYTES
+    assert isinstance(budget, int) and budget > 0, (
+        f"VTUAD_DOWNLOAD_BUDGET_BYTES = {budget!r}; must be a positive int"
+    )
+    assert budget < VTUAD_STOP_AND_ASK_CEILING_BYTES, (
+        f"VTUAD_DOWNLOAD_BUDGET_BYTES = {budget} is not comfortably below the "
+        f"{VTUAD_STOP_AND_ASK_CEILING_BYTES} stop-and-ask ceiling; a 'minimal' "
+        "acquisition plan should not need a budget anywhere near that"
+    )
+    manifest = bv.build_manifest()
+    total = bv.estimate_download_bytes(manifest)
+    assert total <= budget, (
+        f"the manifest's own total ({total} bytes) exceeds its own module's "
+        f"VTUAD_DOWNLOAD_BUDGET_BYTES ({budget} bytes); a minimal plan must fit "
+        "under its own budget"
+    )
+
+
+def check_a8c_free_space_fraction_is_read_live_not_hardcoded():
+    """The free-space check re-measures shutil.disk_usage at call time.
+
+    Proven two ways, both via monkeypatching shutil.disk_usage (the only
+    stdlib mechanism for free space -- see the module-level assert above):
+      1. a TINY mocked free-space value must make an otherwise-tiny,
+         budget-compliant download REJECT, and the raised message must
+         contain that mocked free-space number verbatim -- proving the number
+         came from the live call, not a hardcoded ~1.3 TB snapshot;
+      2. a HUGE mocked free-space value for the SAME total_bytes must then be
+         accepted -- proving the function actually branches on what it reads,
+         rather than always rejecting.
+    """
+    import boatphone.vtuad as bv
+    assert hasattr(bv, "VTUAD_FREE_SPACE_FRACTION_MAX"), (
+        "boatphone.vtuad has no VTUAD_FREE_SPACE_FRACTION_MAX constant"
+    )
+    frac = bv.VTUAD_FREE_SPACE_FRACTION_MAX
+    assert isinstance(frac, (int, float)) and 0 < frac <= 1, (
+        f"VTUAD_FREE_SPACE_FRACTION_MAX = {frac!r}; must be a fraction in (0, 1]"
+    )
+
+    tiny_free_bytes = 1_000_000  # 1 MB -- smaller than any real request
+    huge_free_bytes = 10_000_000_000_000  # 10 TB -- larger than any real request
+    total_bytes = 500_000  # well under both the budget and a "normal" free-space fraction
+
+    class _FakeUsage:
+        def __init__(self, free):
+            self.total = free * 10
+            self.used = 0
+            self.free = free
+
+    import shutil
+    import unittest.mock as mock
+    target_dir = REPO_ROOT  # any existing directory; disk_usage is being mocked anyway
+
+    with mock.patch.object(shutil, "disk_usage", return_value=_FakeUsage(tiny_free_bytes)):
+        try:
+            bv.assert_download_fits(total_bytes, target_dir)
+        except Exception as exc:
+            msg = str(exc)
+            assert str(tiny_free_bytes) in msg, (
+                "assert_download_fits() rejected under a mocked tiny free-space "
+                f"value ({tiny_free_bytes}) but the raised message does not contain "
+                f"that number verbatim: {msg!r} -- this is the check that a hardcoded "
+                "~1.3 TB snapshot would fail: the message must reflect what was "
+                "actually read from the (mocked) filesystem call, not a constant"
+            )
+        else:
+            raise AssertionError(
+                f"assert_download_fits({total_bytes}, ...) did not raise under a "
+                f"mocked free space of only {tiny_free_bytes} bytes; either free "
+                "space is never checked, or it is read from a hardcoded constant "
+                "instead of shutil.disk_usage at call time"
+            )
+
+    with mock.patch.object(shutil, "disk_usage", return_value=_FakeUsage(huge_free_bytes)):
+        try:
+            bv.assert_download_fits(total_bytes, target_dir)
+        except Exception as exc:
+            raise AssertionError(
+                f"assert_download_fits({total_bytes}, ...) raised {type(exc).__name__}: "
+                f"{exc} under a mocked free space of {huge_free_bytes} bytes; the same "
+                "total_bytes was accepted under a tiny mocked free space and rejected "
+                "under a huge one, so the function is not actually branching on the "
+                "live measurement -- an always-reject implementation would look "
+                "'safe' here without checking anything"
+            ) from exc
+
+
+def check_a8c_loader_raises_naming_path_and_fetch_command():
+    """load_clip() on an absent path raises, naming the path AND how to fetch it.
+
+    Asserted explicitly (CLAUDE.md invariant 5) so a later refactor to a bare
+    `except` or a silently-empty return fails HERE, not downstream as a result
+    that looks like "zero vessels" instead of "the file was never there".
+    """
+    import boatphone.vtuad as bv
+    missing = REPO_ROOT / "data" / "definitely-absent-vtuad-clip-9e21.wav"
+    assert not missing.exists(), f"fixture path unexpectedly exists: {missing}"
+    try:
+        result = bv.load_clip(missing)
+    except FileNotFoundError as exc:
+        msg = str(exc)
+        assert str(missing) in msg, (
+            f"load_clip() raised on a missing file but did not name the path {missing} "
+            f"in its message: {msg!r}"
+        )
+        fetch_tokens = ("ieee-dataport", "fetch", ".zip", "boatphone.vtuad", "vtuad")
+        assert any(tok in msg.lower() for tok in fetch_tokens), (
+            "load_clip() raised on a missing file, naming the path, but the message "
+            f"names no way to fetch it (looked for any of {fetch_tokens} case-"
+            f"insensitively): {msg!r}"
+        )
+    except Exception as exc:
+        raise AssertionError(
+            f"load_clip() on a missing path raised {type(exc).__name__} rather than "
+            f"FileNotFoundError (or a subclass): {exc}"
+        ) from exc
+    else:
+        raise AssertionError(
+            f"load_clip({missing}) returned {result!r} for a path that does not "
+            "exist; absent data must raise, never return an empty/None result "
+            "that looks like 'no vessels'"
+        )
+
+
+def _write_synthetic_wav(path, sample_rate_hz: int, n_samples: int = 1000):
+    """A minimal, real WAV file at a given rate, written with the stdlib `wave` module.
+
+    Deliberately NOT a VTUAD download -- a from-scratch synthetic fixture, same
+    spirit as the A8b tone-injection checks. Exists so the sample-rate contract
+    can be tested without touching the network or the real (gated) corpus.
+    """
+    import struct
+    import wave
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)  # 16-bit PCM; stdlib `wave` cannot write 24-bit directly
+        w.setframerate(sample_rate_hz)
+        w.writeframes(struct.pack("<%dh" % n_samples, *([0] * n_samples)))
+
+
+def check_a8c_loader_rejects_sample_rate_mismatch():
+    """load_clip() on a real file whose header rate != VTUAD_SAMPLE_RATE_HZ RAISES.
+
+    Never silently resamples (decision 0002 SS2). The message must name both
+    rates, so a human sees exactly what mismatched.
+    """
+    import boatphone.config as cfg
+    import boatphone.vtuad as bv
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp, "wrong_rate.wav")
+        _write_synthetic_wav(path, WRONG_SAMPLE_RATE_HZ)
+        try:
+            result = bv.load_clip(path)
+        except Exception as exc:
+            msg = str(exc)
+            missing = [
+                tok for tok in (str(WRONG_SAMPLE_RATE_HZ), str(cfg.VTUAD_SAMPLE_RATE_HZ))
+                if tok not in msg
+            ]
+            assert not missing, (
+                f"load_clip() raised on a {WRONG_SAMPLE_RATE_HZ} Hz file (expected "
+                f"{cfg.VTUAD_SAMPLE_RATE_HZ} Hz) but the message does not name "
+                f"{missing}: {msg!r}"
+            )
+        else:
+            raise AssertionError(
+                f"load_clip() returned {result!r} for a file recorded at "
+                f"{WRONG_SAMPLE_RATE_HZ} Hz, which differs from "
+                f"VTUAD_SAMPLE_RATE_HZ ({cfg.VTUAD_SAMPLE_RATE_HZ}); it must RAISE, "
+                "never silently resample or reinterpret the rate"
+            )
+
+
+def check_a8c_loader_reads_rate_from_header_not_assumed():
+    """A file at the CORRECT rate loads and reports that rate, read from its own header.
+
+    Positive half of the sample-rate contract: without this, a load_clip() that
+    unconditionally raises would pass the mismatch check above for the wrong
+    reason (always-reject, not "reads and compares").
+    """
+    import boatphone.config as cfg
+    import boatphone.vtuad as bv
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp, "right_rate.wav")
+        _write_synthetic_wav(path, cfg.VTUAD_SAMPLE_RATE_HZ)
+        try:
+            result = bv.load_clip(path)
+        except Exception as exc:
+            raise AssertionError(
+                f"load_clip() raised {type(exc).__name__}: {exc} on a file correctly "
+                f"recorded at VTUAD_SAMPLE_RATE_HZ ({cfg.VTUAD_SAMPLE_RATE_HZ} Hz); "
+                "a matching rate must be accepted"
+            ) from exc
+        rate = getattr(result, "sample_rate_hz", None)
+        assert rate == cfg.VTUAD_SAMPLE_RATE_HZ, (
+            f"load_clip() on a {cfg.VTUAD_SAMPLE_RATE_HZ} Hz file returned an object "
+            f"whose sample_rate_hz is {rate!r}; the rate must be READ from the file's "
+            "own header, not assumed from the constant it is being checked against"
+        )
+
+
+def check_a8c_verify_downloaded_files_entry_point_exists():
+    """A post-download size/checksum verification entry point exists with a plausible signature.
+
+    Structural only -- this is the "for the human to run after they have the
+    files" step named in the corrected A8c contract. It cannot be exercised
+    against real data in this repo (no ZIPs are ever committed here), so this
+    check pins existence and signature, not behaviour.
+    """
+    import boatphone.vtuad as bv
+    assert hasattr(bv, "verify_downloaded_files"), (
+        "boatphone.vtuad has no verify_downloaded_files() entry point for a human "
+        "to run after downloading the gated ZIPs"
+    )
+    params = set(inspect.signature(bv.verify_downloaded_files).parameters)
+    required = {"manifest"}
+    missing = sorted(required - params)
+    assert not missing, (
+        f"verify_downloaded_files()'s signature is missing named parameter(s) "
+        f"{missing} (got {sorted(params)})"
+    )
+
+
+def check_a8c_verify_downloaded_files_skips_without_local_zips():
+    """Data-dependent: SKIPs (not fails) because the real VTUAD ZIPs are never in this repo.
+
+    Same idiom as A0.6's data-dependent checks: a check that needs the actual
+    acquisition, which is legitimately absent, must say so visibly rather than
+    silently pass or fail for the wrong reason.
+    """
+    import boatphone.vtuad as bv
+    scenario_name, _ = VTUAD_SCENARIOS_INDEPENDENT[0]
+    zip_path = REPO_ROOT / "data" / "vtuad" / f"{scenario_name}.zip"
+    if not zip_path.is_file():
+        raise SkipCheck(
+            f"VTUAD acquisition absent: {zip_path} -- the corpus is gated behind a "
+            "paid IEEE DataPort login and is never committed to this repo "
+            "(docs/vtuad-facts.md download_mechanism); verify_downloaded_files() "
+            "cannot be exercised against real bytes here"
+        )
+    manifest = bv.build_manifest()
+    bv.verify_downloaded_files(manifest, zip_path.parent)
+
+
+# ---------------------------------------------------------------------------
 # A0.6 -- data-dependent checks skip cleanly when the acquisition is absent
 # ---------------------------------------------------------------------------
 
@@ -887,6 +2075,33 @@ CHECKS = [
     ("A0.5 python constraint admits 3.14", check_a0_5_python_constraint_admits_314),
     ("A0.6 sample acquisition present (data-dependent)", check_a0_6_sample_dir_present),
     ("A0.6 SAMPLE_DIR matches disk (data-dependent)", check_a0_6_paths_sample_dir_matches_disk),
+    ("A8a docs/vtuad-facts.md exists and parses", check_a8a_facts_doc_exists),
+    ("A8a all required facts present, populated, sourced", check_a8a_all_required_keys_present_and_populated),
+    ("A8a boatphone.config VTUAD constants match facts doc", check_a8a_config_constants_match_facts_doc),
+    ("A8b boatphone/models.py exists", check_a8b_models_module_exists),
+    ("A8b common_support_hz == intersection clipped to lower Nyquist", check_a8b_common_support_is_intersection_clipped_to_lower_nyquist),
+    ("A8b common_support_hz moves with VTUAD input (anti-hardcoding)", check_a8b_common_support_moves_with_vtuad_input),
+    ("A8b empty intersection raises, naming both bands", check_a8b_empty_intersection_raises_naming_both_bands),
+    ("A8b assert_band_matched raises on an unmatched comparison", check_a8b_assert_band_matched_raises_on_unmatched_comparison),
+    ("A8b band_limit signature names freq_hz/level_db_re_1upa/fs_hz", check_a8b_band_limit_signature_names_conventions),
+    ("A8b in-band tone survives band-limiting (freq + level)", check_a8b_band_limit_positive_tone_survives_with_matching_level_and_freq),
+    ("A8b out-of-band tones excluded (below support / above lower Nyquist)", check_a8b_band_limit_excludes_out_of_band_tones),
+    ("A8b band exceeding source Nyquist is rejected, not clipped", check_a8b_band_limit_rejects_band_exceeding_source_nyquist),
+    ("A8b absolute-level comparison across calibration boundary raises", check_a8b_absolute_level_across_calibration_boundary_raises),
+    ("A8b level-invariant cross-domain comparison is allowed", check_a8b_level_invariant_comparison_is_allowed),
+    ("A8b undeclared calibration state raises", check_a8b_undeclared_calibration_state_raises),
+    ("A8c boatphone/vtuad.py exists", check_a8c_vtuad_module_exists),
+    ("A8c manifest covers every label class", check_a8c_manifest_covers_every_label_class),
+    ("A8c manifest byte total equals sum of rows", check_a8c_manifest_byte_total_equals_sum_of_rows),
+    ("A8c manifest train/test groups are disjoint", check_a8c_manifest_train_test_groups_are_disjoint),
+    ("A8c manifest records size provenance (source + retrieved)", check_a8c_manifest_records_size_provenance),
+    ("A8c download budget constant named, manifest fits under it", check_a8c_budget_constant_is_named_and_manifest_fits_under_it),
+    ("A8c free-space fraction is read live, not hardcoded", check_a8c_free_space_fraction_is_read_live_not_hardcoded),
+    ("A8c loader on absent file names path + fetch command", check_a8c_loader_raises_naming_path_and_fetch_command),
+    ("A8c loader rejects a sample-rate mismatch (never resamples)", check_a8c_loader_rejects_sample_rate_mismatch),
+    ("A8c loader reads rate from header, not assumed", check_a8c_loader_reads_rate_from_header_not_assumed),
+    ("A8c verify_downloaded_files entry point exists", check_a8c_verify_downloaded_files_entry_point_exists),
+    ("A8c verify_downloaded_files (data-dependent, skips without local ZIPs)", check_a8c_verify_downloaded_files_skips_without_local_zips),
 ]
 
 
