@@ -49,7 +49,8 @@ The shared OHW JupyterHub environment (`/home/.pixi/envs/default`, Python 3.14).
 pinned project environment file** -- no `pixi.toml`, no `environment.yml`, no `requirements.txt`.
 
 Available: `numpy`, `scipy`, `xarray`, `pandas`, `matplotlib`, `geopandas`, `torch`,
-`ultralytics`, `scikit-learn`, `dask`, `h5py`, `netCDF4`, `jupyter`/`nbconvert`.
+`ultralytics`, `scikit-learn`, `dask`, `h5py`, `netCDF4`, `jupyter`/`nbconvert`, `cv2` (5.0.0,
+confirmed live 2026-08-27 during B0; the earlier "not available" listing was stale).
 
 **Not** available: `pytest`, `ruff`, `black`, `librosa`, `soundfile`, `obspy`, `rasterio`, `jq`.
 Check before importing something not on the first list rather than assuming. If you install

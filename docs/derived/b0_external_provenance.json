@@ -47,6 +47,7 @@
   "merileo_reproduction_target": {
     "downloaded_utc": "2026-08-27T05:24:53.646730+00:00",
     "hf_revision": "ed38793ade5343257de9f396eeb215c22d9712a1",
+    "licence": "see repo card -- merileo/* is MIT-tagged per decision 0009 (not independently re-verified here)",
     "name": "merileo_reproduction_target",
     "note": "B0-3. `result.csv` is NOT in the ONC repo clone -- traintest.py writes it into args.exp_dir and `exp/` is gitignored. It IS on the Hub, in merileo/onc-ssl-tutorial, under an experiment directory with the SAME name as the pinned checkpoint's run. The tutorial repo's copy of ft-cls_best_checkpoint.pth has sha256 e474ddc5a407c78731b9dcfc944a83e53e1da91797bee6851ad2b852c3dc35ca, IDENTICAL to the checkpoint pinned in merileo_checkpoint_bundle -- so this result.csv is the training curve of the exact weights we hold. CAVEAT: result.csv's per-device column HEADER is written once, at epoch 1, from a defaultdict keyed in first-appearance order over the validation loader; the mapping drifts at every resume boundary (epochs 14 and 27 appear twice). Only the epoch-1 row can be attributed to a device by header name.",
     "sha256": {

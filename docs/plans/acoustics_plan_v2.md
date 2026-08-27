@@ -41,6 +41,23 @@ also produces (CLAUDE.md invariant 4). Every headline number below is paired wit
   deployment assignment, gap summarisation), `boatphone/config.py`,
   `scripts/build_uptime_calendar.py`, and `docs/derived/hydrophone_gaps.md` -- **deliverable O1,
   shipped to Malachy**. Decisions 0007 and 0008. Full seasonal scan 2020-2026.
+- **B0 -- model viability gate. COMPLETE, verdict NO-GO.** Ran end to end (`e1c1544`), then an
+  adversarial recheck upheld the verdict and corrected one finding. No CNN baseline exists; the
+  released checkpoint is a single-logit binary detector with no distinct Engine Noise output; zero
+  Engine Noise rows exist at `ICLISTENHF1266` in the eval set; the CPU forward pass OOMs under a
+  3.90 GB cgroup cap (not a 30 GB host limit as first framed); scoring the corpus once would cost
+  ~12 CPU-days independent of RAM. Full detail: `docs/decisions/0012-b0-model-viability-outcome.md`.
+  §4, §5 and §7 below are rewritten accordingly; B5 is now the primary detector.
+- **B0-2a -- `boatphone/fft_io.py` landed** (`47237d1`). Shared `.fft.gz` reader:
+  `read_fft_gz`, `frequency_axis_hz`, `time_axis_utc_s`, `calibrated_band_hz`,
+  `assert_calibratable`, `assert_tone_at`, `structural_zero_report`. Start time is read from the
+  **filename** (`onc_client.parse_file_coverage`) -- the decompressed payload carries no header, no
+  timestamp and no sample rate at all. Null checks (tone ladder, frame-shuffle, alternate time
+  bases) run and reported in the B0-2a-impl log. Two checks remain deliberately failing as
+  data-dependent findings (structural zero columns are not exactly zero; the 38 kHz line measures
+  at bin 150-151, not 152) and a third convention question (edge- vs centre-binning, +-125 Hz on
+  every band edge) is open and under separate adjudication -- **do not touch `fft_io.py`,
+  `config.py` or the B0-2a checks outside that adjudication.**
 
 ### The finding that reshapes everything else
 
@@ -107,39 +124,56 @@ are 40/40 green and mutation-tested against eight deliberate sabotages.
 
 ---
 
-## 4. The model: ONC's own pretrained checkpoint
+## 4. The model: CLOSED, NO-GO (decision 0012)
 
-Ocean Networks Canada released
+**This section previously proposed Ocean Networks Canada's pretrained
 [`selfsupervision_anomalies_onc`](https://github.com/OceanNetworksCanada/selfsupervision_anomalies_onc)
-(MIT, PyTorch) with public checkpoints on Hugging Face under `merileo/*`. It fits unusually well:
+checkpoint as the vessel-presence model. B0 (§2, `docs/decisions/0012-b0-model-viability-outcome.md`)
+tested that proposal against the real artefacts and returned NO-GO on three of the claims this
+section made, plus two blockers independent of those claims. Rewritten rather than annotated,
+because leaving the old claims as prose is how the same dead path gets re-adopted later in the
+week by someone reading only this plan.**
 
-- **`Engine Noise` is an output class** -- vessel presence, directly. Full label set: `Anomaly,
-  Data Gap, Dropout, Engine Noise, Rain, Sensitivity, Tonal, Unknown Feature`.
-- **`ICLISTENHF1266` -- our device -- is in its training/eval device list**, with per-device figures
-  broken out in `result.csv`: reported P 0.96 / R 0.88 / AUC 0.99 on 149 samples. **These are
-  epoch-1 numbers and are unverified until we reproduce them.**
-- **It consumes ONC spectrogram arrays, not WAV.** So `.fft.gz` is the native input class, and the
-  expensive WAV pull that every other candidate required does not arise.
-- The positive label is generic engine noise from BC coastal ONC sites, so **recreational traffic
-  sits inside the positive class by construction** -- the opposite of VTUAD's exclusion problem.
-- Public labelled eval data exists (`merileo/different_locations_...`), so the model can be
-  validated before being trusted on our data.
+What B0 actually found, against each claim v1-of-this-section made:
 
-**Environment constraint, checked:** there is no GPU here (`torch.cuda.is_available()` is False, no
-`nvidia-smi`). The SSAMBA/Mamba path needs NVIDIA plus `mamba_ssm`, so we use the **CPU CNN
-baseline** (`cnn_baseline/cnn_best.pt`) with `eval/evaluate_model.py`.
+- **"`Engine Noise` is an output class" -- false.** The released, finetuned checkpoint
+  (`ft-cls_best_checkpoint.pth`) has a single-logit head (`mlp_head.1.weight`, shape `(1, 768)`):
+  it is a binary normal-vs-anomalous detector. `Engine Noise` is one of eight anomaly types pooled
+  into the single positive class, and in the eval set that positive class is measured at ~80%
+  non-Engine-Noise (31/1158 rows). There is no separable vessel signal to read out.
+- **"`ICLISTENHF1266` is in its training/eval device list, with per-device figures" -- true, but
+  the figures do not mean what they look like they mean.** The P 0.96 / R 0.88 / AUC 0.99 (n=149)
+  reproduces bit-for-bit against the exact checkpoint we hold, but it is a binary-anomalous score
+  at threshold 0.5, at **epoch 1**, and `result.csv`'s per-device header-to-column mapping is only
+  name-attributable at that epoch (it drifts under a shuffled loader afterwards). And at
+  `ICLISTENHF1266` specifically, the eval set carries **zero** Engine Noise rows at all -- only
+  `Sensitivity` (20) and `Dropout` (4), both instrument faults. No device-matched engine-noise
+  validation was ever possible, even before the head-shape problem.
+- **"Use the CPU CNN baseline" -- does not exist.** Live `HfApi` enumeration of every `merileo/*`
+  repo found no `cnn_baseline` directory anywhere. This was a literature-sweep error. The only
+  checkpoints released are SSAMBA/Vision-Mamba `.pth` files, which need `mamba_ssm` and, on CPU,
+  run through the reference (non-CUDA) selective-scan kernel -- 24 layers x 2 directions of
+  pure-Python scan at the model's required sequence length. Measured at **~2 min/sample on 4
+  cores**; scoring B3's ~9,300-file corpus once is **~12 CPU-days**, independent of RAM and of the
+  head-shape problem above. Decisive on its own.
+- The forward pass also OOM-kills under this container's actual **3.90 GB cgroup v2 cap**
+  (`/sys/fs/cgroup/memory.max`), not the host's 30 GB that `free` reports -- corrected from an
+  earlier, wrong framing that treated this as possibly architectural. It is "broken on this host"
+  (invariant 9), and it does not matter: (e) above is fatal regardless of RAM.
+- The repo's real licence is BSD-3-Clause, not MIT as first recorded (both permissive; not a
+  decision input).
 
-**Considered and not chosen, kept as fallbacks:**
+**Consequence: §5's B2 (spectrogram adapter) and B4 (reproduce-then-run) are struck.** B5
+(band-level SPL, §5 below) is promoted from "B4's independent check" to **primary detector**. No
+project goal is lost -- G1, G2 and G3 all still resolve on the B5 path; what is lost is a
+cross-check and a headline (0012's "Consequences").
 
-- **UATR-CMoE** -- released 135 MB checkpoint whose classes include `Motorboat` and `Sailboat`,
-  the only released model naming our target population. But **no declared licence**, no feature
-  extraction script, and ShipsEar's discriminative content is heavily sub-1 kHz, where our floor
-  bites hardest.
-- **PANNs / AudioSet zero-shot** -- AudioSet class 304 is literally `Motorboat, speedboat` (plus
-  `Ship`, `Sailboat`, `Boat`), so any AudioSet-trained model emits a vessel score for free. But
-  **nobody has published how these perform on underwater audio**, and the nearest benchmark warns
-  the embeddings encode recording conditions more than vessel identity. A one-hour experiment with
-  a real chance of failing, not a plan.
+**How to tell this was wrong:** revisit only if ONC releases a checkpoint with a genuine
+multi-label head that includes Engine Noise as a distinct, separately-thresholdable output, **and**
+a GPU host becomes available -- both conditions, not either. A larger RAM allocation on this
+container does not on its own reopen this path: only the OOM finding was RAM-bound, and it was the
+least load-bearing of the findings above (the compute-cost finding and the missing-output finding
+both hold regardless of RAM).
 
 ---
 
@@ -147,24 +181,29 @@ baseline** (`cnn_baseline/cnn_best.pt`) with `eval/evaluate_model.py`.
 
 In dependency order. Each names its module, its gate, and its fallback.
 
-### B0 -- Model viability gate *(Day 1, half a day -- this segment can kill §4)*
+### B0 -- Model viability gate *(Day 1, half a day -- this segment can kill §4)* -- **DONE, NO-GO**
 
-**Do this before any other new work.** Everything in §4 comes from a literature sweep and is
-unverified first-hand.
+**Complete.** Verdict: NO-GO on the whole §4 pretrained-checkpoint path. See
+`docs/decisions/0012-b0-model-viability-outcome.md` and §2/§4 above for the full finding set. The
+checklist below is left as the record of what B0 actually checked.
 
 - **Input compatibility -- the real risk.** `onc_ssamba/utilities/spectrogram_utils.py` expects an
   ONC `.mat` spectrogram `[F, T]` of shape `[854, 1000]`. Ours is `.fft.gz`, 1200 x 512. Read one
   of each; compare shape, frequency axis, time axis, units and scaling. **Quantify the gap
-  precisely** -- it decides whether B2 is an afternoon or the whole segment.
+  precisely** -- it decides whether B2 is an afternoon or the whole segment. *(Moot -- B2 struck.)*
 - Confirm `ICLISTENHF1266` really appears in `result.csv`, and what those per-device numbers mean.
+  *(Confirmed verbatim, but epoch-1/header-drift caveats apply -- 0012g.)*
 - Confirm the CNN baseline loads and runs on CPU under torch 2.12, and that its dependencies exist
   here -- **check `cv2` in particular** (`spectrogram_utils` calls `cv2.resize`; CLAUDE.md does not
-  list it as available). Report anything installed, per CLAUDE.md.
+  list it as available). Report anything installed, per CLAUDE.md. *(No CNN baseline exists --
+  0012a. `cv2` 5.0.0 confirmed present; CLAUDE.md corrected.)*
 - Read class ordering from `args.pkl` or the h5 `label_names`. **Never assume the YAML order** --
-  the model cards are a bare `license: mit` with no documented ordering.
+  the model cards are a bare `license: mit` with no documented ordering. *(Neither source carried
+  an explicit label list; order recovered empirically, and the head is single-logit binary
+  regardless -- 0012b.)*
 
-**Fallback if this fails:** the band-level SPL route (B5), which needs no weights at all and is the
-method this community actually publishes. **Decided here, on Day 1 -- not Day 4.**
+**Fallback taken:** the band-level SPL route (B5), which needs no weights at all and is the method
+this community actually publishes, is now the **primary** detector, decided Day 1 as planned.
 
 ### B1 -- The `.fft.gz` gate *(Day 1-2, timeboxed to one day)*
 
@@ -194,18 +233,16 @@ documented constants and re-run whenever the reader changes.
 spectral slope, band ratios, level *changes* through closest point of approach. G1, G2 and G3 all
 survive this. Only the physics baseline (B6) is genuinely lost.
 
-### B2 -- Spectrogram adapter *(Day 2, gated on B0 and B1)*
+**Resources.** Peak RAM: unmeasured, estimate from array size -- one frame set is 1200x512 int
+values (~0.6M cells, low tens of MB per file held in memory); a loud-window batch of a handful of
+files stays well under 1 GB. Disk: negligible beyond the corpus B3 already pulls. Wall-clock: not
+the binding constraint -- I/O and the cross-correlation search dominate over minutes, not hours.
+Runs fine in the current 3.90 GB cgroup cap; no raise needed.
 
-`boatphone/onc_spectrogram.py`. Bridges `.fft.gz` to the model's expected input.
+### B2 -- Spectrogram adapter *(struck -- see decision 0012)*
 
-- Read to `[F, T]` with an **explicit named frequency axis in Hz and time axis in `t_utc_s`**
-  (decision 0002 -- name the frame at every boundary, never a bare `t`).
-- Reproduce their preprocessing exactly: percentile clip -> `log` -> min-max to [0,1] -> resize to
-  512 x 512, with `dataset_mean 51.506817` and `dataset_std 13.638703`.
-- **Assert** band and shape rather than silently resampling. Reuse `assert_band_matched`,
-  `band_limit` and `assert_comparable` already in `boatphone/models.py` -- do not write new ones.
-- No `fillna` or interpolation across a real recording gap; print any dropped frames with counts
-  (invariant 5).
+**Struck.** Bridged `.fft.gz` to the shape `onc_ssamba` expects. Moot once §4 returned NO-GO --
+there is no model to adapt input for. Its allocated time goes to B5 and B7.
 
 ### B3 -- Bulk acquisition *(Day 1 evening, overnight)*
 
@@ -232,28 +269,33 @@ for free; and a hedge if the optical yield disappoints.
 ~10:30-local window, so it supports diurnal claims not at all, and seasonal claims only within that
 hour band.
 
-### B4 -- Reproduce, then run the model *(Day 2-3)*
+**Required second pass, or B1b deadlocks permanently.** B1's step 1 regresses product bin *b*
+against **WAV** bin *2b*, but as written above B3 pulls only `.fft.gz`. B3 must add a second pass
+pulling **WAV for the top ~5 loud windows** (~230 MB each, ~1 GB total) once the corpus can be
+ranked on 1-10 kHz broadband level from the `.fft.gz` pull. Without this, B1's magnitude-regression
+step has no WAV to regress against and cannot resolve.
 
-**Reproduce first. This is the competence gate.** Run the CPU checkpoint over ONC's public labelled
-h5, **restricted to `ICLISTENHF1266` rows**, and reproduce the reported `Engine Noise` performance
-*before* touching Folger data.
+**Resources.** Disk: ~2.7 GB for the 2024-2025 seasons (the immediate target), up to ~8 GB for the
+full 2020-2025 span if throughput allows, **plus ~1 GB for the required WAV second pass above**
+(measured file sizes, per §3/§5's own figures: `.fft.gz` is 0.29 MB/5-min file; WAV for the same
+span is far larger, ~230 MB for a 5-min loud window). Peak RAM: unmeasured, estimate from array
+size -- the listing/download loop holds one file at a time plus a resumable manifest, low
+hundreds of MB. Wall-clock is the binding constraint, not RAM: 1.5-3 h at 1-2 files/sec for the
+primary target, run overnight for exactly that reason. Runs fine in the current 3.90 GB cgroup
+cap; no raise needed.
 
-This is what makes every downstream number interpretable, and it is precisely the role VTUAD was
-supposed to play -- now free and device-matched. If it cannot be reproduced, say so plainly: that
-is "the method is broken", not "the method found nothing" (invariant 9), and they need different
-follow-ups.
+### B4 -- Reproduce, then run the model *(struck -- see decision 0012)*
 
-**Then score** `Engine Noise` across the covered bins of the B3 corpus. Emit to `data/derived/`
-with a record of what produced it -- checkpoint hash, n, device, date.
+**Struck.** Would have reproduced ONC's `result.csv` numbers on `ICLISTENHF1266` rows, then scored
+`Engine Noise` across the B3 corpus with null checks. Moot: the checkpoint has no distinct Engine
+Noise output to reproduce or score (0012b), and scoring the corpus once would cost ~12 CPU-days
+even if it did (0012e). Its allocated time goes to B5 and B7. The null-check discipline it would
+have exercised is preserved -- see §7's replacement "Detector agreement" row, now non-optional.
 
-**Null checks, before believing anything** (invariant 4): shuffle the labels; shift the time base
-by an hour; score a known-quiet period. **Report that these were run and what they showed**, pass
-or fail.
+### B5 -- Physical baseline detector *(Day 3)* -- **now the primary detector**
 
-### B5 -- Physical baseline detector *(Day 3)*
-
-`boatphone/features.py`, `boatphone/ambient.py`. **Not optional.** It is B4's independent check,
-B0's fallback, and the method the passive-acoustics community actually publishes.
+`boatphone/features.py`, `boatphone/ambient.py`. **Not optional, and no longer just a
+cross-check** -- with B4 struck (decision 0012), this is the project's vessel-presence detector.
 
 - Decidecade band levels -- **above 2.2 kHz only**; below that, raw-bin levels **labelled as such**,
   not as standards-compliant band levels. Via PyPAM / MBARI `pbp` / MHKiT, the last of which
@@ -270,8 +312,18 @@ B0's fallback, and the method the passive-acoustics community actually publishes
   direct evidence of out-of-AOI traffic. It falls out of the `n_vessels == 0` negatives already
   collected, and it is the AIS-free way to bound how often the far field contaminates labels.
 
-Two independent detectors agreeing is a far stronger result than either alone. Disagreeing is
+Agreement between independent detectors is a far stronger result than either alone. With only one
+model-free detector left, "independent" now means the band-split check in §7, the far-field
+diagnostic above, and the null checks -- not a second trained model. Disagreeing among these is
 itself a finding worth reporting.
+
+**Resources.** Peak RAM: unmeasured, estimate from array size -- operates on PSD from `.fft.gz`
+(1200x512 per file) or the decidecade-band reduction of it, never WAV; per-file and rolling-window
+aggregates are on the order of the corpus size in `.fft.gz` form, low hundreds of MB at the
+~2.7-8 GB disk footprint B3 delivers. Disk: none beyond B3's corpus. Wall-clock: band-level
+reduction and percentile-baseline computation over ~9,300 files is expected to be minutes, not
+hours -- CPU-bound on the reduction, not I/O-bound. Runs fine in the current 3.90 GB cgroup cap; no
+raise needed.
 
 ### B6 -- Calibration and physics *(Day 3-4, gated on B1)*
 
@@ -299,6 +351,15 @@ on class, speed and count; sample over range and size; report posterior width. T
 front: +/-6 dB SL uncertainty against a ~15-18 dB/decade TL slope is roughly a **factor of ~2 in
 range**, before class, speed and count uncertainty.
 
+**Resources.** Peak RAM: unmeasured, estimate from array size -- the sensitivity file is 5,120
+rows, negligible; the posterior sampling over range/size/class/speed is the largest allocation and
+is expected to be low hundreds of MB for a Monte Carlo grid of this scale. Disk: negligible
+(GEBCO/CHS bathymetry tiles for the AOI only, order tens of MB). Wall-clock/CPU is the binding
+constraint if Bellhop ray-tracing runs at all: ray tracing over a bathymetry grid is the slow step,
+not the RAM footprint -- and it is moot regardless, since `arlpy`/Bellhop are not installed
+(`docs/environment-audit.md`) and this is "the first segment to cut" per the text above. Runs fine
+in the current 3.90 GB cgroup cap; no raise needed.
+
 ### B7 -- Matchups and split hygiene *(Day 4, gated on I3)*
 
 `boatphone/geo.py`, `boatphone/matchup.py`, `boatphone/splits.py`.
@@ -319,16 +380,28 @@ labels on one measurement. For anything acoustic -- sea state, tide, SSP, ambien
 hydrophone state -- the unit of analysis is the overpass. Report uncertainty clustered by overpass,
 and **state both counts alongside every metric**: "n = 214 detections across 23 overpasses."
 
+**Resources.** Peak RAM: unmeasured, estimate from array size -- `matchups.parquet` is order
+100-400 detection rows across ~20-30 overpasses, trivial; the geodesy join (`pyproj`) is per-row
+and does not hold the acoustic corpus in memory simultaneously. Disk: negligible, one parquet file.
+Wall-clock: not the binding constraint. Runs fine in the current 3.90 GB cgroup cap; no raise
+needed.
+
 ### B8 -- Results *(Day 5)*
 
 Detectability curve (G3), size separability including a negative result (G2), continuous presence
-estimate (G1), model-versus-physics agreement, and the matchup dataset. Final notebooks, README
-workflow section, presentation.
+estimate (G1), the B5-vs-band-split-agreement result (replacing model-versus-physics agreement,
+which needed the struck B4), and the matchup dataset. Final notebooks, README workflow section,
+presentation.
 
 **Every model number carries its overpass count. Every population statistic carries the
 sampling-conditionality caveat** -- PlanetScope is sun-synchronous at ~10:30 local and usable scenes
 are cloud-free summer days, precisely the conditions that maximise recreational traffic. No
 population statistic here generalises to Folger Passage at large.
+
+**Resources.** Peak RAM: unmeasured, estimate from array size -- final notebooks re-load
+`data/derived`/`data/processed` outputs (parquet, csv), not the raw corpus; expected low hundreds
+of MB. Disk: negligible beyond outputs already produced. Wall-clock: notebook re-execution time,
+not a new computation. Runs fine in the current 3.90 GB cgroup cap; no raise needed.
 
 ---
 
@@ -354,7 +427,7 @@ These are contracts. Each names the artefact, the owner, the schema, and what br
 | **O2** | Both | Acoustic band support + calibration validity note | Day 2 |
 | **O3** | Joint | `data/processed/acoustic_features.parquet` | Day 3 |
 | **O4** | Joint | `data/processed/matchups.parquet` | Day 4 |
-| **O5** | Write-up | Detectability curve, model results, physics baseline | Day 5 |
+| **O5** | Write-up | Detectability curve, band-level (B5) detector results plus the band-split agreement check, physics baseline | Day 5 |
 
 **B1-B6 are deliberately independent of I1 and I3.** Only B7 blocks, and B3's speculative pull
 means it starts the moment `overpasses.csv` lands, with no download latency.
@@ -376,9 +449,9 @@ re-executing a notebook top-to-bottom in a fresh kernel.
 | Calibration coverage | Assert every absolute-level output falls in bins 1-205 | Violations raise, enforced in `calibrate.py` |
 | Calibration accuracy | Quiet-period levels vs Wenz curves for the sea state | Within a few dB |
 | Band claims | Assert decidecade bands only requested above 2.2 kHz | Enforced in `features.py` |
-| **Model reproduction** | Our `Engine Noise` metrics vs ONC's `result.csv`, HF1266 rows only | Within stated tolerance, **with n reported** |
-| **Null checks** | Shuffled labels; +1 h time shift; known-quiet period | Reported explicitly, pass or fail |
-| **Detector agreement** | ONC model vs B5 band-level detector over the same windows | Agreement rate reported; disagreements characterised, not hidden |
+| ~~Model reproduction~~ | ~~Our `Engine Noise` metrics vs ONC's `result.csv`, HF1266 rows only~~ | **Struck -- decision 0012, no model to reproduce.** ONC's own numbers were confirmed verbatim against the checkpoint (epoch-1, header-drift caveats apply) but that reproduction was never the gate on a downstream number, since the model itself is not used. |
+| **Null checks** | Shuffled labels; +1 h time shift; known-quiet period | Reported explicitly, pass or fail. **Non-optional**, not a nice-to-have -- this is now the project's main defence against the exact false-positive pattern invariant 4 warns about, with only one model-free detector in play. |
+| **Detector agreement** *(replaces the "ONC model vs B5" row, struck with B4)* | Three independent checks over the same windows: (i) **band-split agreement** -- an independent detector on a disjoint band (e.g. 1-4 kHz vs 8-20 kHz) against B5's primary band; (ii) the **§5 far-field diagnostic** (elevated broadband level with zero in-AOI detections); (iii) the **null checks** above | Agreement/consistency rate reported for each; disagreements characterised, not hidden |
 | Split hygiene | Assert no `overpass_id` in both train and test | Zero overlap, enforced in `splits.py` |
 | Deployment stability | Re-run the gate on one file from each deployment 2020-2026 | Consistent, or per-deployment constants recorded |
 | Repo hygiene | `git log --stat` | No `data/` paths (inv. 2), no notebook outputs (inv. 7), no tokens |
@@ -390,16 +463,17 @@ re-executing a notebook top-to-bottom in a fresh kernel.
 
 | Risk | Mitigation |
 |---|---|
-| **`.fft.gz` is not the array the model expects** | B0 is a half-day gate that settles this before anything is built on it. Fallback is B5, which needs no weights. |
-| **ONC's reported numbers do not reproduce** | Report it as a broken method (invariant 9) and fall through to B5. Do not proceed on an unvalidated model. |
+| **`.fft.gz` is not the array the model expects** | Moot -- B0 returned NO-GO on the model itself (decision 0012), independent of this gap. Historical: B0 quantified it before the NO-GO closed the question. |
+| ~~ONC's reported numbers do not reproduce~~ | **Resolved, not a live risk.** They reproduced verbatim (epoch-1 caveats apply) -- the NO-GO came from the head shape and compute cost, not a reproduction failure. |
 | **B1's low-frequency anomaly never resolves** | Relative and shape-based features, decided Day 1. G1-G3 survive; only B6 is lost. |
-| **No GPU in this environment** | CPU CNN baseline; confirmed as a supported path in B0. |
+| ~~No GPU in this environment -> CPU CNN baseline; confirmed as a supported path in B0~~ | **False -- corrected by decision 0012.** No CNN baseline exists at all (0012a), and the actual SSAMBA/Mamba CPU path costs ~12 CPU-days per corpus pass regardless of GPU/RAM (0012e). The real mitigation is the same as always: B5 needs no weights and is now primary. |
 | **`arlpy` / Bellhop unavailable** | B6 is the first segment to cut, and nothing else depends on it. |
 | **No 256 kHz calibration curve from ONC** | Restrict absolute levels to <= 51.2 kHz (bins 1-205). Costs the 51-104 kHz band, which matters little for vessel noise. |
-| **Archive imagery scarce for 2020-2025** | Flagged Day 1 via O1b so Malachy can check yield before spending quota. If scarce, B4 and B5 still deliver a continuous presence estimate with no optical labels; only G2 and G3 need matchups. |
+| **Archive imagery scarce for 2020-2025** | Flagged Day 1 via O1b so Malachy can check yield before spending quota. If scarce, B5 still delivers a continuous presence estimate with no optical labels; only G2 and G3 need matchups. |
 | **Effective N too small for any ML claim** | B5 and B6 need ~0 training data and produce a result regardless. |
 | **I1 timestamps in local or publish time** | Agree the convention in writing Day 1; assert UTC and sanity-check against solar time (~10:30 local overpass). |
 | **B3 throughput worse than 1 file/sec** | Pull the newest season first and work backwards, so the corpus is always useful at whatever depth it reaches. |
+| **The container's RAM cap is now a provisionable parameter, not a fixed constraint** | Up to 30 GB is available on request (current cgroup v2 cap measured at 3.90 GB). Each segment's Resources line in §5 states what it needs and whether it needs a raise -- as of this writing, none of B1/B3/B5/B6/B7/B8 needs one. **This does not reopen the B0 NO-GO.** Of 0012's findings, only the OOM finding (d) was RAM-bound, and it was already the least load-bearing of the three primary blockers -- the missing multi-label output (b) and the ~12-CPU-day compute cost (e) are both independent of RAM and hold regardless of any raise. See 0012h. |
 
 ---
 

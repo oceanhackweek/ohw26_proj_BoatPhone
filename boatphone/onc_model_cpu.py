@@ -1,4 +1,13 @@
-"""Make the ONC SSAMBA / Vision-Mamba checkpoint importable and runnable on CPU.
+"""UNUSED -- see decision 0012. B0 returned NO-GO on the whole pretrained-checkpoint path
+(this module's own OOM finding was one of three independent reasons, and not even the
+decisive one: an independent ~12-CPU-day-per-corpus-pass compute cost is fatal on its own,
+and the released checkpoint has no Engine Noise output to score in the first place). Kept
+unimported and undeleted on purpose -- its docstring below is the best surviving evidence
+for the corrected OOM finding (a 3.90 GB cgroup v2 cap on this container, not the host's
+30 GB, misdiagnosed at the time as a possible architectural wall). See
+`docs/decisions/0012-b0-model-viability-outcome.md`.
+
+Make the ONC SSAMBA / Vision-Mamba checkpoint importable and runnable on CPU.
 
 WHY THIS EXISTS (and why it is a library module, not a notebook cell)
 --------------------------------------------------------------------
