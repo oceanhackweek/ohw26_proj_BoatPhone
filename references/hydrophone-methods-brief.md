@@ -4,12 +4,16 @@
 **Status:** supplementary suggestions. Nothing here is a decision; nothing here has been merged.
 **Written:** 2026-08-27, against commit `827e63e`.
 
-> **Read §1.5 first if you read nothing else.** B5's viability gate (`329b7cd`) sets a **fixed
-> +10 dB excess threshold**. The cross-season evidence in §1.4 says that threshold may not
-> transfer across seasons, and the gate ran on 13 windows that do not span the seasonal range.
-> That is the one item here that could change a result rather than tidy a document. Every measurement below is mine, this session, against
-`data/raw/onc/overpass_window_corpus/` and `data/Folger Deep Hydrophone Data Sample/`,
-with its sample size stated.
+> **Correction, 2026-08-27, after this document's first draft.** An earlier version led with a
+> warning that B5's fixed +10 dB threshold might not transfer across seasons, on the basis of an
+> 8.3-8.5 count seasonal spread in the 1-10 kHz band. **That has now been tested at scale and it
+> does not hold.** Over 1,790 windows (2/date, all 895 dates) the seasonal spread of the band
+> median is **2.0 counts** and of the ambient P10 baseline **2.5 counts** — comfortably below the
+> threshold. The 8.3-8.5 figure was sampling noise off 8-30 files/season. §1.4 now carries the
+> large-sample numbers, and the threshold-transfer concern is **withdrawn**.
+
+Every measurement below is mine, this session, against `data/raw/onc/overpass_window_corpus/` and
+`data/Folger Deep Hydrophone Data Sample/`, with its sample size stated.
 
 This is a survey of what passive acoustic monitoring (PAM) normally does, filtered hard through
 what *this* product can actually support. The anti-recommendations in §5 matter as much as the
@@ -93,7 +97,7 @@ most worth acting on** — these constants are load-bearing for checks and for d
 | "18.7% of cells sit at the floor" = left-censoring | `config.py` ~709, `fft_io.censoring_report` docstring, decision 0015 | 19.9% over all 512 bins — but **bins 409-511 alone are 95.8% zero**. In-band (1-408) the floor fraction is **0.00-0.55%**; in 1-10 kHz it is ~0%. *(16 files + 6/yr)* |
 | bin 0 is "structurally near-zero"; `FFT_DC_COL_MAX_LEVEL = 5`, `MAX_NONZERO_FRACTION = 0.02` | decision 0014, `config.py:457-458` | **max 60; mean nonzero fraction 0.232; 20 of 25 random files violate the bounds** |
 | bins 425-511 are "hard exact zero" | decision 0014, `config.py:446` | **15 of 25 random files carry nonzero cells there** (1-35 cells/file) |
-| the ~37.65 kHz hump is persistent, "present even in quiet windows" | decision 0014 / plan notes | **Intermittent.** Absent in **100% of 2021** windows and **50% of 2022**; ~3% elsewhere. *(30 files/season; excess = mean over bins 140-162 minus mean over the 0014 background bins)* |
+| the ~37.65 kHz hump is persistent, "present even in quiet windows" | decision 0014 / plan notes | **A co-located instrument with a duty cycle, not a soundscape feature.** OFF continuously **2021-05-01 -> 2022-07-17**, ON from **2022-07-18**; exactly one transition in 2022, and the switch-off falls in the winter service gap. Short outages of 1-5 dates in 2023-25. *(1,790 windows, all 895 dates)* |
 | `FFT_LEVEL_CEILING = 86` | `config.py:594` | Falsified by decision 0026 but unchanged, so `censoring_report`'s `n_at_ceiling` is a meaningless count |
 | "Folger levels are calibrated dB re 1 uPa" | `models.py:22-23`, `config.py:170-171` | Stale VTUAD-era framing. True of the FLAC/WAV; **false of the `.fft` product** per ONC |
 
@@ -127,17 +131,29 @@ That is the same order as a vessel-pass excess. Meanwhile the 51-102 kHz control
 (`FGPD:2020-03-08 -> 2026-03-14`) spans the entire corpus — so a deployment boundary does not
 explain it.
 
-> **Consequence, and it is live.** The B5 viability gate scores events at a **fixed +10 dB
-> excess**. The seasonal spread of the band median is **8.5 counts** — comparable to that
-> threshold — and the gate's 13 fully-covered windows do not span the seasonal range. So the same
-> physical vessel could clear the threshold in one season and miss it in another, and the event
-> *rate* would then carry a seasonal artefact that looks exactly like a trend in traffic.
+**TESTED AT SCALE — the apparent swing was sampling noise.** Over **1,790 windows** (2 per date,
+all 895 dates), the same statistics are nearly flat:
+
+| Year | n | 1-10 kHz P10 | 1-10 kHz median | 1-10 kHz P90 | 250 Hz-1 k median |
+|---|---|---|---|---|---|
+| 2020 | 302 | 32.0 | 42.0 | 56.0 | 19.0 |
+| 2021 | 306 | 31.0 | 42.0 | 54.5 | 19.0 |
+| 2022 | 298 | 31.0 | 42.0 | 56.6 | 19.0 |
+| 2023 | 272 | 31.0 | 42.0 | 55.0 | 19.0 |
+| 2024 | 306 | 34.0 | 44.0 | 54.0 | 20.0 |
+| 2025 | 306 | 31.0 | 42.5 | 55.0 | 18.0 |
+
+**Seasonal spread: 2.0 counts (median), 3.0 (P10), 2.5 (ambient baseline).** Not 8.5.
+
+> **The threshold-transfer concern is withdrawn.** A fixed +10 dB excess is safe against a 2-2.5
+> count baseline drift. §3.3 (whitening) and §3.4 (the control band) remain worth doing on their
+> own merits — they cost little and they make drift *visible* — but they are no longer urgent.
 >
-> This is the strongest argument for §3.3 (whitening) and §3.4 (the control band).
->
-> *Caveat: 8-30 files/season mixes real seasonal variability with any instrument change. This is a
-> flag that demands a test at >=100 files/season, not a proven artefact. The cheap test: re-run the
-> gate's threshold sweep per season and check whether the event rate moves with the baseline.*
+> **The methodological lesson is the durable part.** A per-season median computed from 8 files, off
+> a distribution with P10 = 31 and P90 = 56, carries several counts of sampling error. The
+> difference between seasons looked like a signal and was noise. Any seasonal or interannual claim
+> on this corpus needs n in the hundreds per season — it is affordable (~37 core-minutes for the
+> whole corpus), so there is no reason to run it on eight files.
 
 ### 1.5 What has already been settled, and what this document adds
 
@@ -285,15 +301,54 @@ Candidate windows: 7 / 21 / 61 days. Within-window baselines can keep using
 and confirm recovery as a function of window length. The repo already has the idiom
 (`fft_io.assert_tone_at`, `check_b0_2a_synthetic_tone_frame_shuffle_null_is_rejected`).
 
-### 3.4 · The 51-102 kHz control band as a free instrument reference · **DO**
+### 3.4 · The 51-102 kHz control band as a free instrument reference · **DO, as a MEDIAN only**
 
-Bins 205-408 sit at ~5 counts in every year (§1.4) and no small vessel will dominate them. That
-makes them a **no-cost gain/system-noise reference**: a detector-band-minus-control-band contrast
-rejects instrument drift for free, and any cross-year figure that moves *together with* the control
-band is showing you the instrument, not the ocean.
+Bins 205-408 sit at ~5 counts in every year (§1.4) and no small vessel will dominate them, so a
+detector-band-minus-control-band contrast rejects instrument drift for free. Any cross-year figure
+that moves *together with* the control band is showing you the instrument, not the ocean.
 
-Pair it with every figure in §4. It costs one extra line per plot and it is the difference between
-"vessel traffic rose in 2023" and "something in the chain changed in 2023".
+> **Caveat, measured.** That band contains the strongest narrowband feature in the whole spectrum
+> — a **continuous line at 81.25 kHz, +17 counts** — plus lines at 78.5, 91.5 and 100 kHz (§3.4a).
+> Its *median* over 204 bins is robust to them, which is why it reads a flat ~5 every season. A
+> **mean or energy sum over the same band would be dominated by self-noise.** Use the median.
+
+### 3.4a · The 20.3 kHz harmonic family is system self-noise — and the 81.25 kHz line is the gain reference · **DO**
+
+Narrowband lines survive the six-season median at 20.25, 61.0, 78.5, **81.25**, 91.5 and 100 kHz.
+They are **not** sound in the water, and the discriminator is duty cycle:
+
+| Line | duty (fraction of frames present) | reading |
+|---|---|---|
+| 81.25 kHz | **0.87-0.98, every season** | continuous |
+| 78.5 kHz | 0.64-0.98 | continuous |
+| 100 kHz | 0.67-1.00 | continuous |
+| 20.25 kHz | 0.55-0.89 | mostly continuous |
+| 61 kHz | 0.17-0.34 | intermittent — the one plausible transmitter |
+| 37.5 kHz (echosounder) | 0.44-0.51 on / 0.13 off | pulsed, and absent 2021 to mid-2022 |
+
+A fundamental at **20.3125 kHz** predicts bins 81, 244, 325 and the lines land on those bins
+exactly (20.31 / 60.94 / 81.25 kHz); the n=2 harmonic at 40.6 kHz is masked by the echosounder
+hump. A non-round fundamental with exact integer harmonics, running continuously through six
+seasons and indifferent to the echosounder duty cycle, is a **clock or switching-supply artefact in
+the acquisition chain** — not a source in the ocean.
+
+**Use it.** A continuously present, internally generated line is a *better* gain reference than the
+echosounder, which turns out to be intermittent (§1.3): it tracks the electronics gain directly and
+it never switches off. Track the 81.25 kHz line level per window as a first-class series; a step in
+it is a chain change, and it is the cleanest instrument-drift monitor this product offers.
+
+*Fails when:* the line is read as an acoustic detection, or its band edge is placed inside another
+line — run §4's per-bin MAD map before choosing any band edge near it.
+*Null check:* the line's level must be uncorrelated with the vessel-band event rate. If it tracks
+traffic, it is not what this section claims it is.
+
+**What these lines are NOT, and why the reasoning generalises.** Vessel radiated noise is broadband
+and produces no stable narrow line at 80 kHz. Harbour porpoise NBHF clicks peak near 130 kHz —
+above this product's 102 kHz ceiling — and delphinid clicks are broadband transients that a median
+over 1,200 frames erases. Active instruments (echosounders, ADCPs, acoustic modems, fish tags)
+**pulse**; anything at duty ~1.0 has excluded itself. The 61 kHz line is the only one whose duty
+cycle leaves it a candidate for a real transmitter, and it matches no obvious standard (Innovasea
+tags are 69 kHz; AZFP's second channel is 67 or 125 kHz) — record it as unidentified, not guessed.
 
 ### 3.5 · Hysteresis segmentation, and ATL vs fixed-percentile as a *pair* · **DO**
 
@@ -542,7 +597,10 @@ computation on every run.
 | 1.000 Hz ping / 0.25 s frame confirmed | **verified** (4 files, incl. one negative control) | scan ~100 files across years |
 | ping does not leak into 1-10 kHz | **verified** (4 files, detrended) | wider sample |
 | WAV<->product overlap 296.029 s, 250.0 Hz bin match | **verified** (headers read directly) | — |
-| seasonal 8.3-8.5 count swing in 1-10 kHz | **flag only** (8 and 30 files/season) | re-run at >=100 files/season; and sweep the B5 gate threshold per season |
+| seasonal swing in 1-10 kHz is **2.0 counts**, not 8.3-8.5 | **verified** (1,790 windows, all 895 dates) | — the 8.3-8.5 figure was small-sample noise and is withdrawn |
+| no COVID-era signal in the vessel bands | **verified** (1,790 windows): event rate (>=+10 over ambient) 12.6 / 11.7 / 11.8 / 13.7 / 11.3 / 12.0 % for 2020-25; 2020->2021 is -7.4%, inside year-to-year scatter | — |
+| narrowband lines at 20.25/61/78.5/81.25/91.5/100 kHz are system self-noise | **verified** (duty 0.87-1.00 for the continuous ones, all six seasons; harmonics of ~20.3125 kHz land on bins 81/244/325 exactly) | identify the clock with ONC; confirm the 61 kHz line's source |
+| the 37.65 kHz feature is an instrument, not traffic | **verified**: 1.000 Hz PRF (ACF lag-4 = 1.00 on / 0.03 off); present in ~100% of windows when on; single step transition 2021-05-01 -> 2022-07-17 OFF, 2022-07-18 ON; switch-off falls in the winter service gap | identify the instrument with ONC |
 | WAV<->product cross-bin slope 0.52 counts/dB, r² 0.55 | **verified**, one window | many matched windows, fitted per bin |
 | corpus max level | **unverified** (112 claimed; 115 reported elsewhere) | full pass |
 | centre-vs-edge axis convention | **open** (decision 0013) | §3.1, or a two-bin census — ONC has no documentation |
