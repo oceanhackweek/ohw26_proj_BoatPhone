@@ -157,7 +157,10 @@ def load_scene(path, radiometry="auto"):
     rgb8 = np.ascontiguousarray(np.clip(
         np.stack([red, green, blue], -1) * opt.PLANET_QUANT / opt.TCI_DIVISOR,
         0, 255).astype(np.uint8))
-    return dict(rgb8=rgb8, nir=nir, valid=valid, res_m=res, shape=shape,
+    # `green` is returned as float reflectance, not just folded into rgb8: the
+    # water mask needs NDWI, and rgb8 is 8-bit and clipped, so re-deriving green
+    # from it would quantise the mask. Purely additive -- Detector A ignores it.
+    return dict(rgb8=rgb8, nir=nir, green=green, valid=valid, res_m=res, shape=shape,
                 crs=crs, to_lonlat=to_lonlat, to_xy=to_xy)
 
 

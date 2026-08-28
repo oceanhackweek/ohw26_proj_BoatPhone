@@ -801,3 +801,85 @@ REPRODUCING THE TABLE, ~30 s on the hub, needs only the one scene in data/raw/:
     w, rep = optical.water_mask(green, nir, valid, None, res_m)
     v = nir[w]; med = np.median(v); sig = 1.4826 * np.median(np.abs(v - med))
     for N in (3,4,5,6,8,10): print(N, int((v > med + N*sig).sum()))
+
+
+Malachy (Aug 28) -- NEVE: YOUR SUGGESTION (1) IS IMPLEMENTED AND MEASURED ON ALL 26 SCENES.
+
+Detector B can now threshold by an EMPIRICAL-QUANTILE PIXEL BUDGET instead of a sigma multiple.
+optical.quantile_threshold(); detect_nir_blobs(threshold_mode="quantile"); detect_vessels_nir.py
+--threshold-mode quantile [--budget-px-per-km2 40]. Decision 0018. It spends a fixed budget of
+candidate pixels per km2 of water and reads the cut off the empirical distribution, so the shape
+of the tail is irrelevant by construction -- which is the whole point of your finding.
+
+FIRST, THE VALIDATION, BECAUSE IT MATTERS MORE THAN THE FEATURE. The new sweep script reproduces
+your table and the shipped batch EXACTLY: 14,128 candidate px at N=6 on 20200730, 377 detections
+on that scene, 32,877 across the batch. So everything below is measured against the same pipeline
+that produced the numbers you analysed, not a re-implementation that might differ.
+
+THE MEASUREMENT, all 26 SR scenes x 8 budgets x 6 sigma multiples, 364 rows ->
+scripts/calibrate_nir_threshold.py, data/derived/nir_threshold_calibration.csv (gitignored like
+every derived product; regenerate with the command in the script docstring). The metric is the
+p90/p10 spread of detections per km2 of water ACROSS the 26 scenes -- i.e. how differently one
+threshold behaves on the same 100 km2 of ocean:
+
+     n_mad = 3    7.5x   (11,339 det/scene)      budget   2.5 px/km2   5.0x    (5 det/scene)
+     n_mad = 4   26.7x   ( 3,128)                budget     5 px/km2   3.3x    (10)
+     n_mad = 5   19.4x   ( 1,290)                budget    20 px/km2   3.1x    (31)
+     n_mad = 6   14.9x   (   730)  <- as shipped budget    40 px/km2   2.4x    (50)  <- default
+     n_mad = 8   11.1x   (   378)                budget    80 px/km2   2.5x    (92)
+     n_mad = 10   9.2x   (   240)                budget   160 px/km2   4.0x    (227)
+
+14.9x -> 2.4x. A ~6x improvement in BETWEEN-SCENE COMPARABILITY, which is the property the
+optical-acoustic matchup actually needs: a count that varies with sea state is the wrong input to
+a regression whose other variable is ALSO driven by sea state. That is a clean correlation with no
+vessels in it, i.e. invariant 4's failure mode, and it was live.
+
+THE DEFAULT IS UNCHANGED AND NOTHING YOU HAVE ALREADY JOINED AGAINST MOVES. NIR_THRESHOLD_MODE is
+still "mad" and detect_vessels_nir.py still defaults to --n-mad 6. Flipping the library default
+would retroactively change what the shipped detections.csv means for Isaac. Switching modes is
+deliberate, at the entry point. Flipping the default is a call to make after the section 8 census
+runs against the quantile mode -- and that census just got finishable: median TRANSIENT detections
+per scene go from 200 at N=6 to 9 at a 40 px/km2 budget.
+
+WHAT IT DOES NOT DO, AND I WANT THIS ON THE RECORD RATHER THAN DISCOVERED LATER:
+- It is NOT a false-alarm rate. Real vessels are inside the budget -- they are among the brightest
+  water pixels, which is B's premise. Set the budget below the true vessel pixel count and it
+  deletes vessels, silently, exactly as too high an n_mad would.
+- 40 px/km2 lands between 15 and 52 SIGMAS depending on the scene (p10..p90), far above the N=6
+  the batch ran. Anything real and dimmer than that is gone and no threshold sweep can tell us.
+  Section 6.2 still governs; the section 8 census is still the gate.
+- It makes counts COMPARABLE, not CORRECT. Different thing, and only the first was broken.
+
+YOUR STRUCTURAL POINT IS UNTOUCHED BY ANY OF THIS AND IS THE BIGGER ONE. A 6 m boat is 2 px and a
+12 m boat is ~4 px at 3 m GSD, so the FAO 0-12 m class sits at or below the resolution limit; no
+threshold and no shape test rescues that. It needs its own decision record -- I have written it up
+as context inside 0018 but deliberately NOT as a decision, because it is a claim about the sensor
+and it deserves to be argued on its own terms, by you, in section 13. That one is yours.
+
+NEGATIVE RESULT, so nobody re-runs it: PERSISTENCE CANNOT CALIBRATE THE BUDGET. I scored the
+multi-year-cell split at every setting hoping for a knee -- the fraction of detections in
+multi-year cells rises monotonically as the budget tightens (55% at 320 px/km2 -> 76% at 5) and
+the count of persistent cells falls monotonically (2,259 -> 34), with no knee in either. Both are
+density artefacts: at high detection density, cells co-occur across years by chance. The
+persistence filter is still the principled piece you said it was; it just cannot pick a threshold.
+
+THE SELF-TEST NOW CONTAINS THE FAILURE IT COULD NOT SEE. make_synthetic_scene(heavy_tail_df=3.0)
+draws water noise from a Student-t RESCALED TO THE SAME sigma_MAD as the Gaussian fixture: same
+robust scale, different tail. At the same N=6 the Gaussian fixture admits 0 candidate px and the
+heavy-tailed one admits 1,485, and raising N to 10 still leaves 22% of them -- your dead knob,
+reproduced in 5 seconds with no imagery. The budget admits exactly its 161 px on both. Section 4b,
+13 new checks, 69/69 pass. Your general lesson is now written into the fixture's docstring: a
+synthetic fixture validates the IMPLEMENTATION, never the distributional assumption underneath it.
+
+Two smaller things, both invariant 6 cleanups made along the way: PERSISTENCE_CELL_DLAT/DLON moved
+out of detect_vessels_nir.py into optical.py (two entry points now grid on them, and two
+definitions would silently disagree about "the same place"); export_detections.load_scene() now
+also returns `green` as float reflectance so the calibration script reuses it instead of adding a
+fourth raster reader.
+
+Next, and it is your call not mine: run the section 8 census against --threshold-mode quantile at
+40 px/km2 on a few scenes. Where you stop reading down the queue is still the measurement. Your
+suggestion (2) -- carrying per-scene threshold, water median, sigma and candidate_px into
+scenes.csv -- is NOT done; detect_vessels_nir.py now PRINTS thr, N_eff and candidate_px per scene,
+but scenes.csv is unchanged and still cannot tell a quiet-water scene from a noisy one after the
+fact. Say the word and I will do it.

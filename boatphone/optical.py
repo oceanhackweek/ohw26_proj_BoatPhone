@@ -256,6 +256,63 @@ WATER_ERODE_M: float = 9.0
 NIR_MAD_N: float = 3.0
 SWEEP_MAD_N: tuple[float, ...] = (3.0, 4.0, 5.0, 6.0)
 
+# ---------------------------------------------------------------------------
+# THE THRESHOLD THAT DOES NOT ASSUME A DISTRIBUTION.
+#
+# The block above is wrong about the ocean, and the batch measured how wrong.
+# Ocean NIR has a heavy tail: over the delivered 26 scenes, 6 sigma -> 10 sigma
+# only HALVED the surviving pixel count (14,128 -> 7,450 on the reference scene)
+# where a Gaussian predicts a drop of fourteen orders of magnitude. So `n_mad` is
+# very nearly a DEAD KNOB -- there is no clean value to sweep to, which is why
+# sweeping it harder was not the fix. Detection counts swung 258x (32 to 8,257)
+# over the same 100 km2 with every scene >= 98% clear, driven by sea-surface
+# texture rather than by anything about boats, because sigma measures the water's
+# core while the count is set by its tail.
+#
+# The replacement spends a fixed CANDIDATE-PIXEL BUDGET per km2 of water and reads
+# the cut off the empirical distribution (quantile_threshold). Read that
+# docstring before changing this: the budget bounds the review workload, not the
+# error, and a budget set below the true vessel pixel count deletes vessels.
+#
+# SOURCE OF THE VALUE: scripts/calibrate_nir_threshold.py over all 26 delivered
+# SR scenes, 8 budgets x 6 sigma-multiples -> data/derived/nir_threshold_calibration.csv.
+# (The same run reproduces the shipped batch exactly at n_mad=6: 32,877 detections,
+# 14,128 candidate px on 20200730 -- so the comparison below is like for like.)
+#
+# The measurement that decides it, p90/p10 spread of detections per km2 of water
+# ACROSS the 26 scenes -- how differently the same threshold behaves on the same
+# 100 km2 of ocean:
+#
+#     n_mad = 3    7.5x        budget   2.5 px/km2   5.0x
+#     n_mad = 4   26.7x        budget     5 px/km2   3.3x
+#     n_mad = 5   19.4x        budget    20 px/km2   3.1x
+#     n_mad = 6   14.9x   <--  budget    40 px/km2   2.4x   <-- this default
+#     n_mad = 8   11.1x        budget    80 px/km2   2.5x
+#     n_mad = 10   9.2x        budget   160 px/km2   4.0x
+#
+# 40 px/km2 sits at the minimum of that curve and yields a median 50 detections
+# per scene (9 transient), against 730 (200 transient) at the n_mad=6 the batch
+# ran. For scale, Detector A -- an independent detector with different physics --
+# returned ~48 per scene on the same 26 scenes. That is a sanity anchor, NOT a
+# truth set; there is no truth set, and section 6.2 still forbids ranking on
+# counts.
+#
+# WHAT THIS DEFAULT RISKS, SAID PLAINLY. 40 px/km2 lands between 15 and 52 sigmas
+# depending on the scene (p10..p90), far above the n_mad=6 the batch ran. Any real
+# vessel dimmer than that cut is deleted, silently, and no sweep can find that out
+# without the section 8 census. The reason it is still the better default is that
+# the alternative is not "no deletion" but "deletion at an UNKNOWN and
+# scene-dependent rate" -- which is what a fixed n_mad does, and the 14.9x spread
+# is the measurement of it.
+#
+# See docs/decisions/0018-nir-threshold-is-a-budget-not-a-sigma.md.
+NIR_BUDGET_PX_PER_KM2: float = 40.0
+
+# "mad" keeps the batch reproducible against how it was measured; "quantile" is
+# the recommended operating mode for new runs. Changing this default changes
+# every downstream count, so it is switched deliberately, at the entry point.
+NIR_THRESHOLD_MODE: str = "mad"
+
 # Consistent-estimator constant: sigma ~= 1.4826 * MAD for Gaussian noise.
 MAD_TO_SIGMA: float = 1.4826
 
@@ -266,6 +323,21 @@ BLOB_MAX_ASPECT: float = 4.0
 # thin diagonal that fills its bounding rectangle poorly.
 BLOB_MIN_FILL: float = 0.35
 BLOB_MIN_PIXELS: int = 2
+
+# ---------------------------------------------------------------------------
+# PERSISTENCE CELL. A detection recurring at the same coordinates in DIFFERENT
+# YEARS is a fixed object -- rock, islet, beacon -- not a boat. This substitutes
+# for the national rock layers mayrajeo/ship-detection filters against and we do
+# not have, and it is the one part of Detector B that assumes nothing about the
+# brightness distribution, which is why it survived decision 0018 intact.
+#
+# ~50 m cells: wide enough to absorb inter-scene georeferencing jitter, narrow
+# enough not to merge a moored boat with the rock it is moored beside. Here
+# rather than in a script because two entry points now grid on it and two
+# definitions would silently disagree about what "the same place" means
+# (invariant 6).
+PERSISTENCE_CELL_DLAT: float = 0.00045
+PERSISTENCE_CELL_DLON: float = 0.00068
 
 # Above this aspect ratio a detection is flagged as carrying a wake. A crude
 # proxy: only a moving boat radiates strongly, so this feeds the acoustic side --
@@ -631,20 +703,20 @@ class Blob:
         return self.length_m / max(self.width_m, 1e-6)
 
 
-def robust_threshold(values: np.ndarray, n_mad: float = NIR_MAD_N) -> tuple[float, float, float]:
-    """(threshold, median, sigma) with sigma from the MAD, not the s.d.
+def _water_scale(values: np.ndarray) -> tuple[np.ndarray, float, float]:
+    """(finite values, median, sigma_MAD) -- the one definition of the water scale.
 
-    Boats are the outliers we are looking for. A plain standard deviation is
-    inflated by exactly the pixels of interest, so the threshold rises with the
-    brightness of the thing it is meant to catch.
+    Shared by both thresholds so a scene's reported `water_median` and `sigma_mad`
+    mean the same thing whichever threshold produced its detections. The quantile
+    threshold does not USE sigma to place its cut, but every downstream consumer
+    reads nir_snr, which is expressed in sigmas.
     """
     v = np.asarray(values, dtype=np.float64)
     v = v[np.isfinite(v)]
     if v.size == 0:
         raise ValueError("no finite values to threshold -- is the water mask empty?")
     med = float(np.median(v))
-    mad = float(np.median(np.abs(v - med)))
-    sigma = MAD_TO_SIGMA * mad
+    sigma = MAD_TO_SIGMA * float(np.median(np.abs(v - med)))
     if sigma == 0.0:
         # Quantised imagery over flat water can give an exactly-zero MAD. Falling
         # back to the s.d. is documented, not silent: with MAD == 0 there is no
@@ -656,7 +728,73 @@ def robust_threshold(values: np.ndarray, n_mad: float = NIR_MAD_N) -> tuple[floa
                 "NIR is constant over the whole water mask (MAD and s.d. both 0). "
                 "That is a data problem -- a stuck band or an empty mask -- not a "
                 "scene with no boats in it.")
+    return v, med, sigma
+
+
+def robust_threshold(values: np.ndarray, n_mad: float = NIR_MAD_N) -> tuple[float, float, float]:
+    """(threshold, median, sigma) with sigma from the MAD, not the s.d.
+
+    Boats are the outliers we are looking for. A plain standard deviation is
+    inflated by exactly the pixels of interest, so the threshold rises with the
+    brightness of the thing it is meant to catch.
+
+    KNOWN LIMITATION, MEASURED, NOT HYPOTHETICAL -- see quantile_threshold() and
+    docs/decisions/0018. `sigma` is a Gaussian scale estimate and ocean NIR is not
+    Gaussian, so `n_mad` is very nearly a dead knob: on the delivered batch,
+    raising it from 6 to 10 only halves the surviving pixel count where a Gaussian
+    would drop it fourteen orders of magnitude. Kept as the reference detector and
+    for the sweep, not as the recommended operating mode.
+    """
+    _, med, sigma = _water_scale(values)
     return med + n_mad * sigma, med, sigma
+
+
+def quantile_threshold(values: np.ndarray,
+                       target_px: int) -> tuple[float, float, float, int, float]:
+    """(threshold, median, sigma, selected_px, quantile) for a fixed pixel budget.
+
+    THE DISTRIBUTION-FREE REPLACEMENT FOR robust_threshold(). Instead of asking
+    "how many sigmas above the water is bright?" -- a question whose answer depends
+    on a Gaussian assumption the ocean violates -- it asks "which cut admits
+    `target_px` pixels?" and reads the answer off the empirical distribution. The
+    ordering of pixels by brightness is all it uses, so the shape of the tail is
+    irrelevant by construction.
+
+    WHAT THIS FIXES. Under the MAD threshold, sigma measures the water's CORE
+    texture while the candidate count is set by its TAIL, and the two are not
+    coupled: on a scene whose core is quiet the threshold slides toward the median
+    and the tail floods through. That is the mechanism behind the batch's 258x
+    swing in detection count over the same 100 km2. A pixel budget makes the
+    candidate count a controlled input rather than an emergent property of sea
+    state, which is what makes counts comparable BETWEEN scenes.
+
+    WHAT THIS DOES NOT FIX, AND MUST NOT BE READ AS FIXING. The budget bounds the
+    workload, not the error. Real vessels are inside it -- they are among the
+    brightest water pixels, which is the whole premise of Detector B -- so this is
+    a FALSE-ALARM BUDGET only to the extent that vessels are a small fraction of
+    it. Set it below the true vessel pixel count and it deletes vessels silently,
+    exactly as a too-high `n_mad` would. It buys comparability, not truth.
+
+    TIES ARE REPORTED, NOT HIDDEN. PlanetScope reflectance is quantised, so the
+    budget-th largest value can repeat; `>= threshold` then admits more than
+    `target_px`. The achieved count is returned so the caller can see the overrun
+    instead of assuming the budget was met (invariant 5).
+    """
+    v, med, sigma = _water_scale(values)
+    n = v.size
+    target_px = int(target_px)
+    if target_px < 1:
+        raise ValueError(f"target_px must be at least 1, got {target_px}")
+    if target_px >= n:
+        raise ValueError(
+            f"target_px {target_px} >= {n} water pixels: the budget is the entire "
+            "water mask, so there is no threshold to place. Either the budget is "
+            "wrong or the water mask is nearly empty -- check which before "
+            "lowering the budget.")
+    # The budget-th largest value. Everything >= it is inside the budget.
+    thr = float(np.partition(v, n - target_px)[n - target_px])
+    selected = int((v >= thr).sum())
+    return thr, med, sigma, selected, 1.0 - target_px / n
 
 
 def detect_nir_blobs(nir: np.ndarray, water: np.ndarray, res_m: float,
@@ -666,7 +804,10 @@ def detect_nir_blobs(nir: np.ndarray, water: np.ndarray, res_m: float,
                      max_aspect: float = BLOB_MAX_ASPECT,
                      min_fill: float = BLOB_MIN_FILL,
                      min_px: int = BLOB_MIN_PIXELS,
-                     keep_rejected: bool = False) -> tuple[list[Blob], dict]:
+                     keep_rejected: bool = False,
+                     threshold_mode: str = NIR_THRESHOLD_MODE,
+                     budget_px_per_km2: float = NIR_BUDGET_PX_PER_KM2,
+                     ) -> tuple[list[Blob], dict]:
     """Detector B: bright objects on dark water, found by contrast alone.
 
     The model in Detector A has physically never seen the NIR band, so it cannot
@@ -680,6 +821,15 @@ def detect_nir_blobs(nir: np.ndarray, water: np.ndarray, res_m: float,
     select_size_classes(). Dropping it here instead would delete it from the
     dominance calculation and let a swamped scene pass as clean.
 
+    TWO WAYS TO PLACE THE THRESHOLD, and they answer different questions.
+    `threshold_mode="mad"` is the original: water median + `n_mad` * sigma_MAD.
+    `threshold_mode="quantile"` spends a fixed budget of `budget_px_per_km2`
+    candidate pixels per km2 of water and reads the cut off the empirical
+    distribution -- see quantile_threshold() for why the MAD cut behaves badly on
+    real ocean NIR and what the budget does and does not buy. Both are kept: the
+    MAD cut is the reference the batch was measured with, and disagreement
+    between them on the same scene is itself a diagnostic.
+
     Returns (blobs, diagnostics). Rejected candidates are counted by reason and,
     with `keep_rejected`, returned too -- the rejection reasons are what you tune
     on, and a filter that silently eats every real boat looks exactly like water
@@ -692,7 +842,27 @@ def detect_nir_blobs(nir: np.ndarray, water: np.ndarray, res_m: float,
     if nir.shape != water.shape:
         raise ValueError(f"nir {nir.shape} and water {water.shape} differ in shape")
 
-    thr, med, sigma = robust_threshold(nir[water], n_mad)
+    water_km2 = float(water.sum()) * res_m * res_m / 1e6
+    budget_px: int = 0
+    quantile: float | None = None
+    selected_px: int | None = None
+    if threshold_mode == "mad":
+        thr, med, sigma = robust_threshold(nir[water], n_mad)
+    elif threshold_mode == "quantile":
+        if budget_px_per_km2 <= 0:
+            raise ValueError(
+                f"budget_px_per_km2 must be positive, got {budget_px_per_km2}")
+        budget_px = int(round(budget_px_per_km2 * water_km2))
+        if budget_px < 1:
+            raise ValueError(
+                f"a budget of {budget_px_per_km2} px/km2 over {water_km2:.3f} km2 "
+                "of water rounds to zero candidate pixels. That is a scene with "
+                "almost no water in it, not a scene with no boats -- check the "
+                "mask before lowering the budget.")
+        thr, med, sigma, selected_px, quantile = quantile_threshold(nir[water], budget_px)
+    else:
+        raise ValueError(
+            f"threshold_mode must be 'mad' or 'quantile', got {threshold_mode!r}")
     candidate = (nir >= thr) & water
 
     n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
@@ -752,9 +922,20 @@ def detect_nir_blobs(nir: np.ndarray, water: np.ndarray, res_m: float,
             blobs.append(blob)
 
     diagnostics = {
+        "threshold_mode": threshold_mode,
         "threshold_reflectance": thr, "water_median": med, "sigma_mad": sigma,
-        "n_mad": n_mad, "candidate_px": int(candidate.sum()),
-        "water_px": int(water.sum()), "px_area_m2": px_area, **counts,
+        # `n_mad` is what was ASKED FOR and is meaningless in quantile mode;
+        # `n_mad_effective` is where the cut actually landed, in sigmas, and is
+        # defined in both modes. In mad mode they are equal by construction. The
+        # spread of n_mad_effective across scenes at a FIXED budget is the direct
+        # measurement of how badly a fixed n_mad travels between scenes.
+        "n_mad": n_mad, "n_mad_effective": (thr - med) / sigma,
+        "budget_px_per_km2": budget_px_per_km2 if threshold_mode == "quantile" else None,
+        "budget_px": budget_px, "budget_selected_px": selected_px,
+        "quantile": quantile,
+        "candidate_px": int(candidate.sum()),
+        "water_px": int(water.sum()), "water_km2": water_km2,
+        "px_area_m2": px_area, **counts,
     }
     return [b for b in blobs if keep_rejected or not b.rejected], diagnostics
 
@@ -1205,13 +1386,30 @@ def make_synthetic_scene(n_px: int = 600, res_m: float = 3.0,
                          centre_lonlat: Sequence[float] | None = None,
                          water_nir: float = 0.02, land_nir: float = 0.30,
                          noise: float = 0.004, land_rows: int = 60,
-                         seed: int = 20260827) -> SyntheticScene:
+                         seed: int = 20260827,
+                         heavy_tail_df: float | None = None) -> SyntheticScene:
     """Build a square scene: dark water, a bright land strip, and known vessels.
 
     `vessels` are (offset_east_m, offset_north_m, length_m) about the centre. The
     land strip is at the top of the image and exists to make the water mask and
     its erosion do real work -- a synthetic scene of pure water would pass a
     shoreline test that the real Broken Group would fail.
+
+    `heavy_tail_df` EXISTS BECAUSE THE GAUSSIAN DEFAULT ONCE HID A REAL BUG. The
+    N-sigma threshold self-test passed on Gaussian water noise while the same
+    threshold over-predicted by three orders of magnitude on real scenes, for the
+    one reason the fixture could not express: ocean NIR has a heavy tail and
+    Gaussian noise does not. A synthetic fixture validates the IMPLEMENTATION,
+    never the distributional assumption underneath it -- so the assumption has to
+    become a fixture PARAMETER before it can be tested at all.
+
+    Set it to a Student-t degrees of freedom (3 is heavy, 30 is nearly Gaussian)
+    and the water noise is drawn from that instead, RESCALED TO THE SAME sigma_MAD
+    as the Gaussian case. Same robust scale, different tail -- which is exactly the
+    blind spot, because sigma_MAD measures the core while the false alarms come
+    from the tail. The negative tail is CLIPPED at zero rather than folded with
+    abs(): folding would manufacture bright pixels out of dark ones, a different
+    artefact from the one being modelled.
     """
     from pyproj import Transformer
 
@@ -1234,7 +1432,17 @@ def make_synthetic_scene(n_px: int = 600, res_m: float = 3.0,
         lon, lat = to_ll.transform(east, north)
         return np.asarray(lon), np.asarray(lat)
 
-    nir = np.abs(rng.normal(water_nir, noise, (n_px, n_px))).astype(np.float32)
+    if heavy_tail_df is None:
+        water_noise = np.abs(rng.normal(water_nir, noise, (n_px, n_px))) - water_nir
+    else:
+        t = rng.standard_t(heavy_tail_df, (n_px, n_px))
+        mad_sigma = MAD_TO_SIGMA * float(np.median(np.abs(t - np.median(t))))
+        if mad_sigma == 0.0:
+            raise ValueError(
+                f"heavy_tail_df={heavy_tail_df} produced a degenerate draw with "
+                "zero MAD; there is no scale to match the Gaussian case against.")
+        water_noise = t * (noise / mad_sigma)
+    nir = np.clip(water_nir + water_noise, 0.0, None).astype(np.float32)
     green = np.abs(rng.normal(0.06, noise, (n_px, n_px))).astype(np.float32)
     nir[:land_rows] = land_nir + rng.normal(0, noise, (land_rows, n_px))
     green[:land_rows] = 0.12 + rng.normal(0, noise, (land_rows, n_px))

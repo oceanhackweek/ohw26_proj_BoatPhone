@@ -213,6 +213,107 @@ check("the null scene's false positives are all sub-vessel specks",
       "they are 2-4 px noise pairs, not hull-sized")
 
 # ---------------------------------------------------------------------------
+print("\n4b. THE THRESHOLD THAT DOES NOT ASSUME A DISTRIBUTION")
+# ---------------------------------------------------------------------------
+# Section 4 sweeps N over GAUSSIAN water and concludes N=6 is clean. On real
+# scenes the same N=6 returned ~1,265 detections per scene. Both are true: the
+# sweep proved the code, and the code's premise is false over water. Ocean NIR
+# has a heavy tail, and sigma_MAD -- which measures the CORE -- cannot see it.
+#
+# So the fixture has to be able to express the failure before the fix can be
+# tested. `heavy_tail_df` draws the water noise from a Student-t rescaled to the
+# SAME sigma_MAD: identical robust scale, different tail. See decision 0018.
+heavy = opt.make_synthetic_scene(n_px=700, res_m=RES_M, vessels=VESSELS,
+                                 heavy_tail_df=3.0, seed=99)
+water_h, _ = opt.water_mask(heavy.green, heavy.nir, heavy.valid, res_m=RES_M)
+
+_, med_g, sig_g = opt.robust_threshold(empty.nir[water_e])
+_, med_h, sig_h = opt.robust_threshold(heavy.nir[water_h])
+check("the heavy-tailed fixture has the SAME robust scale as the Gaussian one",
+      abs(sig_h - sig_g) / sig_g < 0.05,
+      f"sigma_MAD {sig_g:.5f} vs {sig_h:.5f} -- so any difference below is the "
+      f"TAIL, not the scale")
+
+mad_g, dg = opt.detect_nir_blobs(empty.nir, water_e, RES_M, n_mad=6.0)
+mad_h, dh = opt.detect_nir_blobs(heavy.nir, water_h, RES_M, n_mad=6.0)
+print(f"     N=6 candidate px: gaussian {dg['candidate_px']:,} | "
+      f"heavy-tailed {dh['candidate_px']:,}")
+check("a MAD threshold that is clean on Gaussian water floods on a heavy tail",
+      dh["candidate_px"] > 100 * max(dg["candidate_px"], 1),
+      f"{dg['candidate_px']} -> {dh['candidate_px']:,} candidate px at the SAME "
+      f"N and the same sigma: this is the real-scene failure, reproduced")
+
+# N is a DEAD KNOB on the heavy tail: the thing the batch measured (6 -> 10 sigma
+# only halves the count, where a Gaussian drops it fourteen orders of magnitude).
+_, dh10 = opt.detect_nir_blobs(heavy.nir, water_h, RES_M, n_mad=10.0)
+check("raising N does not rescue it -- the knob is nearly disconnected",
+      dh10["candidate_px"] > dh["candidate_px"] / 10,
+      f"N 6 -> 10 leaves {dh10['candidate_px']:,} of {dh['candidate_px']:,} "
+      f"({100 * dh10['candidate_px'] / dh['candidate_px']:.0f}%), not ~0%")
+
+# The fix: spend a fixed budget and read the cut off the empirical distribution.
+BUDGET = opt.NIR_BUDGET_PX_PER_KM2
+q_g, qdg = opt.detect_nir_blobs(empty.nir, water_e, RES_M,
+                                threshold_mode="quantile", budget_px_per_km2=BUDGET)
+q_h, qdh = opt.detect_nir_blobs(heavy.nir, water_h, RES_M,
+                                threshold_mode="quantile", budget_px_per_km2=BUDGET)
+print(f"     budget {BUDGET:g} px/km2 -> candidate px: gaussian "
+      f"{qdg['candidate_px']:,} | heavy-tailed {qdh['candidate_px']:,} "
+      f"(N_eff {qdg['n_mad_effective']:.1f} vs {qdh['n_mad_effective']:.1f})")
+check("the budget is honoured on BOTH distributions, to the pixel",
+      qdg["candidate_px"] == qdg["budget_px"] == qdh["candidate_px"] == qdh["budget_px"],
+      f"{qdg['budget_px']} px asked, {qdg['candidate_px']}/{qdh['candidate_px']} admitted")
+check("the SAME budget lands at a very different N -- which is the point",
+      abs(qdh["n_mad_effective"] - qdg["n_mad_effective"]) > 1.0,
+      f"N_eff {qdg['n_mad_effective']:.1f} vs {qdh['n_mad_effective']:.1f}: one "
+      f"fixed N cannot serve both, one fixed budget can")
+
+# A budget that bounds workload and deletes the vessels would be worse than what
+# it replaces. This is the check that keeps it honest.
+found_q, n_q, worst_q = recall(q_h, heavy.truth)
+check("the budget still finds every planted vessel on heavy-tailed water",
+      found_q == n_q, f"{found_q}/{n_q}, worst centroid error {worst_q:.2f} px")
+# What the reduction actually costs and buys, counted as noise blobs rather than
+# as a ratio of totals: the vessels are in both numbers and must not be credited
+# to either threshold.
+found_mad, _, _ = recall(mad_h, heavy.truth)
+noise_mad, noise_q = len(mad_h) - found_mad, len(q_h) - found_q
+check("the budget removes the tail's noise blobs, not the vessels",
+      noise_q <= noise_mad / 4,
+      f"non-vessel blobs {noise_mad} at N=6 -> {noise_q} at a {BUDGET:g} px/km2 "
+      f"budget, with {found_q}/{n_q} vessels kept either way")
+
+# The budget is a RATE, so it must scale with the water it is spent over.
+half = water_h.copy()
+half[:, half.shape[1] // 2:] = False
+_, qdhalf = opt.detect_nir_blobs(heavy.nir, half, RES_M,
+                                 threshold_mode="quantile", budget_px_per_km2=BUDGET)
+check("the budget is a rate: halve the water, halve the pixels spent",
+      abs(qdhalf["budget_px"] / qdh["budget_px"] - 0.5) < 0.05,
+      f"{qdh['budget_px']} px over {qdh['water_km2']:.2f} km2 -> "
+      f"{qdhalf['budget_px']} px over {qdhalf['water_km2']:.2f} km2")
+
+# Quantised reflectance makes the budget-th largest value repeat. The overrun is
+# REPORTED rather than assumed away (invariant 5).
+tied = np.repeat(np.array([0.01, 0.02, 0.03], dtype=np.float64), 400)
+thr_t, _, _, sel_t, _ = opt.quantile_threshold(tied, 100)
+check("ties are reported as an overrun, not silently swallowed",
+      sel_t == 400 and thr_t == 0.03,
+      f"asked 100 px, the 100th largest value repeats 400 times -> reported {sel_t}")
+
+for bad, why, needle in [
+        (dict(threshold_mode="quantile", budget_px_per_km2=1e9),
+         "a budget larger than the water mask", "entire"),
+        (dict(threshold_mode="quantile", budget_px_per_km2=0.0),
+         "a non-positive budget", "must be positive"),
+        (dict(threshold_mode="empirical"), "an unknown threshold mode", "must be")]:
+    try:
+        opt.detect_nir_blobs(heavy.nir, water_h, RES_M, **bad)
+        check(f"{why} raises instead of guessing", False)
+    except ValueError as exc:
+        check(f"{why} raises instead of guessing", needle in str(exc), str(exc)[:70])
+
+# ---------------------------------------------------------------------------
 print("\n5. SHAPE AND SIZE FILTERS")
 # ---------------------------------------------------------------------------
 # Two features that are NOT small craft, for opposite reasons:

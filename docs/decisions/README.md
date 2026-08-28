@@ -62,3 +62,4 @@ Superseding is normal -- mark the old one and link forward. Silently contradicti
 | [0015](0015-censoring-aware-thresholds-for-b5.md) | B5's thresholds must be censoring-aware, and its free parameters are tuned off the overpasses | accepted |
 | [0016](0016-small-craft-scope-is-fao-classes.md) | The small-craft scope is FAO classes 0-12 m and 12-24 m, applied at analysis time | accepted |
 | [0017](0017-land-is-defined-by-extent-not-brightness.md) | Land is defined by extent, not by brightness, and NDWI is a diagnostic | accepted |
+| [0018](0018-nir-threshold-is-a-budget-not-a-sigma.md) | Detector B's threshold is a pixel BUDGET, not a sigma multiple | accepted |

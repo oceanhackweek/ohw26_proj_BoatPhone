@@ -62,9 +62,23 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--downloads", required=True)
+    ap.add_argument("--threshold-mode", choices=("mad", "quantile"),
+                    default=optical.NIR_THRESHOLD_MODE,
+                    help="'mad' reproduces the delivered batch. 'quantile' spends a "
+                         "fixed candidate-pixel budget per km2 of water and is the "
+                         "recommended mode for new runs -- ocean NIR is not Gaussian, "
+                         "so --n-mad is very nearly a dead knob (decision 0018).")
     ap.add_argument("--n-mad", type=float, default=6.0,
-                    help="NIR threshold in MADs. Neve measured N=3 ~125 false "
-                         "candidates/scene; N=6 clears them and still recovers 6 m.")
+                    help="mad mode only. NIR threshold in MADs. The figure this "
+                         "default came from -- N=3 ~125 false candidates/scene, N=6 "
+                         "clears them -- was measured on a GAUSSIAN synthetic fixture "
+                         "and does not hold on real water: N=6 returned ~1,265 "
+                         "detections/scene over the delivered batch.")
+    ap.add_argument("--budget-px-per-km2", type=float,
+                    default=optical.NIR_BUDGET_PX_PER_KM2,
+                    help="quantile mode only. Candidate pixels per km2 of water. "
+                         "It bounds the review workload, NOT the error: set it below "
+                         "the true vessel pixel count and it deletes vessels.")
     ap.add_argument("--out-detections", default="detections.csv")
     ap.add_argument("--out-scenes", default="scenes.csv")
     ap.add_argument("--out-queue", default="review_queue.csv")
@@ -81,7 +95,10 @@ def main():
         green, nir, valid, clear, res_m, to_lonlat = load_scene(
             D / r["sr_file"], D / r["udm2_file"])
         water, mrep = optical.water_mask(green, nir, valid, clear, res_m=res_m)
-        blobs, stats = optical.detect_nir_blobs(nir, water, res_m, n_mad=args.n_mad)
+        blobs, stats = optical.detect_nir_blobs(
+            nir, water, res_m, n_mad=args.n_mad,
+            threshold_mode=args.threshold_mode,
+            budget_px_per_km2=args.budget_px_per_km2)
         recs = optical.blobs_to_records(blobs, r["id"], r["acq_time_utc"], to_lonlat)
         # blobs_to_records is strictly 1:1 with blobs (it zips one list, filtering
         # nothing), so the shape fields can be carried across without touching
@@ -98,8 +115,15 @@ def main():
             d["n_px"] = b.n_px
         dets.extend(recs)
         scenes.append(optical.classify_scene(recs, r["id"], r["acq_time_utc"]))
+        # thr and N_eff are printed, not just the count: at a fixed budget the
+        # scene-to-scene spread of N_eff is the variation a fixed --n-mad is blind
+        # to, and it is the number that says whether this scene's water was quiet
+        # or noisy. (Carrying them into scenes.csv is a separate change.)
         print(f"[{i:>2}/{len(rows)}] {r['id']}  water {water.mean():5.1%}  "
-              f"land_comp {mrep.land_components:>3}  blobs {len(blobs):>3}  "
+              f"land_comp {mrep.land_components:>3}  "
+              f"thr {stats['threshold_reflectance']:.5f}  "
+              f"N_eff {stats['n_mad_effective']:5.2f}  "
+              f"cand {stats['candidate_px']:>7,}  blobs {len(blobs):>5}  "
               f"{'' if blobs else '(none)'}", flush=True)
 
     # ---------------------------------------------------------- persistence
@@ -108,8 +132,9 @@ def main():
     # national rock layers (`vesikivi`, `vesikivikko`) that mayrajeo/ship-detection
     # filters against and we do not have. It is principled in a way a brightness
     # threshold is not: nothing here is tuned to make the counts look plausible.
-    # Cells are ~50 m, wide enough to absorb inter-scene georeferencing jitter.
-    DLAT, DLON = 0.00045, 0.00068
+    # Cell size is optical.PERSISTENCE_CELL_* -- one definition, shared with
+    # scripts/calibrate_nir_threshold.py (invariant 6).
+    DLAT, DLON = optical.PERSISTENCE_CELL_DLAT, optical.PERSISTENCE_CELL_DLON
     from collections import defaultdict
     years = defaultdict(set)
     for d in dets:
