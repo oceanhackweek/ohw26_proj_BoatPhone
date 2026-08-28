@@ -1434,3 +1434,47 @@ just as importantly, what did NOT and why: accoutics_plan.md (kept for its
 250 Hz evidence), boatphone/models.py (still imported by checks.py), the B0
 notebook (evidence for 0012), and the whole optical script set (its owner's
 call, not a tidy-up's). Checks stay green: 183 passed, 0 failed, 4 skipped.
+
+
+================================================================================
+2026-08-28 (Isaac) -- THE REVIEW SLOTS ARE FILLED, AND THERE ARE NOW TWO BOARDS
+================================================================================
+
+planet_scene/ IS NO LONGER EMPTY. scripts/attach_planet_previews.py copies each
+scene's tile preview from Malachy's shared delivery
+(shared-public/boatphone_shared/planet_folger/tile_previews) into its review
+window folder as planet_scene/scene_preview.jpg, with a provenance sidecar
+carrying the source path, SHA-256 and the caveat. All 30 windows filled, 0
+missing. COPIED, NOT SYMLINKED -- a review run should survive being moved, and a
+symlink into another user's tree does not. Costs ~140 MB under data/derived/,
+which is gitignored.
+
+A PREVIEW IS FOR LOOKING, NOT MEASURING, and the sidecar says so in each folder
+rather than only in a README: 8-bit, resampled to ~3.15 m/px, JPEG-compressed,
+so nothing radiometric survives. Measurement stays on the analytic bundles.
+
+NOTE THE PREVIEW SET IS A SUPERSET OF THE DELIVERY: 30 previews against 26
+ordered scenes, so three of the four extras -- validation timestamps we hold
+manual counts for but no imagery -- now have their only picture attached.
+
+TWO CONTACT SHEETS, ONE SCRIPT. scripts/build_review_contact_sheet.py (renamed
+from build_denoised_contact_sheet.py) takes --panel and renders any per-window
+panel on the same 6x5 grid in the same chronological order with the same
+captions:
+    --panel denoised_labeled.png              -> acoustic board  (16 MB, 180 dpi)
+    --panel planet_scene/scene_preview.jpg    -> optical board   (3.4 MB, 200 dpi)
+Cell N of one board is the same overpass as cell N of the other, which is the
+whole reason it is one script and not two. Each panel is captioned with its
+instant, scene id, manual count and estimated count. Both boards carry 30
+panels, not 29 -- 20210616_183111 and 20210616_183140 are 29 s apart and share
+one manual count, captioned [label shared].
+
+STILL OPEN ON THE OPTICAL SIDE: the slot holds the SCENE, not the DETECTIONS.
+When the optical notebook can draw its boxes, that overlay belongs beside
+scene_preview.jpg in the same folder.
+
+LICENCE: this moves licensed Planet imagery within the hub only. shared-public
+is readable by every account here, not just the three of us. Keep it inside the
+hackweek.
+
+Checks: 183 passed, 0 failed, 4 skipped.
