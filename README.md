@@ -7,6 +7,15 @@
 * `scripts` Shared scripts or functions are added here.
 * `data` Shared datasets are shared here.
 
+## Start here
+
+**`final_notebooks/acoustic_pipeline.ipynb`** is the reproducible record of the hydrophone
+(acoustic) pipeline, start to finish: getting an ONC token, writing the `.env` file,
+downloading the data, computing band levels, counting vessel passages, and producing every
+figure. It is written for somebody who has never seen this repository, and it states plainly
+what the pipeline does and does not establish. A companion notebook for the optical pipeline
+is in progress; the acoustic notebook flags every point where the two meet.
+
 ## Project Name
 
 Satellite-derived vessel distance, speed, and orientation relative to the Folger Deep hydrophone array improve the estimation of acoustic ranging for small-scale vessel noise.

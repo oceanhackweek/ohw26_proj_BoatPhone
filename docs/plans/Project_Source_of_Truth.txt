@@ -1397,3 +1397,40 @@ EYEBALL CHECK, PARTIAL, AND SAYING SO: I inspected chips for 2 of the 26 scenes 
 Every box contained a compact bright object in open water away from shoreline. That is
 encouraging and it is NOT the section 8 census -- 17 of the 26 scenes have had no box-level human
 pass at all, and a count that matches can still be the wrong object. The census remains open.
+
+================================================================================
+2026-08-28 (Isaac) -- A REPRODUCIBLE NOTEBOOK FOR THE WHOLE ACOUSTIC PIPELINE
+================================================================================
+
+final_notebooks/acoustic_pipeline.ipynb now exists: token -> .env -> uptime
+calendar -> bulk pull -> reader -> band levels -> viability gate -> population
+figures -> review sheets -> labels -> vessel counts -> checks, in that order,
+in plain English, with every file path and variable name named. It executes top
+to bottom in a fresh kernel (verified 2026-08-28) and is committed WITH its
+outputs, deliberately -- for a notebook whose job is to be read before it is
+run, the figures are the point (CLAUDE.md invariant 7's exception).
+
+Heavy steps are behind a RUN_HEAVY flag and print the exact command instead of
+running it, so the whole pipeline reads in a minute without a 7 GB download.
+
+EVERY NUMBER IN IT IS SOURCED FROM THIS FILE OR FROM CODE, and the caveats
+travel with them: uncalibrated counts and never dB re 1 uPa, the estimator as
+a pre-declared-field proof of concept and not a validated model, and the
+time-shift null that still does not collapse.
+
+SEVEN OPTICAL HANDOFF FLAGS are marked in it (search "OPTICAL HANDOFF") and
+collected in its final section: archive-only 2020-2025 ordering, the
+per-deployment hydrophone coordinate, filling planet_scene/ in the review
+folders, more labels (the top one), arbitrating the two candidate counters,
+importing SEASON_MONTHS_UTC rather than restating it, and detections.csv being
+candidates rather than vessels. The optical notebook should pick these up.
+
+REPO TIDIED FOR SHARING. New gitignored superseded/ holds
+boatphone/onc_model_cpu.py, scripts/fetch_onc_model.py (both from the dead
+pretrained-model path, decision 0012, imported by nothing), the empty
+final_notebooks/project_result_1.ipynb placeholder, and stray .ipynb_checkpoints
+directories from OUTSIDE data/. superseded/README.md records what moved and,
+just as importantly, what did NOT and why: accoutics_plan.md (kept for its
+250 Hz evidence), boatphone/models.py (still imported by checks.py), the B0
+notebook (evidence for 0012), and the whole optical script set (its owner's
+call, not a tidy-up's). Checks stay green: 183 passed, 0 failed, 4 skipped.
