@@ -761,3 +761,66 @@ REPRODUCING THE TABLE, ~30 s on the hub, needs only the one scene in data/raw/:
     w, rep = optical.water_mask(green, nir, valid, None, res_m)
     v = nir[w]; med = np.median(v); sig = 1.4826 * np.median(np.abs(v - med))
     for N in (3,4,5,6,8,10): print(N, int((v > med + N*sig).sum()))
+
+
+Neve (Aug 28) -- CONFIRMED ON ALL 26 SCENES: DETECTOR B'S COUNT IS A FUNCTION OF sigma, NOT OF
+THE WATER. Thanks Malachy for the imagery in shared-public/boatphone_shared -- this is the test I
+said I could not run.
+
+My previous entry left one thing explicitly unproven: I claimed the 258x spread in per-scene
+counts came from the threshold being SCENE-RELATIVE, but I had one scene and could not show it.
+I now have all 26. It holds, and harder than I expected.
+
+METHOD: for each of the 26 SR scenes, the real water mask (with the udm2 clear mask), then
+optical.robust_threshold at N = 3,4,5,6,8,10 and a count of water px above each. No
+reimplementation -- robust_threshold is called directly, so this measures the shipped detector.
+Derived CSV is in my scratchpad, not in shared-public (its README asks for that).
+
+    date        sigma     median   px>6sig  frac      n_det   6->10 decay
+    20210616  0.001483   0.00230   172,013  1.6e-02    8257     2.62x
+    20210812  0.001927   0.00410   160,843  1.5e-02    4466     1.84x
+    20240827  0.002076   0.00190    82,662  7.6e-03    3745     2.24x
+    20240713  0.002076   0.00540   112,695  1.0e-02    1698     1.89x
+    20230815  0.002224   0.00420   144,025  1.3e-02    1044     1.82x
+    ...
+    20200730  0.003855   0.01740    14,128  1.3e-03     377     1.90x
+    20250630  0.005041   0.02150    14,793  1.4e-03     221     1.56x
+    20220625  0.005782   0.02720     4,952  4.6e-04      47     2.41x
+    20230617  0.006968   0.03280     3,571  7.6e-04      32     1.86x
+    20240712  0.007561   0.02310    10,871  1.0e-03     185     1.98x
+
+    r   log10(n_detections) vs log10(sigma)   = -0.879
+    r   log10(n_detections) vs log10(px>6sig) = +0.902
+    rho n_detections vs sigma (Spearman)      = -0.879   (n = 25, MAD==0 scene excluded)
+
+THE LEVERAGE IS THE POINT. sigma spans only 5.1x across the batch (0.00148 to 0.00756). That 5.1x
+becomes 48x in pixels-above-threshold and 258x in detections. So a modest change in sea-surface
+texture -- which is all sigma measures -- swings the output by two and a half orders of magnitude.
+A detector whose count is set by the roughness of the water is not measuring boats. Note the
+ordering is nearly monotonic in sigma: the quietest-water scene gives 8,257 and the two roughest
+give 32 and 47.
+
+THE DEAD-KNOB FINDING IS UNIVERSAL, NOT A ONE-SCENE ARTEFACT. Median 6 sigma -> 10 sigma decay
+across all 26 scenes is 2.03x, range 1.56x to 3.97x. Gaussian is 1.3e14x. Every scene, no
+exceptions. Section 8's N-sweep cannot converge on any of them.
+
+NEW, AND IT IS A DATA-QUALITY FINDING, NOT A TUNING ONE: 20250825_193929_84_251f HAS MAD EXACTLY
+ZERO. 65.24% of its water pixels sit at exactly 0.00010 -- the SR floor. Median = minimum. So
+robust_threshold takes its documented s.d. fallback (optical.py:644-651) and thresholds that scene
+on the STANDARD DEVIATION, which is precisely the non-robust statistic MAD exists to replace, and
+which is inflated by exactly the bright pixels we are hunting. The comment there anticipates
+"quantised imagery over flat water"; the real cause is SR floor-clipping in Planet's atmospheric
+correction (over-correction driven negative, then clamped), which is a different mechanism and is
+present in a DELIVERED scene, not a hypothetical. That scene reports 251 detections and they
+should not be pooled with the rest. Two consequences: (1) the fallback should raise or flag rather
+than silently switch to a scale with different meaning -- invariant 5; (2) somebody should check
+how many of the 26 have a large floor-pinned population short of the MAD==0 tipping point, because
+those are biased the same way without tripping the branch.
+
+WHAT THIS CHANGES FOR THE PLAN. The section 8 census is still the gate for RECALL, but it can no
+longer be expected to yield a usable N -- there is no N, on any scene. The threshold rule itself
+has to change, and my earlier suggestion is now measured rather than a hunch: set the per-scene
+threshold at an EMPIRICAL QUANTILE targeting a fixed candidate count, which makes the batch
+comparable across sea states by construction and removes sigma from the loop entirely. That also
+makes `dominance` and the CROWDED/SINGLE-DOMINANT classification meaningful for the first time,
+since today they are computed over populations whose size is set by water roughness.
