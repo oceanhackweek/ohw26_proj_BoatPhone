@@ -231,6 +231,45 @@ class WindowCoverage:
         return self.covered_seconds / self.window_seconds if self.window_seconds else 0.0
 
 
+def analysis_file_index(dirs=None):
+    """The index EVERY analysis should use: both landing zones, deduplicated.
+
+    The corpus (`ONC_OVERPASS_CORPUS_DIR`, the 09:15-11:45 local strip) and the
+    top-up zone (`ONC_LABELLED_WINDOW_DIR`, windows pulled for a specific
+    labelled scene) OVERLAP. Measured 2026-08-28: 17 of 29 labelled overpasses
+    had every one of their files present in BOTH, because the top-up pull was
+    re-run for all 30 scenes and re-fetched windows the bulk pull already held.
+
+    `corpus_file_index` deduplicates WITHIN a container, so callers that simply
+    concatenated two of its results reintroduced exactly the defect its own
+    docstring exists to prevent -- and worse than double-counting a percentile:
+    duplicated timestamps HALVE the real-time span of any fixed-frame smoothing
+    kernel or peak-separation distance, so a 45 s smooth became 22.5 s and a
+    180 s minimum separation became 90 s, on 17 of 29 windows and not the other
+    12. That is a silently INCONSISTENT estimator, not merely a biased one.
+
+    Deduplicated by `start_utc` across containers, preferring the file already
+    in the bulk corpus so the corpus stays the canonical copy. The number of
+    cross-container duplicates dropped is returned to the caller's log, never
+    discarded silently (CLAUDE.md invariant 5).
+    """
+    from . import paths as _paths
+    if dirs is None:
+        dirs = [ONC_OVERPASS_CORPUS_DIR]
+        if _paths.ONC_LABELLED_WINDOW_DIR.is_dir():
+            dirs.append(_paths.ONC_LABELLED_WINDOW_DIR)
+    by_start: dict = {}
+    n_dup = 0
+    for directory in dirs:
+        for start_utc, end_utc, path in corpus_file_index(directory):
+            if start_utc in by_start:
+                n_dup += 1
+                continue
+            by_start[start_utc] = (start_utc, end_utc, path)
+    index = sorted(by_start.values(), key=lambda row: row[0])
+    return index, n_dup
+
+
 def window_coverage(overpass: Overpass, index, *,
                     half_window_s: int = OVERPASS_MATCH_HALF_WINDOW_S) -> WindowCoverage:
     """Measure the corpus's coverage of one overpass's acoustic window.

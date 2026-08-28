@@ -624,11 +624,14 @@ def main(argv=None):
     # BOTH landing zones, exactly as build_review_set.py does: the bulk corpus
     # holds the 09:15-11:45 local strip and the top-up zone holds windows pulled
     # for a specific scene, which are off-strip by construction.
-    index = ov.corpus_file_index()
-    if paths.ONC_LABELLED_WINDOW_DIR.is_dir():
-        extra = ov.corpus_file_index(paths.ONC_LABELLED_WINDOW_DIR)
-        index = sorted(index + extra, key=lambda row: row[0])
-        print(f"corpus {len(index) - len(extra):,} + labelled top-up {len(extra)} windows")
+    # ONE index, deduplicated ACROSS containers. Concatenating two
+    # corpus_file_index() results reintroduced the very duplication that
+    # function dedupes within a container -- 17 of 29 labelled overpasses had
+    # every file in BOTH zones, which halves the real-time span of every fixed
+    # frame-count smoothing kernel. See overpasses.analysis_file_index.
+    index, n_dup = ov.analysis_file_index()
+    print(f"{len(index):,} windows indexed across both landing zones "
+          f"({n_dup} cross-container duplicate(s) dropped)")
     coverages = [ov.window_coverage(o, index) for o in overpass_list]
     summary = ov.coverage_summary(coverages)
     print(f"coverage: {summary['n_full']} full, {summary['n_partial']} partial, "

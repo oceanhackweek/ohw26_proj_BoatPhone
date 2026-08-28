@@ -1041,6 +1041,65 @@ NEXT: more labels. 29 instants with 6 negatives cannot separate a real estimator
 from a lucky one. If the ratio moves far from 1.0 on a second labelled batch,
 this was fitted rather than measured.
 
+================================================================================
+2026-08-28 (Isaac) -- A DUPLICATION BUG, AND WHY CONCURRENT VESSELS ARE HARD
+================================================================================
+
+BUG, AND IT MOVED EVERY NUMBER IN THE PREVIOUS BLOCK. The top-up pull was re-run
+for all 30 scenes and re-fetched windows the bulk corpus already held, into a
+second directory. corpus_file_index dedupes WITHIN a container; callers
+concatenated two of its results. 17 OF 29 LABELLED OVERPASSES HAD EVERY FILE
+TWICE. Duplicated timestamps do not just double-count -- they HALVE the real-time
+span of any fixed-frame kernel, so the 45 s smooth became 22.5 s and the 180 s
+peak separation became 90 s, on 17 windows and not the other 12. A silently
+INCONSISTENT estimator, not a biased one. Fixed: overpasses.analysis_file_index()
+dedupes across containers (98 dropped). USE IT; never concatenate two
+corpus_file_index() results.
+
+CORRECTED (deduplicated, +/-15 min, against 44 vessels / 29 instants):
+  estimate_vessel_count   40   ratio 0.91   26/29 within+/-1   r +0.590
+  peak_prominence (T/2)   48   ratio 1.09   26/29              r +0.611
+  merged events (10 s)    55   ratio 1.25   19/29              r +0.477
+  presence only           24   ratio 0.55   21/29              r +0.262
+The two pre-declared peak variants are now a TIE; production stays on the
+stricter one rather than churning for a coin-flip.
+
+THE LOUDNESS WORRY IS CLEARED. The earlier caveat -- that the frame-shuffled
+count still correlated +0.38 with the manual count, so part of the skill might be
+loudness -- used the WRONG diagnostic. A frame shuffle preserves each window's
+level DISTRIBUTION and so cannot probe BETWEEN-window level differences, which is
+where that +0.38 lives. Partial correlation against window median level is the
+right test: r_partial = +0.581 against r = +0.590. Removing loudness costs 0.009.
+The estimator is not reading loudness.
+
+CONCURRENT VESSELS: DIAGNOSED, PARTIALLY FIXED, NOT ADOPTED. Both remaining
+misses were concurrency failures -- two vessels at once are ONE peak in a single
+band level, by construction. Measured on 20240801_1928 (4 counted, 1 predicted):
+1-4 kHz has THREE peaks (-6.8, -1.0, +6.0 min), 4-10 kHz has TWO (-10.2, +5.9),
+and the 1-10 kHz median smears them into one. A band-split union recovers 4 and 2
+exactly (ratio 0.98, r +0.603) but its four parameters came from a post-hoc sweep
+of 36 configurations, so it is NOT adopted -- it is the candidate the next
+labelled batch should arbitrate.
+
+TWO NEGATIVE RESULTS WORTH KEEPING, both cheap to re-discover otherwise:
+  - 2-band and 4-band splits give IDENTICAL numbers in every configuration
+    tested. The 10-25 and 25-51 kHz bands NEVER pass the qualification gate
+    (measured whitened range 1.6 and 0.9 counts on the 4-vessel window).
+    Absorption-driven separation by range -- a near vessel lighting the high
+    bands where a far one cannot -- DOES NOT OPERATE at the ranges in this data.
+    Only the 1-4 / 4-10 kHz split carries information.
+  - DEMON / envelope demodulation of blade rate is IMPOSSIBLE here, not merely
+    hard. The 0.25 s frame gives 4 Hz envelope sampling and so a 2 Hz Nyquist,
+    against blade rates of 50-150 Hz. Do not spend time on it. (Both findings
+    from a Fable methods consult, 2026-08-28.)
+
+TIMESTAMPS RE-CONFIRMED after all of the above: PlanetScope scene_id time ==
+acquired column 30/30; ONC frame t0 == filename time, 1200 x 0.25 s = 300.0 s,
+files tile at exactly 300 s. No re-download needed.
+
+NEXT: more labels, and let them arbitrate estimate_vessel_count against the
+band-split union. 29 instants with 6 negatives cannot separate them.
+
 Next Steps:
 
 Divy out tasks and claim here
