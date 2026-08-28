@@ -916,6 +916,268 @@ BANDS ARE NOT CLASSES, restated because it keeps being read wrong: small_craft
 over both and a broadband pass appears in each. Band membership is not a size
 classification; G2 is unanswered.
 
+NOTE FOR WHOEVER REGENERATES THE ACOUSTIC TABLES: this merge brought a NEW
+detections.csv from optical (plus detections_a_toa.csv and fused_wake_hull.csv).
+The n_optical_candidates column in events_by_window_wide.csv was computed against
+the PRE-MERGE file. Re-run scripts/build_events_table.py to refresh it. The
+acoustic columns and the manual vessel counts are unaffected.
+
+================================================================================
+
+Neve (Aug 27, evening) -- MALACHY: A RUNNABLE EXPORTER FOR YOUR 26 SCENES:
+
+    python3 scripts/export_detections.py <scenes>/*.tif --out-dir data/derived/detections
+
+One CSV per image, named <scene_id>_detections.csv. You have the imagery and I do not (only
+20200730 is on the hub), so this is the fastest way to get detections off all 26 without moving
+1.2 GB. Needs rasterio, ultralytics, huggingface_hub and opencv -- all now in environment.yml --
+and it pulls yolo11s_tci.pt from HuggingFace on first run. CPU is fine: ~40 s per 100 km2 scene
+at slice 320, ~20 s at slice 640, so the whole batch is well under an hour.
+
+WHAT EACH ROW CARRIES: the four bounding-box corners in BOTH EPSG:4326 and the scene's own CRS
+(so it drops onto the imagery with no reprojection), a detection id (boat_1, boat_2, ... by
+descending confidence), geodesic range and bearing to Folger Deep, the confidence score, box
+dimensions, FAO size class, distance to the scene edge, and the config that produced it.
+
+RUN IT AT MORE THAN ONE CONFIG, and this is the point of the provenance columns. Your apparent-
+scale finding is real: on 20200730, slice 320 -> imgsz 640 gives 4 detections and slice 640 ->
+imgsz 640 gives 17, and BGR vs RGB gives 15 vs 10 with only 9 in common. So please run at least:
+  --slice 320 --imgsz 640            (the current default, ratio 2.0)
+  --slice 640 --imgsz 640            (ratio 1.0, where the count peaks)
+  --slice 640 --imgsz 640 --rgb      (the channel-order arm)
+Every row records slice_px/imgsz/conf_threshold/channel_order/weights_file, so the outputs are
+comparable rather than three files that disagree for unrecorded reasons.
+
+NOTHING IS FILTERED. No size cut, no water mask, no Detector B. Every box the model returns is a
+row -- that is deliberate, because this file is the INPUT to the section 8 human pass, not a result.
+
+THE NIR COLUMNS ARE ADVISORY AND DO NOT ALTER THE MODEL'S OUTPUT. `possible_false_positive` is
+computed from band 4, which the model never sees (it is fed 3-band RGB), so a bright cluster
+inside a box is genuinely independent evidence. `--no-nir` writes the same rows without those
+columns and the self-test asserts identical row counts and ids both ways. Read the flag as
+"unsupported by NIR", NOT as "not a boat": a dark hull on dark water produces exactly this, and
+dark hulls are Detector B's own documented failure mode. nir_support is graded strong/weak/none
+with the pixel count and the exact threshold recorded, so any flag can be re-derived.
+On 20200730: 4 detections, 1 flagged.
+
+TWO CAVEATS ARE IN THE CSV HEADER so they cannot be lost: bearing_deg_from_hydrophone is the
+hydrophone->detection AZIMUTH, not the vessel's heading (an axis-aligned box carries no heading --
+your Q2 point); and length_m is biased LOW for rotated vessels by up to 17.5%, so Detector B's
+minAreaRect length is preferred wherever B sees the same vessel.
+
+STILL THE FASTEST THING YOU COULD SEND ME: the `visual` clip for 20200730_192942_71_1059. Same
+acquisition, both renderings, so section 5.4 runs on one file rather than on the whole batch.
+
+
 Next Steps:
 
 Divy out tasks and claim here
+
+
+Neve (Aug 28) -- ISAAC: THE HYDROPHONE COORDINATE IS PER-DEPLOYMENT, AND OURS IS THE AOI CENTRE.
+
+A coordinate for device 23235 surfaced in another session -- lat 48.813851, lon -125.274604,
+depth 95.0 m, attributed to ONC metadata. UNVERIFIED: there is no .env and no ONC_TOKEN on the
+hub, so I could not run getDeployments against the live endpoint to check it. Recording it as a
+claim, not a fact. What I CAN settle from the code is the shape of the question, and the shape
+is the part that matters.
+
+IT CANNOT APPLY TO ALL DATES, WHATEVER THE VALUES TURN OUT TO BE. Your own live check
+(onc_client.py:1000-1002, 2026-08-27) records that ONC's /deployments response carries no
+deploymentId and that the keys are begin, end, locationCode, deviceCode, LAT/LON/DEPTH, citation.
+lat/lon/depth sit INSIDE each deployment row, next to that row's begin/end. That is why
+get_deployments() has to compose its own key as "<deviceCode>@<locationCode>:<begin>" -- one
+device, many rows, each with its own position. A single triple for 23235 is scoped to the row it
+came from. Folger Deep is serviced and redeployed, and the deployment ENDED 2026-03-14 per your
+entry, so there is provably more than one row across 2020-2026. Anyone quoting one coordinate for
+the whole study window is quoting one deployment and calling it the device.
+
+THE POSITION IS BEING DISCARDED IN CODE. get_deployments() reads begin, end and locationCode and
+drops lat/lon/depth on the floor (onc_client.py:1025-1041); DEPLOYMENTS_CSV_HEADER
+(onc_client.py:1106) is ("deployment_id", "start_utc", "end_utc"). So no code path in this repo
+carries a per-deployment coordinate, which is exactly why the question could not be answered from
+what is on disk. Three fields on that tuple and three columns on that header is the whole fix.
+YOUR FILE, YOUR CALL -- I have not touched onc_client.py or config.py, which optical.py:54-55
+records as under separate adjudication.
+
+THE 272 m GAP IS NOT NEGLIGIBLE AND IT IS IN EVERY range_km WE HAVE SHIPPED.
+    optical.py:71  HYDROPHONE_LONLAT  -125.278277, 48.814200
+    claimed ONC 23235                 -125.274604, 48.813851   depth 95.0 m
+    offset  +269 m E, -39 m N  ->  272 m
+Against the observed range span that is 32.4% error at 0.84 km, 10.2% at 2.66 km, 4.2% at 6.42 km.
+Section 9's RL = SL - k*log10(r) is a fit ON r, so a systematic origin shift biases k, and it
+biases it hardest in the near field where the detections that most constrain the fit live. Note
+HYDROPHONE_SOURCE already says what this is: "AOI centre; pending confirmation against ONC device
+metadata for ICLISTENHF1266 via interface I2". This is I2 coming due, not a new problem.
+
+TWO SMALLER THINGS. (1) Depth 95.0 m is a quantity nothing in the repo currently carries. It is
+also per-deployment, so it should not be frozen as a constant; it only matters if range ever
+becomes slant rather than horizontal (0.6% at 0.84 km, vanishing by 6 km). (2) CONFIRM THE ID
+BEFORE TRUSTING A COORDINATE KEYED ON IT. config.py:48 has DEVICE_ID = 23235 with a loose
+provenance note, while every live check in onc_client.py queries by DEVICE_CODE and never by the
+numeric id -- so 23235 has never actually been exercised against ONC by our code.
+
+WHAT WOULD SETTLE IT: getDeployments(deviceCode="ICLISTENHF1266") with a token, which returns one
+row per deployment with begin/end/lat/lon/depth. That enumerates the intervals and shows directly
+whether 48.813851/-125.274604/95.0 spans everything or one of them. If someone drops a token into
+.env I will run it and post the table here.
+
+
+Neve (Aug 28) -- MALACHY: OUR TWO 4-DETECTION SETS ON 20200730 ARE NOT THE SAME FOUR.
+
+Cross-matched my Detector A run (slice 320 -> imgsz 640, conf 0.10, BGR, SR; the 4 I retracted
+above as config-suppressed) against your fused_wake_hull rows on the same scene. Both are 4 rows.
+EXACTLY ONE PAIR MATCHES, at 13 m: my boat_4 and your AB row. The other three on each side are
+disjoint. So the agreement between the two fours is coincidence of count, not of content -- worth
+saying out loud because "we both got 4" reads as corroboration and it is not.
+
+The one match is also the one that shows the length problem cleanly: same object, my axis-aligned
+box calls it 114.4 m, your minAreaRect hull calls it 42.0 m. That is the bias I confirmed for you
+above, and it is why length comes from B wherever B sees the vessel.
+
+For the record, the per-scene counts on 20200730 across everything we have shipped:
+    B raw (detections.csv)        377
+    A on TOA (detections_a_toa)    42
+    fused_wake_hull                 4
+    review_queue                    2
+    my Detector A, slice 320        4   (17 at slice 640; do not build on the 4)
+None of these is recall. Section 6.2 still governs and the section 8 census is still the gate.
+
+
+Neve (Aug 28) -- WHY DETECTOR B OVER-PREDICTS: THE GAUSSIAN PREMISE IS FALSE OVER WATER.
+
+Malachy asked for the mechanism behind 32,877 detections / ~1,265 per scene. It is not tuning and
+it is not a bad threshold value. robust_threshold (optical.py:629-654) sets thr = median + N*sigma
+with sigma = MAD_TO_SIGMA * MAD, and MAD_TO_SIGMA = 1.4826 is the GAUSSIAN consistency constant --
+it converts MAD to sigma only if the data are Gaussian. Ocean NIR is not, and not by a little.
+
+MEASURED on 20200730 (the only scene on the hub), 10.83 M water px through the real water mask,
+median 0.01740, MAD-sigma 0.003855:
+
+     N   threshold    px above    observed frac   Gaussian frac    ratio
+     3     0.02896     107,586       9.93e-03        1.35e-03           7x
+     4     0.03282      37,171       3.43e-03        3.17e-05         108x
+     5     0.03667      19,971       1.84e-03        2.87e-07       6,424x
+     6     0.04053      14,128       1.30e-03        9.87e-10   1,321,401x
+     8     0.04824       9,530       8.80e-04        6.22e-16        1.4e12x
+    10     0.05595       7,450       6.88e-04        7.62e-24        9.0e19x
+
+At the N=6 this batch ran, a Gaussian predicts 0.01 PIXELS IN THE WHOLE SCENE. There are 14,128.
+
+THE TAIL BARELY DECAYS, WHICH IS THE PART THAT MATTERS. 6 sigma -> 10 sigma only HALVES the count
+(14,128 -> 7,450); a Gaussian would drop it fourteen orders of magnitude. So N is very nearly a
+dead knob: the detector's only tuning parameter is close to disconnected from its output. That is
+the mechanism behind Malachy's "the mass piles up at the cut with no natural break", and it means
+the section 8 N-sweep as currently framed CANNOT converge on a clean value, because there is no
+value to find. Sweeping N harder is not the fix.
+
+MY SELF-TEST DID NOT CATCH THIS AND COULD NOT HAVE. My "N=6 removes all of them while still
+recovering every planted vessel down to 6 m" figure came from the SYNTHETIC fixture in
+scripts/optical_selftest.py. Synthetic noise is Gaussian, so the fixture satisfies exactly the
+assumption the ocean breaks. 44/44 still passes and the code is still correct against its spec;
+the spec is what is wrong. Recording this as the general lesson: a synthetic fixture validates
+the implementation, never the distributional assumption underneath it. Invariant 9's cousin.
+
+min_px = 2 IS WHAT TURNS THAT TAIL INTO "VESSELS". BLOB_MIN_PIXELS = 2 (optical.py:268). Of the
+32,877 rows: 46% are EXACTLY 2 px (15,269), 72% are <= 4 px. At 3 m GSD a 2 px blob is 6.0 m,
+which is both the minimum length in the file and its p25. Two adjacent pixels among ~14,000
+scattered over 10.8 M is a coincidence that happens constantly. A 2 px blob also has no shape, so
+its minAreaRect length and aspect are artefacts -- hence the spikes at exactly 6.0 m and aspect
+2.0. Across the 26 scenes this is measurably the driver: r = +0.86 between log10(n_detections)
+and the fraction of blobs <= 4 px.
+
+WHAT I EXPECTED AND WAS WRONG ABOUT: SUN GLINT. glint_angle vs log10(n_detections) is r = +0.12
+across the 26 scenes -- no relationship. sun_elevation is -0.25. Posting the negative result so
+nobody re-runs it. Counts swing 258x (32 to 8,257) over the same 100 km2 with every scene >= 98%
+clear, so something scene-state dependent drives it, but the acquisition-geometry columns in the
+manifest do not capture it. Consistent reading: the threshold is SCENE-RELATIVE, MAD measures the
+water's core texture, and the heavy tail does not scale with it -- so on a scene whose core is
+quiet, sigma shrinks, the threshold slides toward the median, and the tail floods through.
+Sensitivity is set by sea-surface texture, not by anything about boats. Supporting: r = -0.56 for
+median nir_snr, and r = -0.82 for the fraction of detections in multi-year cells, i.e. the runaway
+scenes are NOT rocks, they are fresh per-scene noise.
+
+THE STRUCTURAL PART, AND IT IS BIGGER THAN A TUNING PROBLEM. A 6 m boat is 2 px at PlanetScope
+3 m; a 12 m boat is ~4 px. The FAO 0-12 m class -- the class goal 2 and the no-AIS framing care
+MOST about -- sits at or below the resolution limit. So min_px cannot simply be raised to kill the
+noise without deleting the target class, and no shape test (aspect, compactness, orientation) is
+available at 2-4 px either. This deserves a decision record and a sentence in section 13: for the
+smallest FAO class, PlanetScope may support DETECTION-BY-PERSISTENCE-ABSENCE but not per-scene
+per-object detection. That is a claim about the sensor, not about our code.
+
+WHAT SURVIVES, AND WHAT I SUGGEST. The persistence filter is the one thing here that is
+principled -- it makes no distributional assumption at all, which is exactly why it is the piece
+worth building on. Two concrete suggestions, neither implemented, both Malachy's call since it is
+his script: (1) replace the sigma-multiple threshold with an EMPIRICAL-QUANTILE threshold
+calibrated to a target false-alarm count per scene, which does not care what the distribution is;
+(2) report per-scene threshold, water median, sigma and candidate_px into scenes.csv --
+detect_nir_blobs already returns all four (optical.py:750-751) and detections.csv drops them, so
+today we cannot tell a quiet-water scene from a noisy one after the fact.
+
+REPRODUCING THE TABLE, ~30 s on the hub, needs only the one scene in data/raw/:
+    w, rep = optical.water_mask(green, nir, valid, None, res_m)
+    v = nir[w]; med = np.median(v); sig = 1.4826 * np.median(np.abs(v - med))
+    for N in (3,4,5,6,8,10): print(N, int((v > med + N*sig).sum()))
+
+
+Neve (Aug 28) -- CONFIRMED ON ALL 26 SCENES: DETECTOR B'S COUNT IS A FUNCTION OF sigma, NOT OF
+THE WATER. Thanks Malachy for the imagery in shared-public/boatphone_shared -- this is the test I
+said I could not run.
+
+My previous entry left one thing explicitly unproven: I claimed the 258x spread in per-scene
+counts came from the threshold being SCENE-RELATIVE, but I had one scene and could not show it.
+I now have all 26. It holds, and harder than I expected.
+
+METHOD: for each of the 26 SR scenes, the real water mask (with the udm2 clear mask), then
+optical.robust_threshold at N = 3,4,5,6,8,10 and a count of water px above each. No
+reimplementation -- robust_threshold is called directly, so this measures the shipped detector.
+Derived CSV is in my scratchpad, not in shared-public (its README asks for that).
+
+    date        sigma     median   px>6sig  frac      n_det   6->10 decay
+    20210616  0.001483   0.00230   172,013  1.6e-02    8257     2.62x
+    20210812  0.001927   0.00410   160,843  1.5e-02    4466     1.84x
+    20240827  0.002076   0.00190    82,662  7.6e-03    3745     2.24x
+    20240713  0.002076   0.00540   112,695  1.0e-02    1698     1.89x
+    20230815  0.002224   0.00420   144,025  1.3e-02    1044     1.82x
+    ...
+    20200730  0.003855   0.01740    14,128  1.3e-03     377     1.90x
+    20250630  0.005041   0.02150    14,793  1.4e-03     221     1.56x
+    20220625  0.005782   0.02720     4,952  4.6e-04      47     2.41x
+    20230617  0.006968   0.03280     3,571  7.6e-04      32     1.86x
+    20240712  0.007561   0.02310    10,871  1.0e-03     185     1.98x
+
+    r   log10(n_detections) vs log10(sigma)   = -0.879
+    r   log10(n_detections) vs log10(px>6sig) = +0.902
+    rho n_detections vs sigma (Spearman)      = -0.879   (n = 25, MAD==0 scene excluded)
+
+THE LEVERAGE IS THE POINT. sigma spans only 5.1x across the batch (0.00148 to 0.00756). That 5.1x
+becomes 48x in pixels-above-threshold and 258x in detections. So a modest change in sea-surface
+texture -- which is all sigma measures -- swings the output by two and a half orders of magnitude.
+A detector whose count is set by the roughness of the water is not measuring boats. Note the
+ordering is nearly monotonic in sigma: the quietest-water scene gives 8,257 and the two roughest
+give 32 and 47.
+
+THE DEAD-KNOB FINDING IS UNIVERSAL, NOT A ONE-SCENE ARTEFACT. Median 6 sigma -> 10 sigma decay
+across all 26 scenes is 2.03x, range 1.56x to 3.97x. Gaussian is 1.3e14x. Every scene, no
+exceptions. Section 8's N-sweep cannot converge on any of them.
+
+NEW, AND IT IS A DATA-QUALITY FINDING, NOT A TUNING ONE: 20250825_193929_84_251f HAS MAD EXACTLY
+ZERO. 65.24% of its water pixels sit at exactly 0.00010 -- the SR floor. Median = minimum. So
+robust_threshold takes its documented s.d. fallback (optical.py:644-651) and thresholds that scene
+on the STANDARD DEVIATION, which is precisely the non-robust statistic MAD exists to replace, and
+which is inflated by exactly the bright pixels we are hunting. The comment there anticipates
+"quantised imagery over flat water"; the real cause is SR floor-clipping in Planet's atmospheric
+correction (over-correction driven negative, then clamped), which is a different mechanism and is
+present in a DELIVERED scene, not a hypothetical. That scene reports 251 detections and they
+should not be pooled with the rest. Two consequences: (1) the fallback should raise or flag rather
+than silently switch to a scale with different meaning -- invariant 5; (2) somebody should check
+how many of the 26 have a large floor-pinned population short of the MAD==0 tipping point, because
+those are biased the same way without tripping the branch.
+
+WHAT THIS CHANGES FOR THE PLAN. The section 8 census is still the gate for RECALL, but it can no
+longer be expected to yield a usable N -- there is no N, on any scene. The threshold rule itself
+has to change, and my earlier suggestion is now measured rather than a hunch: set the per-scene
+threshold at an EMPIRICAL QUANTILE targeting a fixed candidate count, which makes the batch
+comparable across sea states by construction and removes sigma from the loop entirely. That also
+makes `dominance` and the CROWDED/SINGLE-DOMINANT classification meaningful for the first time,
+since today they are computed over populations whose size is set by water roughness.

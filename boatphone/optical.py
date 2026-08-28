@@ -272,6 +272,26 @@ BLOB_MIN_PIXELS: int = 2
 # but VALIDATE IT BY EYE before it is used as anything but a flag.
 WAKE_ASPECT: float = 2.5
 
+# ---------------------------------------------------------------------------
+# NIR SUPPORT FOR A DETECTOR A BOX -- an ADVISORY flag, never a filter.
+#
+# The model is fed 3-band RGB and never sees NIR, so asking "is there anything
+# NIR-bright inside this box?" is genuinely independent evidence about a box the
+# model produced. That independence is the same property Detector B is built on,
+# applied per-box instead of scene-wide.
+#
+# IT MUST NOT CHANGE THE MODEL'S OUTPUT. Every box the model returns gets a row;
+# this only says where a human should look first. A flag that removes rows is a
+# filter wearing a flag's name.
+#
+# ABSENCE OF NIR BRIGHTNESS IS NOT ABSENCE OF A BOAT. A dark hull on dark water
+# has no NIR excess, and dark hulls are Detector B's own documented failure mode
+# (plan section 2: "fails on: dark hulls, whitecaps/foam, shoreline bleed"). The
+# flag means UNSUPPORTED BY NIR, which is why `nir_support` is graded beside the
+# boolean rather than replaced by it.
+NIR_SUPPORT_MAD_N: float = 8.0    # stricter than NIR_MAD_N: this confirms, not discovers
+NIR_SUPPORT_WEAK_PX: int = 2      # 1-2 bright px is "weak", 3+ is "strong", 0 is "none"
+
 
 # ==========================================================================
 # 6. FUSION AND SCENE CLASSIFICATION
@@ -331,6 +351,33 @@ I3_FIELDS: tuple[str, ...] = (
     "overpass_id", "detection_id", "lat", "lon", "length_px", "length_m_est",
     "size_class", "confidence",
 )
+
+# A per-scene QC and hand-off export: one CSV per image, carrying the BOX rather
+# than only its centroid. The box is the evidence a human judges a detection on;
+# the point is the summary. Deliberately SEPARATE from DETECTIONS_FIELDS, which
+# plan section 10 froze for the acoustics join and which must not grow columns.
+#
+# Corners are UL/UR/LR/LL in image order, which for a north-up raster is
+# NW/NE/SE/SW. `_x`/`_y` are in the scene's own CRS (EPSG:32610 for these
+# deliveries) so the file drops straight onto the imagery with no reprojection;
+# `_lon`/`_lat` are EPSG:4326 for everything else.
+DETECTION_CORNER_FIELDS: tuple[str, ...] = (
+    "scene_id", "acq_time_utc", "detection_id", "confidence",
+    "ul_lon", "ul_lat", "ur_lon", "ur_lat", "lr_lon", "lr_lat", "ll_lon", "ll_lat",
+    "ul_x", "ul_y", "ur_x", "ur_y", "lr_x", "lr_y", "ll_x", "ll_y",
+    "centroid_lon", "centroid_lat", "centroid_x", "centroid_y",
+    "range_m", "range_km", "bearing_deg_from_hydrophone",
+    "bbox_w_m", "bbox_h_m", "length_m", "aspect_ratio", "area_m2", "size_class",
+    "dist_to_scene_edge_m",
+    "nir_peak", "nir_x_water", "nir_bright_px", "nir_fill", "nir_support",
+    "possible_false_positive", "nir_threshold_rho",
+    "slice_px", "imgsz", "conf_threshold", "channel_order", "weights_file",
+)
+
+# The same file without the NIR annotation: strictly what the model produced.
+DETECTION_CORNER_FIELDS_NO_NIR: tuple[str, ...] = tuple(
+    f for f in DETECTION_CORNER_FIELDS
+    if not f.startswith("nir_") and f != "possible_false_positive")
 
 
 # ==========================================================================
@@ -812,6 +859,144 @@ def blobs_to_records(blobs: Iterable[Blob], scene_id: str, acq: str,
         out.append(_record(scene_id, acq, lon, lat, b.width_m, b.length_m,
                            b.length_m, pseudo_conf, "B", b.nir_snr, origin_lonlat))
     return out
+
+
+def box_corners(box: Sequence[float]) -> tuple[list[float], list[float]]:
+    """(x1,y1,x2,y2) -> (cols, rows) for the four corners, UL/UR/LR/LL.
+
+    Image order, which for a north-up raster is NW/NE/SE/SW. Returned as two
+    parallel lists so they feed a `to_lonlat`-shaped callable directly.
+
+    PIXEL CONVENTION, stated rather than assumed. These are passed to rasterio's
+    `xy(..., offset="center")`, matching `boxes_to_records()`, so corners and
+    centroid are consistent with each other by construction. Whether YOLO's box
+    edges should instead be read as pixel *edges* (offset="ul") is an open
+    half-pixel question worth 1.5 m at 3 m GSD and 5 m at 10 m -- below the box's
+    own looseness, but real. Same class of open convention as decision 0013's
+    edge-vs-centre FFT binning; recorded here so a later change is deliberate.
+    """
+    x1, y1, x2, y2 = (float(v) for v in box)
+    return [x1, x2, x2, x1], [y1, y1, y2, y2]
+
+
+def nir_support_for_box(box: Sequence[float], nir: np.ndarray, threshold: float,
+                        water_median: float) -> dict:
+    """Independent NIR evidence for one Detector A box. ADVISORY -- never a filter.
+
+    The model was fed 3-band RGB and never saw this band, so a bright cluster
+    inside its box is evidence it did not have. Returns the counts and a graded
+    `nir_support`; the caller decides nothing on the strength of it except where
+    to send a human first. See NIR_SUPPORT_MAD_N.
+    """
+    x1, y1, x2, y2 = (float(v) for v in box)
+    h, w = nir.shape
+    c0, c1 = max(int(np.floor(x1)), 0), min(int(np.ceil(x2)) + 1, w)
+    r0, r1 = max(int(np.floor(y1)), 0), min(int(np.ceil(y2)) + 1, h)
+    sub = nir[r0:r1, c0:c1]
+    if sub.size == 0:
+        return {"nir_peak": "", "nir_x_water": "", "nir_bright_px": 0,
+                "nir_fill": 0.0, "nir_support": "none", "possible_false_positive": 1}
+    bright = int((sub > threshold).sum())
+    peak = float(sub.max())
+    support = ("none" if bright == 0
+               else "weak" if bright <= NIR_SUPPORT_WEAK_PX else "strong")
+    return {
+        "nir_peak": round(peak, 4),
+        "nir_x_water": (round(peak / water_median, 1) if water_median > 0 else ""),
+        "nir_bright_px": bright,
+        "nir_fill": round(bright / sub.size, 3),
+        "nir_support": support,
+        # "unsupported by NIR", NOT "this is not a boat" -- a dark hull on dark
+        # water produces exactly this. The human pass decides.
+        "possible_false_positive": int(support == "none"),
+    }
+
+
+def boxes_to_corner_records(boxes: Iterable[tuple[Sequence[float], float]],
+                            scene_id: str, acq: str, res_m: float,
+                            to_lonlat: ToLonLat, to_xy: ToLonLat | None = None,
+                            shape: tuple[int, int] | None = None,
+                            nir: np.ndarray | None = None,
+                            valid: np.ndarray | None = None,
+                            config: dict | None = None,
+                            origin_lonlat: Sequence[float] | None = None,
+                            ) -> tuple[list[dict], float]:
+    """Detector A boxes -> DETECTION_CORNER_FIELDS rows. Returns (rows, nir_threshold).
+
+    EVERY box becomes a row. Nothing here filters -- not the size bounds, not the
+    water mask, not the NIR evidence. This is the model's output plus annotation,
+    which is what makes it usable as the input to human verification rather than
+    as a result.
+
+    `detection_id` is `boat_1`, `boat_2`, ... by descending confidence, so the
+    first rows are the ones worth looking at first.
+    """
+    boxes = sorted(boxes, key=lambda d: -float(d[1]))
+    threshold = float("nan")
+    water_median = float("nan")
+    if nir is not None:
+        ref = nir[valid] if valid is not None else nir
+        threshold, water_median, _ = robust_threshold(ref, NIR_SUPPORT_MAD_N)
+
+    rows = []
+    for i, (box, score) in enumerate(boxes, 1):
+        x1, y1, x2, y2 = (float(v) for v in box)
+        cols, rows_px = box_corners(box)
+        lons, lats = to_lonlat(cols, rows_px)
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+        clon, clat = to_lonlat([cx], [cy])
+        clon, clat = float(clon[0]), float(clat[0])
+
+        w_m, h_m = (x2 - x1) * res_m, (y2 - y1) * res_m
+        length = max(w_m, h_m)
+        short = max(min(w_m, h_m), 1e-6)
+        rng_km = range_km(clon, clat, origin_lonlat)
+
+        row = {
+            "scene_id": scene_id, "acq_time_utc": acq,
+            "detection_id": f"boat_{i}", "confidence": round(float(score), 4),
+            "centroid_lon": round(clon, 6), "centroid_lat": round(clat, 6),
+            "range_m": round(rng_km * 1000.0, 1), "range_km": round(rng_km, 3),
+            "bearing_deg_from_hydrophone": round(
+                bearing_deg(clon, clat, origin_lonlat), 2),
+            "bbox_w_m": round(w_m, 1), "bbox_h_m": round(h_m, 1),
+            "length_m": round(length, 1), "aspect_ratio": round(length / short, 2),
+            "area_m2": round(w_m * h_m, 1), "size_class": size_class(length),
+        }
+        for name, lo, la in zip(("ul", "ur", "lr", "ll"), lons, lats):
+            row[f"{name}_lon"], row[f"{name}_lat"] = round(float(lo), 6), round(float(la), 6)
+
+        if to_xy is not None:
+            xs, ys = to_xy(cols, rows_px)
+            for name, X, Y in zip(("ul", "ur", "lr", "ll"), xs, ys):
+                row[f"{name}_x"], row[f"{name}_y"] = round(float(X), 2), round(float(Y), 2)
+            cX, cY = to_xy([cx], [cy])
+            row["centroid_x"], row["centroid_y"] = round(float(cX[0]), 2), round(float(cY[0]), 2)
+        else:
+            for name in ("ul", "ur", "lr", "ll"):
+                row[f"{name}_x"] = row[f"{name}_y"] = ""
+            row["centroid_x"] = row["centroid_y"] = ""
+
+        # A box near the clip edge is TRUNCATED, so its length is short by an
+        # unknown amount. Flagging the distance is cheaper than pretending the
+        # measurement is sound.
+        if shape is not None:
+            H, W = shape
+            row["dist_to_scene_edge_m"] = round(
+                min(cx, cy, W - cx, H - cy) * res_m, 1)
+        else:
+            row["dist_to_scene_edge_m"] = ""
+
+        if nir is not None:
+            row.update(nir_support_for_box(box, nir, threshold, water_median))
+            row["nir_threshold_rho"] = round(threshold, 5)
+
+        cfg = config or {}
+        for key in ("slice_px", "imgsz", "conf_threshold", "channel_order",
+                    "weights_file"):
+            row[key] = cfg.get(key, "")
+        rows.append(row)
+    return rows, threshold
 
 
 def fuse(records_a: Sequence[dict], records_b: Sequence[dict],

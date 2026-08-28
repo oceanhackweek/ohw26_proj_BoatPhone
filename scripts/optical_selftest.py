@@ -310,6 +310,70 @@ check("A-only and B-only rows are distinguishable in the output",
       f"detectors present: {sorted({r['detector'] for r in fused})}")
 
 # ---------------------------------------------------------------------------
+print("\n6b. BOUNDING-BOX CORNER EXPORT")
+# ---------------------------------------------------------------------------
+# A box of KNOWN pixel extent must round-trip to corners whose real separation is
+# the known width and height. Getting corners right but the centroid wrong (or
+# vice versa) would put the CSV and the GeoJSON on different objects.
+from pyproj import Geod as _Geod
+_geod = _Geod(ellps="WGS84")
+W_PX, H_PX = 20.0, 8.0                      # 60 m x 24 m at 3 m GSD
+cx0, cy0 = 350.0, 350.0
+test_box = (cx0 - W_PX / 2, cy0 - H_PX / 2, cx0 + W_PX / 2, cy0 + H_PX / 2)
+
+corner_rows, _ = opt.boxes_to_corner_records(
+    [(test_box, 0.42)], SCENE_ID, ACQ, RES_M, scene.to_lonlat,
+    shape=scene.valid.shape, config={"slice_px": 320})
+cr = corner_rows[0]
+top_m = _geod.inv(cr["ul_lon"], cr["ul_lat"], cr["ur_lon"], cr["ur_lat"])[2]
+left_m = _geod.inv(cr["ul_lon"], cr["ul_lat"], cr["ll_lon"], cr["ll_lat"])[2]
+check("corner separation equals the known box width",
+      abs(top_m - W_PX * RES_M) < 1.0, f"{top_m:.2f} m vs {W_PX*RES_M:.0f} m")
+check("corner separation equals the known box height",
+      abs(left_m - H_PX * RES_M) < 1.0, f"{left_m:.2f} m vs {H_PX*RES_M:.0f} m")
+
+# The two export paths must agree on where the detection IS.
+pt_rows, _ = opt.boxes_to_records([(test_box, 0.42)], SCENE_ID, ACQ, RES_M,
+                                  scene.to_lonlat)
+check("corner-export centroid matches boxes_to_records() exactly",
+      (cr["centroid_lon"], cr["centroid_lat"]) == (pt_rows[0]["lon"], pt_rows[0]["lat"]),
+      f"{cr['centroid_lon']},{cr['centroid_lat']} vs "
+      f"{pt_rows[0]['lon']},{pt_rows[0]['lat']}")
+check("corners are ordered UL/UR/LR/LL (north-up: NW/NE/SE/SW)",
+      cr["ul_lat"] > cr["ll_lat"] and cr["ur_lon"] > cr["ul_lon"])
+check("provenance columns are carried", cr["slice_px"] == 320)
+check("range and bearing are both populated",
+      cr["range_km"] != "" and cr["bearing_deg_from_hydrophone"] != "")
+
+# THE INVARIANT THE NIR FLAG EXISTS UNDER: it annotates, it never filters. Boxes
+# placed on bare water have no NIR support and must still every one produce a row.
+blank = [((c, 300.0, c + 6.0, 306.0), 0.3) for c in (100.0, 200.0, 300.0, 400.0)]
+with_nir, _ = opt.boxes_to_corner_records(blank, SCENE_ID, ACQ, RES_M,
+                                          scene.to_lonlat, nir=scene.nir,
+                                          valid=scene.valid)
+without, _ = opt.boxes_to_corner_records(blank, SCENE_ID, ACQ, RES_M, scene.to_lonlat)
+check("the NIR flag annotates and never filters",
+      len(with_nir) == len(without) == len(blank),
+      f"{len(with_nir)} with NIR, {len(without)} without, {len(blank)} boxes in")
+check("empty water is flagged, not dropped",
+      all(r["possible_false_positive"] == 1 for r in with_nir),
+      f"{sum(r['possible_false_positive'] for r in with_nir)}/{len(with_nir)} flagged")
+
+# A box ON a planted vessel must come back supported -- otherwise the flag would
+# be condemning real detections.
+t = scene.truth[1]
+on_boat = ((t["col"] - 4, t["row"] - 4, t["col"] + 4, t["row"] + 4), 0.5)
+sup, _ = opt.boxes_to_corner_records([on_boat], SCENE_ID, ACQ, RES_M,
+                                     scene.to_lonlat, nir=scene.nir, valid=scene.valid)
+check("a box on a real vessel is NIR-supported, not flagged",
+      sup[0]["possible_false_positive"] == 0,
+      f"support={sup[0]['nir_support']}, {sup[0]['nir_bright_px']} bright px")
+check("corner rows match DETECTION_CORNER_FIELDS",
+      set(cr) == set(opt.DETECTION_CORNER_FIELDS) - {"nir_peak","nir_x_water",
+          "nir_bright_px","nir_fill","nir_support","possible_false_positive",
+          "nir_threshold_rho"} | set())
+
+# ---------------------------------------------------------------------------
 print("\n7. DOMINANCE AND SCENE CLASSIFICATION")
 # ---------------------------------------------------------------------------
 k = opt.NOMINAL_SPREADING_K
