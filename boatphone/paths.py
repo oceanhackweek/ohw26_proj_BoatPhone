@@ -29,6 +29,37 @@ SAMPLE_DIR: pathlib.Path = DATA_DIR / SAMPLE_DIR_NAME
 RAW_DIR: pathlib.Path = DATA_DIR / "raw"
 ONC_RAW_DIR: pathlib.Path = RAW_DIR / "onc"
 
+# Source: docs/decisions/0020 -- B3's bulk pull covers ONLY the 2.5 h PlanetScope
+# overpass window (09:15-11:45 America/Vancouver, decision 0029) per in-season date,
+# roughly 10% of the calendar. That sampling conditionality must be visible ON DISK,
+# not only inside a manifest a downstream globber will never open: a consumer that
+# globs ONC_RAW_DIR and finds this subdirectory can tell an overpass-window corpus
+# from a whole-day pull by its path alone. Resolve it through
+# `boatphone.acquire.resolve_corpus_files`, which is the ONE glob (invariant 6).
+#
+# CONTAINER (corrected -- the earlier note here said the pulled files carry only
+# config.ARCHIVE_EXTENSION, "fft", and NOT config.PRODUCT_EXTENSION, "fft.gz";
+# decision 0024 falsified that): the bulk pull COMPRESSES ON WRITE, so a file
+# ONC serves as `X.fft` lands here as `X.fft.gz`. Both spellings are present --
+# 90 plain `.fft` files from the pre-0024 live probe, and the rest `.fft.gz` --
+# and `resolve_corpus_files` matches BOTH, which is why it must be the only
+# glob. The manifest keeps the two names in separate fields: `filename` is the
+# ONC wire name, `disk_basename` is what is actually here.
+ONC_OVERPASS_CORPUS_DIR: pathlib.Path = ONC_RAW_DIR / "overpass_window_corpus"
+
+# Windows pulled for a SPECIFIC labelled scene, OUTSIDE the corpus's 09:15-11:45
+# local strip. A SEPARATE directory on purpose, and this is not tidiness.
+#
+# ONC_OVERPASS_CORPUS_DIR means one exact thing -- every in-season date, that
+# local time strip, nothing else -- and `PLANET_SAMPLING_CONDITIONALITY_STATEMENT`
+# is written against that definition. Dropping off-strip files into it would
+# silently falsify every population statistic computed over the directory and
+# every caption that cites the conditionality statement, with no error anywhere.
+# The scenes needing this pull are precisely the ones the wrong overpass-window
+# constant missed (18:17-19:49 UTC measured, 16:15-18:45 pulled), so they are
+# off-strip BY CONSTRUCTION and will keep arriving.
+ONC_LABELLED_WINDOW_DIR: pathlib.Path = ONC_RAW_DIR / "labelled_window_topup"
+
 # Source: docs/decisions/0005 -- the ONE tracked-fixture exception inside data/.
 # Small committed test fixtures only (see data/samples/README.md); negated out of
 # the .gitignore media rules so a deliberate fixture is actually committable.
@@ -78,6 +109,16 @@ _HOW_TO_OBTAIN: dict[pathlib.Path, str] = {
         "download the ONC/CIOOS Folger Deep ICLISTEN HF1266 sample into "
         f"'{SAMPLE_DIR}' (ONC Oceans 3.0, https://data.oceannetworks.ca)"
     ),
+    ONC_LABELLED_WINDOW_DIR: (
+        "produce it by running scripts/pull_labelled_windows.py for the scene(s) "
+        "whose optical label you hold; these are windows OUTSIDE the corpus strip"
+    ),
+    ONC_OVERPASS_CORPUS_DIR: (
+        "run `python3 scripts/pull_overpass_corpus.py` to pull the overpass-window "
+        f"corpus into '{ONC_OVERPASS_CORPUS_DIR}' (2.5 h/day, in-season, "
+        "2020-2025); it is a deliberate, human-triggered operational step and is "
+        "not in git"
+    ),
     ONC_RAW_DIR: (
         "run the ONC acquisition stage (A1/A4) to download it into "
         f"'{ONC_RAW_DIR}' (ONC Oceans 3.0, https://data.oceannetworks.ca); "
@@ -98,6 +139,8 @@ _DEFAULT_HOW_TO_OBTAIN = (
 
 __all__ = [
     "REPO_ROOT", "DATA_DIR", "SAMPLE_DIR", "SAMPLE_DIR_NAME", "RAW_DIR", "ONC_RAW_DIR",
+    "ONC_OVERPASS_CORPUS_DIR",
+    "ONC_LABELLED_WINDOW_DIR",
     "SAMPLES_DIR", "DERIVED_DIR", "INTERIM_DIR", "PROCESSED_DIR", "DOCS_DIR",
     "SCRIPTS_DIR", "EXTERNAL_DIR", "ONC_MODEL_DIR", "CHECKPOINT_DIR",
     "UPTIME_CSV_NAME", "DEPLOYMENTS_CSV_NAME",
