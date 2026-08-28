@@ -56,6 +56,7 @@ from boatphone import overpasses as ov
 from boatphone import paths
 from boatphone.paths import DERIVED_DIR, ensure_dir
 
+import build_events_table
 import run_b5_gate
 
 # Spectrograms are drawn only up to the B5 relative ceiling (decision 0014).
@@ -280,9 +281,19 @@ def _window_diagnostics(band_results, t0):
     return out
 
 
-def _plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz,
-                   season_ambient=None, ambient_note=None):
-    """Three denoisings of the same surface, and they do not agree by design.
+def _draw_denoised_panels(cov, levels, t_utc_s, freq_hz,
+                          season_ambient=None, ambient_note=None):
+    """Draw the denoised figure and hand back its axes for anyone overlaying on it.
+
+    Factored out of `_plot_denoised` so the labelled variant shows the SAME
+    surface with the same normalisation. If the two drew their own panels they
+    would drift apart, and a reviewer comparing `denoised.png` against
+    `denoised_labeled.png` would be comparing two different denoisings without
+    being told.
+
+    Returns ``(fig, axes_in_drawing_order, meta)``. Saving is the caller's job.
+
+    Three denoisings of the same surface, and they do not agree by design.
 
     Panel A subtracts the window's OWN per-bin ambient; panel B subtracts the
     SEASON's, measured across ~4,500 windows; panel C is the difference between
@@ -370,9 +381,150 @@ def _plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz,
     if ambient_note:
         caption += f"\n{ambient_note}"
     fig.suptitle(caption, y=1.0, fontsize=9.0)
+    meta = {"n_bins_masked_no_spread": n_unusable, "caption": caption,
+            "t_min": t_min, "f_khz": f_khz, "ax_b": ax_b}
+    return fig, [a for a in (ax_a, ax_pop, ax_b) if a is not None], meta
+
+
+def _plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz,
+                   season_ambient=None, ambient_note=None):
+    """The unlabelled denoised figure -- the one to look at when you doubt the labels."""
+    fig, _axes, meta = _draw_denoised_panels(
+        cov, levels, t_utc_s, freq_hz,
+        season_ambient=season_ambient, ambient_note=ambient_note)
     fig.savefig(scene_dir / "denoised.png", dpi=115, bbox_inches="tight")
     plt.close(fig)
-    return {"n_bins_masked_no_spread": n_unusable}
+    return {"n_bins_masked_no_spread": meta["n_bins_masked_no_spread"]}
+
+
+# One colour per detection band, so a shaded span on the labelled figure is
+# attributable to the band that produced it without reading the legend twice.
+BAND_OVERLAY_COLOURS = {
+    "small_craft": "#00e5ff",
+    "ship_proxy": "#ffd400",
+    "rain": "#ff5fa2",
+    "control": "#9d7bff",
+}
+
+
+def _plot_denoised_labeled(scene_dir, cov, levels, t_utc_s, freq_hz, band_results,
+                           detection_bands, season_ambient=None, ambient_note=None,
+                           optical_candidates=None, label=None):
+    """`denoised.png` with the detector's own events drawn onto it.
+
+    The overlays come from `band_results`, which the caller already computed --
+    NOTHING is re-detected here. A figure that ran the detector a second time
+    could disagree with `detections.csv` and with `events_by_window.csv`, and
+    the disagreement would surface as a picture nobody could reconcile.
+
+    `denoised.png` is left untouched beside this file on purpose: when the
+    labels look wrong, the unlabelled figure is the one that can say so.
+
+    Every span is drawn only across its own band's frequency extent, WIDENED by
+    `config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ`. The FFT axis convention is an open
+    assumption (decision 0013) and a band edge drawn as a hairline would assert
+    a precision this project does not have.
+    """
+    fig, axes, meta = _draw_denoised_panels(
+        cov, levels, t_utc_s, freq_hz,
+        season_ambient=season_ambient, ambient_note=ambient_note)
+    t_min, f_khz, ax_b = meta["t_min"], meta["f_khz"], meta["ax_b"]
+    t0 = cov.overpass.acquired_utc.timestamp()
+    unc_khz = config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ / 1000.0
+
+    silent = []
+    counts_by_band = {}
+    for band_name in detection_bands:
+        result = band_results.get(band_name)
+        if result is None:
+            continue
+        events = result["events"]
+        counts_by_band[band_name] = len(events)
+        if not events:
+            silent.append(band_name)
+            continue
+        colour = BAND_OVERLAY_COLOURS.get(band_name, "#ffffff")
+        lo_khz = max(f_khz[0], (result["band_hz"][0] - config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ)
+                     / 1000.0)
+        hi_khz = min(f_khz[-1], (result["band_hz"][1] + config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ)
+                     / 1000.0)
+        for ax in axes:
+            for k, ev in enumerate(events):
+                x0 = (ev["t_start_utc_s"] - t0) / 60.0
+                x1 = x0 + ev["duration_s"] / 60.0
+                ax.fill_between([x0, x1], lo_khz, hi_khz, color=colour, alpha=0.16,
+                                lw=0, zorder=3,
+                                label=f"{band_name} event" if k == 0 and ax is axes[0]
+                                else None)
+                for x in (x0, x1):
+                    ax.plot([x, x], [lo_khz, hi_khz], color=colour, lw=1.0,
+                            alpha=0.85, zorder=4)
+                # Peak marker, annotated in COUNTS. There is no counts-to-dB
+                # conversion (~0.52 counts/dB with curvature, decision 0027), so
+                # writing dB here would be a fabricated unit.
+                x_pk = (ev["t_peak_utc_s"] - t0) / 60.0
+                ax.plot([x_pk], [hi_khz], marker="v", color=colour, ms=7,
+                        zorder=5, clip_on=False)
+                if ax is axes[0]:
+                    # Staggered across three rows. Events cluster within a
+                    # minute or two of each other and flat annotations overlap
+                    # into unreadable composites -- which reads as one garbled
+                    # number rather than as several distinct events.
+                    ax.annotate(f"+{ev['peak_excess_counts']:.0f} ct",
+                                xy=(x_pk, hi_khz), xytext=(0, 7 + 10 * (k % 3)),
+                                textcoords="offset points", ha="center",
+                                fontsize=7.5, color=colour, zorder=6)
+
+    for ax in axes:
+        # The acquisition instant. `_draw_denoised_panels` already draws a cyan
+        # line at 0; this labels it, because on the labelled figure cyan is also
+        # a band colour and an unlabelled line would be ambiguous.
+        ax.axvline(0.0, color="white", lw=1.0, ls="--", zorder=7)
+    axes[0].annotate("scene acquired", xy=(0.0, f_khz[-1]), xytext=(3, -10),
+                     textcoords="offset points", fontsize=8, color="white",
+                     rotation=90, va="top", zorder=8)
+
+    if silent:
+        ax_b.text(0.5, 0.06, "DETECTOR SILENT in " + ", ".join(silent)
+                  + " -- absence, not a rendering failure",
+                  transform=ax_b.transAxes, ha="center", fontsize=9.5,
+                  color="white",
+                  bbox=dict(facecolor="black", alpha=0.55, edgecolor="white",
+                            lw=0.6))
+
+    handles, labels_ = axes[0].get_legend_handles_labels()
+    if handles:
+        axes[0].legend(handles, labels_, loc="upper right", fontsize=8,
+                       framealpha=0.7)
+
+    tag = "full" if cov.is_full else "partial"
+    counts_txt = "   ".join(f"{b}: {n} event(s)" for b, n in counts_by_band.items())
+    optical_txt = ""
+    if optical_candidates is not None:
+        n_all, n_solid = optical_candidates
+        optical_txt = (f"   |   optical: {n_all:,} CANDIDATES in scene "
+                       f"({n_solid:,} non-transient) -- candidates, NOT vessels")
+    label_txt = ""
+    if label is not None:
+        label_txt = (f"   |   human label: {label.label}"
+                     + (f" (n={label.n_vessels})" if label.n_vessels is not None else "")
+                     + (f" over {label.area_km2:g} km2 reviewed"
+                        if label.area_km2 is not None else ""))
+    fig.suptitle(
+        f"{cov.overpass.scene_id}   |   coverage {tag}   |   {counts_txt}"
+        f"{optical_txt}{label_txt}\n"
+        "Shaded spans are DETECTED EVENTS -- excess-over-ambient runs of at least "
+        f"{run_b5_gate.EVENT_MIN_DURATION_S:.0f} s above "
+        f"+{run_b5_gate.EVENT_EXCESS_THRESHOLD_COUNTS:.0f} counts. They are NOT "
+        "vessel counts: one boat can open several and two can merge into one. "
+        f"Band edges widened by +/-{config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ:.0f} Hz "
+        "(open axis convention, decision 0013).\n"
+        + meta["caption"].split("|", 1)[-1].strip(),
+        y=1.0, fontsize=8.5)
+    fig.savefig(scene_dir / "denoised_labeled.png", dpi=115, bbox_inches="tight")
+    plt.close(fig)
+    return {"labeled_events_by_band": counts_by_band,
+            "labeled_bands_silent": silent}
 
 
 def _plot_band_detail(scene_dir, cov, levels, t_utc_s, freq_hz, band_results):
@@ -575,6 +727,12 @@ def main(argv=None):
     }
     DETECTION_BANDS = ("small_craft", "ship_proxy")
 
+    # Optical CANDIDATE counts per scene, for the labelled figure's title. Not
+    # vessel counts -- ~47% of the rows carry transient=1 and none has been
+    # validated against a label. Shared with build_events_table.py rather than
+    # re-counted here, so the two deliverables cannot disagree.
+    optical, _optical_source = build_events_table.load_optical_candidate_counts()
+
     rows = []
     print(f"review set -> {out_dir}")
     for cov in renderable:
@@ -707,6 +865,11 @@ def main(argv=None):
         extra.update(_plot_denoised(scene_dir, cov, levels, t_utc_s, freq_hz,
                                     season_ambient=season_ambient,
                                     ambient_note=ambient_note))
+        extra.update(_plot_denoised_labeled(
+            scene_dir, cov, levels, t_utc_s, freq_hz, band_results,
+            DETECTION_BANDS, season_ambient=season_ambient,
+            ambient_note=ambient_note,
+            optical_candidates=optical.get(scene.scene_id), label=label))
         extra.update(_plot_band_detail(
             scene_dir, cov, levels, t_utc_s, freq_hz, band_results))
         extra.update(_plot_spectra(
@@ -782,6 +945,13 @@ def main(argv=None):
             "level_units": "product COUNTS, uncalibrated -- not dB re 1 uPa (decision 0027)",
             "display_processing": dict(extra, ambient_percentile=AMBIENT_PERCENTILE),
         }, indent=1, default=str), encoding="utf-8")
+        # Four figures per window, and this script now draws the denoised
+        # surface TWICE (labelled and not). Each plotter closes its own figure,
+        # but matplotlib's state machine still accumulates across a 30-window
+        # run and RSS was measured climbing past 3.2 GB against this container's
+        # ~3.9 GB cgroup cap -- at which point it thrashes rather than fails,
+        # and a 30 s window turns into 2 minutes. Released explicitly.
+        plt.close("all")
         print(f"  {scene.scene_id}  {tag:<7} {cov.n_files} files  {n_ev} event(s)")
 
     # The scenes with NO acoustic coverage. Explicit absences, not omissions.
@@ -809,7 +979,11 @@ def main(argv=None):
         "corpus_dir": str(ov.ONC_OVERPASS_CORPUS_DIR),
         "n_corpus_files_indexed": len(index),
         "scene_list": config.PLANET_GATE2_SURVIVORS_RELPATH,
-        "coverage": {k: v for k, v in summary.items() if not k.endswith("_ids")},
+        # INCLUDING the scene-id lists. They were stripped here, which left
+        # membership recoverable only by grepping detections.csv for
+        # coverage=NONE -- and anyone auditing which scenes a statistic
+        # covers needs the list, not the count.
+        "coverage": summary,
         "bands_hz": {k: list(v) for k, v in bands.items()},
         "event_threshold_db": run_b5_gate.EVENT_EXCESS_THRESHOLD_COUNTS,
         "event_min_duration_s": run_b5_gate.EVENT_MIN_DURATION_S,
@@ -877,8 +1051,20 @@ detection rate. Those rows are marked `DETECTOR SILENT`.
 * **No audio.** The `.fft.gz` product is averaged magnitude with no phase, so it
   cannot be turned back into a recording. Audio needs a separate WAV pull from ONC
   (~115 MB per 5-minute file) for chosen windows.
-* **No imagery, and therefore no labels.** Nothing has been ordered
-  (`CONFIRM_ORDER = False`). Every "event" here is a *candidate* vessel pass.
+* **No imagery pixels, and one human label.** No scene has been ordered
+  (`CONFIRM_ORDER = False`), so `planet_scene/` is empty. The optical arm's
+  `detections.csv` DOES exist and its per-scene counts appear in
+  `denoised_labeled.png` -- but those are unfiltered *candidates* (~47% flagged
+  `transient`), not vessels. Every "event" here is a *candidate* vessel pass.
+
+## `denoised.png` vs `denoised_labeled.png`
+
+Both show the same denoised surface. The labelled one draws the detector's own
+events onto it -- shaded spans over each band's frequency extent, a marker at each
+peak annotated in COUNTS, and the per-band count in the title. Nothing is
+re-detected for the figure: the spans are the same events as `detections.csv` and
+`events_by_window.csv`. **When the labels look wrong, `denoised.png` is the file
+that can say so** -- that is why it is kept.
 
 Provenance, constants and thresholds: `provenance.json`.
 """, encoding="utf-8")

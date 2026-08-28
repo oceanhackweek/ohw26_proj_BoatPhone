@@ -783,6 +783,139 @@ is not 8,257 boats.
 Container note: this instance has 4 cores and 15.6 GB, not the 3.90 GB cgroup
 cap the plans assume. The full-corpus pass is ~10 minutes here.
 
+================================================================================
+2026-08-27 (Isaac) -- TOP-UP PULL DONE; ALL 30 SCENES NOW HAVE ACOUSTICS
+================================================================================
+
+COVERAGE IS CLOSED, AND A REAL PULL DEFECT WAS FOUND CLOSING IT.
+
+  BEFORE:      13 full,  6 partial, 11 ZERO   of 30 scenes
+  first pull:  19 full, 11 partial,  0 zero
+  after fix:   30 FULL,  0 partial,  0 zero
+
+THE DEFECT (decision 0030, amended). window_coverage counts files by INTERVAL
+OVERLAP (decision 0020) but ONC's archive listing selects by file START TIME. The
+file straddling a window's start overlaps the window while starting before it, so
+it was excluded from EVERY listing -- silently losing up to 300 s at the HEAD of
+every window, including windows that scored "full". Verified live: listing
+19:03:32->19:33:32 returns 6 files; padding the start by 300 s returns 7.
+scripts/pull_labelled_windows.py now pads the listing start by FFT_FILE_SECONDS.
+
+An earlier claim in this file that the partials were "partial by file tiling, not
+missing data" was WRONG and is withdrawn. The data existed at ONC and we did not
+ask for it. NOTE THIS APPLIES TO THE BULK CORPUS PULLER TOO, which has not been
+re-run -- the 26,666-window corpus is missing the same head file per window.
+
+The top-up landed 210 files, 0 absences, into data/raw/onc/labelled_window_topup
+(NEVER the bulk corpus -- that directory means the 09:15-11:45 local strip and
+the sampling-conditionality statement is written against it). Bulk corpus
+byte-identical, untouched.
+
+TWO NEW DELIVERABLES (both gitignored, regenerate as below):
+
+  scripts/build_events_table.py -> data/derived/events/<run>/
+     events_by_window.csv        one row per (scene, band), all 30 scenes
+     events_by_window_wide.csv   ONE ROW PER WINDOW: small_craft, ship_proxy,
+                                 total, diagnostics, optical candidates
+     events_by_window_summary.md totals + the per-window table
+  scripts/build_review_set.py   -> denoised_labeled.png per window, beside the
+     untouched denoised.png. Detected events shaded over their own band's
+     frequency extent (widened by the +/-125 Hz open axis uncertainty), peak
+     markers annotated in COUNTS, per-band counts and optical CANDIDATE counts
+     in the title, DETECTOR SILENT called out where a band found nothing.
+     Nothing is re-detected for the figure -- the spans are the same events as
+     detections.csv and events_by_window.csv, and the three agree exactly.
+
+THE HEADLINE, AND THE PROBLEM WITH IT. n = 298 events across 30 overpasses in
+the two detection bands, against 0 under the frame-shuffle null.
+
+  band          events   frame-shuffled   time-shifted (-1 h)
+  small_craft      146                0                   101
+  ship_proxy       152                0                    85
+  rain (diag)       27                0                    21
+  control (diag)    15                0                     3
+
+THE TIME-SHIFT NULL IS UNRESOLVED, NOT PASSED. Decision 0030. The shifted windows
+were NOT re-pulled and still carry the head-gap defect: real windows average 100%
+coverage, shifted windows 90%, with 9 of 30 between 37% and 76%. The null has less
+data and fewer chances to fire, which biases the comparison toward "real wins".
+Coverage-normalised the ratios are 1.30x (small_craft) and 1.61x (ship_proxy) --
+DO NOT CITE THESE AS THE OVERPASS EFFECT; rate-normalising corrects exposure but
+not WHICH windows were lost, and a head gap removes a specific part of a window.
+
+NEXT AND CHEAPEST: re-pull the shifted windows to parity, into their own landing
+zone (they are not overpass windows and must not enter the corpus or the top-up
+zone). Until both sides have equal coverage, nothing else interprets this. DO NOT
+RESOLVE IT BY MOVING THE THRESHOLD -- decision 0015's single tuning is spent.
+
+BANDS ARE NOT CLASSES. small_craft (1-10 kHz) and ship_proxy (250 Hz-1 kHz) are
+FREQUENCY BANDS, not event types. The same detector runs over both, and a
+broadband boat pass can appear in each -- so 298 is 146+152 across two overlapping
+views of the same 30 windows, not 298 distinct things. Band membership is NOT a
+size classification; G2 is unanswered.
+
+STILL RED. check_b3c_12 still fails (182 passed, 1 failed, 4 skipped, 0 not run
+-- unchanged by this session's work, no new failures). b3-close-out-offline.md
+was deliberately NOT run and still owns the manifest migration, that check, and
+the wrong 09:15-11:45 window constant in config.py:633-634. Nothing merges until
+it lands.
+
+Regenerate:
+  python3 scripts/build_events_table.py    # ~10 min, all 30 scenes, both nulls
+  python3 scripts/build_review_set.py      # ~15 min, figures + detections.csv
+Do not run the two concurrently -- they contend and both crawl.
+
+================================================================================
+2026-08-28 (Isaac) -- 29 HUMAN VESSEL LABELS, AND THEY ARE NOT ENCOURAGING
+================================================================================
+
+WE NOW HAVE LABELS. data/validation/planet_scope_validations.csv (TRACKED in git;
+provenance in docs/validation-vessel-counts.md). Isaac counted vessels by eye in
+every gate-2 scene: 29 labelled overpass instants, 44 vessels, and 6 ZERO-VESSEL
+windows -- the labelled negatives the whole project has been missing. Joined into
+events_by_window_wide.csv as manual_vessel_count.
+
+THE COMPARISON, and it is the most important number this workstream has produced:
+
+                        detector fired   detector silent
+  vessel(s) present (23)      18                5
+  no vessel          (6)       4                2
+
+  r(manual vessel count, merged event count) = +0.20
+
+EVENT COUNT IS NOT A VESSEL SIGNAL. Near-zero correlation, and the detector fires
+on 4 of 6 EMPTY windows. This is the SECOND independent line of evidence agreeing
+with the time-shift null (decision 0030). It is NOT a bug: the frame-shuffle null
+still collapses to 0, so the events are real temporal structure in the acoustics.
+They are simply not vessel-count structure.
+
+DO NOT QUOTE 4/6 AS A FALSE-POSITIVE RATE. Six negatives support no rate, and the
+two instruments do not observe the same thing: the manual count is what is visible
+INSIDE THE IMAGE FOOTPRINT at ONE INSTANT, while the acoustic window is +/-15 min
+and the hydrophone's range is unmeasured (G3) and likely larger. An empty scene can
+be acoustically occupied with no error by either instrument. Same asymmetry explains
+the 5 silent-but-occupied windows: visible does not mean audible.
+
+WHERE THIS POINTS. Event COUNT is the wrong statistic. Decision 0030's remaining
+follow-up -- event SHAPE, the rise/fall through closest point of approach that
+_plot_band_detail already computes -- is now the promising one, not a nice-to-have.
+
+EVENTS ARE ALSO NOW MERGED. Raw event counts measured threshold chatter as much as
+passages: a vessel's level fluctuates and every dip below +10 counts ended one event
+and started another. run_b5_gate.merge_events joins fragments across gaps <= 10 s,
+298 raw -> 135 merged. Merged on TIME ALONE, never amplitude similarity -- a real
+CPA rises and falls, so fragments of one pass have systematically different peaks
+and an amplitude gate would refuse to merge exactly the right ones. THE SAME RULE IS
+APPLIED TO BOTH NULLS; merging only the real side would invent an effect from
+bookkeeping. The 10 s gap is a CONVENTION, not a measurement -- there is no plateau
+corpus-wide (total runs 160/141/135/117/108/101/88 at 0/5/10/20/30/60/120 s), so
+never quote a merged count without its gap. The sweep prints in the summary.
+
+BANDS ARE NOT CLASSES, restated because it keeps being read wrong: small_craft
+(1-10 kHz) and ship_proxy (250 Hz-1 kHz) are FREQUENCY BANDS. The same detector runs
+over both and a broadband pass appears in each. Band membership is not a size
+classification; G2 is unanswered.
+
 Next Steps:
 
 Divy out tasks and claim here

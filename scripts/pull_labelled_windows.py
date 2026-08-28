@@ -93,9 +93,22 @@ def main(argv=None):
     records, absences = [], []
     for op in wanted:
         lo, hi = op.window_utc()
+        # PAD THE LISTING START BY ONE FILE DURATION. ONC's listing selects on
+        # file START TIME, but window_coverage counts by INTERVAL OVERLAP
+        # (decision 0020): the file straddling the window start overlaps the
+        # window while starting before it, so an unpadded listing silently omits
+        # it and loses up to FFT_FILE_SECONDS at the HEAD of every window.
+        # Measured 2026-08-28 on 20210812_191832_32_2406: the unpadded listing
+        # returns 6 files and leaves a 269 s head gap; padded it returns 7,
+        # including ICLISTENHF1266_20210812T190301.000Z, which closes it.
+        # The end needs no pad -- a file starting before `hi` is already listed,
+        # and its tail simply overhangs, which overlap-counting handles.
+        listing_lo = lo - _dt.timedelta(seconds=config.FFT_FILE_SECONDS)
         print(f"{op.scene_id}  {lo.isoformat()} -> {hi.isoformat()}")
+        print(f"  listing from {listing_lo.isoformat()} "
+              f"(-{config.FFT_FILE_SECONDS}s head pad, decision 0020 overlap)")
         filenames, n_empty = onc_client.list_fft_files(
-            client, locations, lo, hi, allow_empty=True)
+            client, locations, listing_lo, hi, allow_empty=True)
         if not filenames:
             # An empty listing over a deployed span is a MEASURED ZERO, not a
             # failure (decisions 0008, 0028). Recorded, never retried into a lie.

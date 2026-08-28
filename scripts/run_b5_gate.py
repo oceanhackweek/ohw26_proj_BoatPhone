@@ -148,6 +148,77 @@ def find_events(t_utc_s, level_counts, *, frame_seconds=None,
             "min_duration_s": EVENT_MIN_DURATION_S}
 
 
+# How large a below-threshold dip may be bridged when merging fragments of one
+# elevated period. NOT a detector parameter and NOT a threshold: `find_events`
+# runs unchanged and its raw count is always reported alongside the merged one.
+# This is an AGGREGATION rule applied afterwards, so decision 0015's "tune the
+# threshold on the overpasses once" is not spent by it.
+#
+# THE VALUE IS A CONVENTION, NOT A MEASUREMENT, and it is consequential.
+# On the single densest window (20230719_182055_22_2449) the merged count IS flat
+# across the parameter -- ship_proxy gives 3 at every gap from 5 s to 120 s. That
+# plateau does NOT hold across the corpus: the 30-window detection-band total
+# runs 160 / 141 / 135 / 117 / 108 / 101 / 88 at gaps of 0 / 5 / 10 / 20 / 30 /
+# 60 / 120 s -- a 45% decline with no flat region. An earlier version of this
+# comment claimed the plateau corpus-wide, generalising from one window; that was
+# wrong and is corrected here rather than deleted.
+#
+# So 10 s is defensible (it is short against the minutes-long timescale of a
+# passage and long against the 0.25 s frame) but it is not picked out by the
+# data, and the merged count must never be quoted without the gap that produced
+# it. build_events_table.py prints the full sweep for exactly this reason.
+EVENT_MERGE_GAP_S = 10.0
+
+
+def merge_events(events, *, max_gap_s=EVENT_MERGE_GAP_S):
+    """Join events separated by a gap no larger than ``max_gap_s``.
+
+    WHY THIS EXISTS. A vessel passing a fixed hydrophone does not hold a steady
+    level: it fluctuates, and each dip below the threshold ENDS one event and
+    STARTS another. The raw count therefore measures threshold chatter as much as
+    it measures passages -- 16 raw events in the window above are visibly one
+    sustained elevated period plus a couple of separate ones.
+
+    MERGED ON TIME ALONE, deliberately not on amplitude similarity. A real
+    closest-point-of-approach RISES and FALLS, so fragments of one genuine pass
+    have systematically DIFFERENT peak amplitudes (measured here: 31 -> 36.5 ->
+    31 -> 23.5 counts across one passage). An amplitude-similarity gate would
+    refuse to merge exactly the fragments that belong to one pass, and would
+    preferentially merge flat sources like weather -- selecting against the CPA
+    shape the detector exists to find.
+
+    A merged event is a DISTINCT ELEVATED PERIOD. It is still not a vessel: two
+    boats overlapping in time merge into one, and the count-to-vessel mapping
+    remains unmeasured (decision 0030).
+
+    THE CALLER MUST APPLY THIS TO THE NULLS TOO. Merging real events while
+    leaving a null unmerged manufactures a difference out of bookkeeping alone:
+    the real count falls and the null does not.
+    """
+    if not events:
+        return []
+    ordered = sorted(events, key=lambda e: e["t_start_utc_s"])
+    out = [dict(ordered[0])]
+    for ev in ordered[1:]:
+        last = out[-1]
+        last_end = last["t_start_utc_s"] + last["duration_s"]
+        if ev["t_start_utc_s"] - last_end <= max_gap_s:
+            end = max(last_end, ev["t_start_utc_s"] + ev["duration_s"])
+            # The merged peak is the LARGEST of the fragments' peaks, not the
+            # first and not a mean: the peak of a passage is its closest
+            # approach, and averaging fragments would erase it.
+            if ev["peak_excess_counts"] > last["peak_excess_counts"]:
+                last["t_peak_utc_s"] = ev["t_peak_utc_s"]
+                last["peak_excess_counts"] = ev["peak_excess_counts"]
+            last["duration_s"] = end - last["t_start_utc_s"]
+            last["n_fragments"] = last.get("n_fragments", 1) + 1
+        else:
+            out.append(dict(ev))
+    for ev in out:
+        ev.setdefault("n_fragments", 1)
+    return out
+
+
 # --- Test C: synthetic tone ------------------------------------------------
 
 def synthetic_tone_test(band_hz):

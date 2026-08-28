@@ -74,6 +74,7 @@ Superseding is normal -- mark the old one and link forward. Silently contradicti
 | [0027](0027-fft-product-is-viable-for-b5-band-level-detection.md) | The `.fft.gz` product IS viable for B5 band-level detection -- GO | accepted |
 | [0028](0028-empty-overpass-window-is-a-measured-zero.md) | An empty overpass window is a measured zero, not a failure | accepted |
 | [0029](0029-overpass-window-is-local-time-resolved-per-date.md) | The overpass window is local time, resolved per date via zoneinfo | accepted |
+| [0030](0030-time-shift-null-does-not-collapse.md) | The time-shift null is UNRESOLVED -- confounded by unequal coverage on the two sides | accepted |
 
 > **A numbering collision happened here, and this is how it was resolved.** The acoustics and
 > optical workstreams both allocated **0016** and **0017** while working in parallel on
