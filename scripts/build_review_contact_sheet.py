@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""One figure holding every window's labelled denoised spectrogram, in time order.
+"""One board holding every review window's panel, in time order. Acoustic or optical.
 
 Runnable entry point. DEFINES NOTHING SHARED (CLAUDE.md invariant 6): the panels are
-the `denoised_labeled.png` files `scripts/build_review_set.py` already wrote, the scene
-times come from `boatphone.overpasses`, and the vessel counts come from the events
-table. This script composes; it computes nothing.
+files `scripts/build_review_set.py` and `scripts/attach_planet_previews.py` already
+wrote into each window folder, and the vessel counts come from the events table. This
+script composes; it computes nothing.
+
+ONE SCRIPT, TWO BOARDS, and that is the point. `--panel` names which file to take from
+each window folder, so the acoustic board and the optical board are the same grid in
+the same order with the same captions, and a panel in cell 17 of one is the same
+overpass as cell 17 of the other. Two scripts would drift.
+
+    --panel denoised_labeled.png              the acoustic board
+    --panel planet_scene/scene_preview.jpg    the optical board
 
 WHAT IT IS FOR. The review set puts one overpass per folder, which is right for
 judging a single window against a single image and wrong for seeing the corpus. Side
@@ -24,10 +32,10 @@ one would silently discard a real acoustic window; merging them would invent a c
 UNITS, at the boundary (decision 0002 §4): the panels are in the product's own
 uncalibrated integer `counts`, never dB re 1 µPa. Times are absolute UTC.
 
-Usage:  python3 scripts/build_denoised_contact_sheet.py [--review-dir DIR]
-                                                        [--events-dir DIR]
-                                                        [--panel denoised_labeled.png]
-                                                        [--out PATH] [--dpi N]
+Usage:  python3 scripts/build_review_contact_sheet.py [--review-dir DIR]
+                                                      [--events-dir DIR]
+                                                      [--panel NAME] [--out PATH]
+                                                      [--dpi N] [--title TEXT]
 """
 
 from __future__ import annotations
@@ -54,6 +62,23 @@ from boatphone.paths import DERIVED_DIR, REPO_ROOT
 # writes; `denoised_labeled` is the seasonal-ambient-subtracted view with the detected
 # events annotated, which is the one that reads at contact-sheet size.
 DEFAULT_PANEL_NAME = "denoised_labeled.png"
+
+# What each known panel IS, said on the board itself. A contact sheet outlives the
+# session that made it, and a grid of spectrograms with no unit on it is exactly the
+# kind of figure that gets quoted as decibels two months later.
+PANEL_DESCRIPTIONS = {
+    "denoised_labeled.png": (
+        "Denoised band spectrogram -- ACOUSTIC",
+        "seasonal ambient removed; levels are {level_unit}; window is "
+        "+/-{half_window_min} min around the acquisition instant",
+    ),
+    "planet_scene/scene_preview.jpg": (
+        "PlanetScope RGB tile preview -- OPTICAL",
+        "search-time preview at ~3.15 m/px, 8-bit and JPEG-compressed: LOOK, do not "
+        "measure; the image is ONE INSTANT, the acoustic window is "
+        "+/-{half_window_min} min around it",
+    ),
+}
 
 # Columns in the grid. Source: 30 panels divide evenly by 6 (5 full rows), and the
 # panels are portrait, so a wide grid keeps the sheet close to square.
@@ -146,7 +171,7 @@ def _window_dirs(review_dir: pathlib.Path, panel_name: str):
     return sorted(found), missing
 
 
-def build(review_dir, events_dir, panel_name, out_path, dpi):
+def build(review_dir, events_dir, panel_name, out_path, dpi, title=None):
     panels, missing = _window_dirs(review_dir, panel_name)
     if not panels:
         raise SystemExit(f"no {panel_name} found under {review_dir}/windows")
@@ -190,12 +215,18 @@ def build(review_dir, events_dir, panel_name, out_path, dpi):
             fontsize=8, linespacing=1.35,
         )
 
+    # What the panels are, and in what unit. Unknown panels get an honest generic
+    # line rather than a borrowed one from whichever panel was hardcoded first.
+    headline, detail = PANEL_DESCRIPTIONS.get(
+        panel_name, (panel_name, "panel content not described in PANEL_DESCRIPTIONS"))
+    detail = detail.format(
+        level_unit=config.FFT_LEVEL_UNIT,
+        half_window_min=config.OVERPASS_MATCH_HALF_WINDOW_S // 60,
+    )
     fig.suptitle(
-        f"Folger Deep -- denoised band spectrogram for every PlanetScope overpass "
-        f"window ({n} panels, chronological)\n"
-        f"seasonal ambient removed; levels are {config.FFT_LEVEL_UNIT}; "
-        f"window is +/-{config.OVERPASS_MATCH_HALF_WINDOW_S // 60} min around the "
-        f"acquisition instant; review run {review_dir.name}",
+        f"{title or headline} -- every PlanetScope overpass window at Folger Deep "
+        f"({n} panels, chronological: left to right, top to bottom)\n"
+        f"{detail}; review run {review_dir.name}",
         fontsize=13, y=0.997,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.985))
@@ -268,6 +299,8 @@ def main(argv=None):
     ap.add_argument("--out", default=None,
                     help="output PNG; defaults to <review run>/<panel stem>_contact_sheet.png")
     ap.add_argument("--dpi", type=int, default=DEFAULT_DPI)
+    ap.add_argument("--title", default=None,
+                    help="override the headline; the unit/caveat line is kept either way")
     args = ap.parse_args(argv)
 
     review_dir = (pathlib.Path(args.review_dir) if args.review_dir
@@ -280,7 +313,9 @@ def main(argv=None):
     stem = pathlib.Path(args.panel).stem
     out_path = (pathlib.Path(args.out) if args.out
                 else review_dir / f"{stem}_contact_sheet.png")
-    build(review_dir, events_dir, args.panel, out_path, args.dpi)
+    print(f"panel:      {args.panel}")
+    print(f"output:     {out_path}")
+    build(review_dir, events_dir, args.panel, out_path, args.dpi, args.title)
     return 0
 
 
