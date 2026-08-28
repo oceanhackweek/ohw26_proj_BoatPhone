@@ -30,7 +30,7 @@ This project aims to improve the estimation of small-scale vessel noise detectio
 * Initial idea: Cross-calibrating optical vessel detection against passive acoustics at Folger Deep
 * Ideation Slide: https://docs.google.com/presentation/d/1_KLEDpLLvtKpH3awDlZRAiOKuHzbEti4CWmhEykuCG8/edit?slide=id.g3f85357d4e2_21_0#slide=id.g3f85357d4e2_21_0
 * Slack channel: ohw26_proj_BoatPhone
-* Final presentation: Add link
+* Final presentation: https://docs.google.com/presentation/d/1LnokajlD4dj0683nHa6zb9H3QxUS-2aq0sLbgzFS5yQ/edit?usp=sharing
 
 ## Background
 
