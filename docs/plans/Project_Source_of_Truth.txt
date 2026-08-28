@@ -1189,3 +1189,88 @@ threshold at an EMPIRICAL QUANTILE targeting a fixed candidate count, which make
 comparable across sea states by construction and removes sigma from the loop entirely. That also
 makes `dominance` and the CROWDED/SINGLE-DOMINANT classification meaningful for the first time,
 since today they are computed over populations whose size is set by water roughness.
+
+
+Malachy (Aug 28) -- DETECTOR A CALIBRATED AGAINST THE HUMAN COUNTS: 41 vs 42 ON TOTAL, r = 0.675
+PER SCENE. The over-prediction is fixed, and the fix was not a better threshold.
+
+WHAT CHANGED. Neve's two entries above establish that Detector B's count is a function of
+sea-surface texture, not of boats, and that its only knob is dead. I stopped trying to rescue a
+threshold and instead calibrated DETECTOR A against data/validation/planet_scope_validations.csv
+(Neve + Isaac's eyeball counts, 29 timestamps, 26 of which we hold imagery for -- 42 vessels).
+
+THE FROZEN CONFIG, and every part of it is measured, not argued:
+
+    tile 640 -> imgsz 640, BGR      native scale
+    conf 0.45 on TOA, 0.075 on SR   one threshold per rendering
+    require agreement within 30 m   TOA and SR must BOTH see it
+    length <= 40 m                  implausibility bound (decision 0016), not a science cut
+
+RESULT over the 26 scenes: 41 detections against 42 counted vessels (97.6% on total count),
+r = 0.675 between per-scene predicted and counted, 77% of scenes correct within +-1, MAE 0.96,
+exact on 31%. Run it with scripts/detect_vessels_final.py; the search is in scripts/sweep_*.py.
+
+THE AGREEMENT REQUIREMENT IS DOING THE REAL WORK, and it is the part worth keeping. TOA and SR
+are the SAME acquisition -- same water, same boats, same instant -- so they are two renderings
+that fail differently, and a box present in only one is uncorroborated. Single-asset TOA at any
+threshold peaked around 0.15 err_acc; the intersection reaches 0.41. This is section 2's
+"two detectors whose failure modes do not overlap", except that the second detector is the same
+model on a different radiometry rather than a NIR blob finder, which is what actually worked.
+
+THREE THINGS I EXPECTED TO HELP AND MEASURED AS NOT HELPING. Posting the negatives so nobody
+re-runs them. (1) TILE UPSCALING. Section 6.3 argues for slice 320 -> imgsz 640 to land a 6 m
+boat at ~6.6 px. Measured across all 26 scenes it is WORSE: 546 raw TOA boxes against 1537 at
+640->640, and err_acc 0.38 against 0.45. The model does better at native scale here. (2) THE
+WATER MASK. Inert -- the AOI is ~92% water, so it removes almost nothing (450 -> 453 boxes).
+It is reported in scenes_final.csv, not applied. Section 6.5's expectation of "a large fraction
+of A's false positives" does not hold on this AOI. (3) NIR SUPPORT AS A FILTER, and shore
+distance, and the multi-year persistence rule: each moved err_acc by less than the split-half
+noise, so none is in the frozen config.
+
+THE PART THAT MATTERS MOST, AND IT IS A WARNING. I ran the selection procedure against a
+LABEL-SHUFFLED NULL and a SPLIT-HALF HOLDOUT (scripts/sweep_validate.py), and the first grid I
+tried -- 8 free parameters, 24,192 configs -- was FITTING NOISE. It reached err_acc 0.452 on all
+26 scenes but only 0.232 held out, against a null-selection mean of 0.237. In other words the
+held-out performance of the 8-knob search was indistinguishable from selecting on shuffled
+labels. Cutting the grid to TWO free knobs (one confidence per asset, 42 configs) scored the same
+on total count, better on correlation (0.675 vs 0.635), and had the smallest overfit gap (0.198
+vs 0.271). THE SMALLER GRID IS THE ONE IN THE CONFIG. With 26 scenes and 42 vessels, every extra
+knob costs more in selection noise than it buys. The same config wins at all three grid sizes,
+which is the stability check I would want before believing any of it.
+
+WHAT THIS IS NOT, STATED PLAINLY. The truth set is a COUNT PER SCENE, not vessel positions. So
+this is calibrated to produce the right NUMBER of vessels, and a scene can carry the right number
+for the wrong reasons -- 5 of the 26 scenes are right in count while being wrong in composition
+somewhere. Exact-count agreement is 31%; the +-1 figure (77%) is the honest headline for
+per-scene use. Anyone joining this to acoustics should use scenes_final.csv and treat n_vessels
+as a candidate count, and should NOT read the per-detection rows as a verified vessel census. The
+section 8 eyeball pass over the boxes -- not just the counts -- is still the missing gate.
+
+DELIVERABLE for Isaac: data/derived/detections_final/detections_final.csv (one row per vessel,
+with range_km and bearing_deg to the hydrophone) and scenes_final.csv (one row per acquisition).
+Ranges use optical.range_km (pyproj Geod), same as acoustics B7. NOTE the hydrophone coordinate
+is still the AOI centre pending I2 confirmation against ONC device metadata -- every range_km in
+that file moves if that coordinate moves.
+
+
+Malachy (Aug 28) -- ADDENDUM, AND IT IS A LIMITATION THAT MATTERS FOR GOAL 2: THE FROZEN
+DETECTOR REPORTS NO 0-12 m VESSELS AT ALL, AND THAT IS THE BOX TALKING, NOT THE FLEET.
+
+All 41 rows in detections_final.csv come out ">24m" (35) or "12-24m" (6). I chipped the
+detections at native resolution and looked: the vessels are 2-3 px of bright pixels, the model's
+box around them is 8-12 px. At 3 m GSD that renders a small craft as a 23-37 m "length". So
+size_class in that file is an artefact of the axis-aligned box, and it is the SAME bias Neve
+measured directly (her 114.4 m box against a 42.0 m minAreaRect hull on one object in 20200730).
+
+CONSEQUENCE, STATED SO NOBODY JOINS ON IT: do not read detections_final.csv as evidence about
+vessel size, and in particular do not read "no 0-12 m detections" as "no small craft present" --
+the validation counts say small craft ARE present in these scenes. length_m is fit for the
+implausibility cut it was tuned for (<= 40 m) and for nothing else. If a size distribution is
+needed for the FAO framing, it has to come from a hull-fitting step (Detector B's minAreaRect on
+the NIR blob inside the box, which is what fuse_wake_hull.py was reaching for), not from the
+YOLO box. Nothing in the SL/k fit depends on size, so this does not block Friday.
+
+EYEBALL CHECK, PARTIAL, AND SAYING SO: I inspected chips for 2 of the 26 scenes (9 detections).
+Every box contained a compact bright object in open water away from shoreline. That is
+encouraging and it is NOT the section 8 census -- 17 of the 26 scenes have had no box-level human
+pass at all, and a count that matches can still be the wrong object. The census remains open.
