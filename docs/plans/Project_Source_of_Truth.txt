@@ -869,6 +869,14 @@ Do not run the two concurrently -- they contend and both crawl.
 2026-08-28 (Isaac) -- 29 HUMAN VESSEL LABELS, AND THEY ARE NOT ENCOURAGING
 ================================================================================
 
+WHERE THE CODE IS. The acoustic stack (boatphone/features.py, overpasses.py,
+scripts/run_b5_gate.py, build_events_table.py, build_review_set.py) lives on
+branch milestone1/b3-bulk-acquisition. Main carries the findings and the
+validation DATA only. THE BRANCH IS NOW GREEN (183 passed, 0 failed, 4 skipped,
+0 not run) -- check_b3c_12 turned out to be a broken CHECK, not a broken library
+(it asserted path.exists() after its TemporaryDirectory had closed), so the
+branch is mergeable for the first time. To run any of it:
+git checkout milestone1/b3-bulk-acquisition.
 WE NOW HAVE LABELS. data/validation/planet_scope_validations.csv (TRACKED in git;
 provenance in docs/validation-vessel-counts.md). Isaac counted vessels by eye in
 every gate-2 scene: 29 labelled overpass instants, 44 vessels, and 6 ZERO-VESSEL
