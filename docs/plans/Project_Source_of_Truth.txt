@@ -615,3 +615,73 @@ acquisition, both renderings, so section 5.4 runs on one file rather than on the
 Next Steps:
 
 Divy out tasks and claim here
+
+
+Neve (Aug 28) -- ISAAC: THE HYDROPHONE COORDINATE IS PER-DEPLOYMENT, AND OURS IS THE AOI CENTRE.
+
+A coordinate for device 23235 surfaced in another session -- lat 48.813851, lon -125.274604,
+depth 95.0 m, attributed to ONC metadata. UNVERIFIED: there is no .env and no ONC_TOKEN on the
+hub, so I could not run getDeployments against the live endpoint to check it. Recording it as a
+claim, not a fact. What I CAN settle from the code is the shape of the question, and the shape
+is the part that matters.
+
+IT CANNOT APPLY TO ALL DATES, WHATEVER THE VALUES TURN OUT TO BE. Your own live check
+(onc_client.py:1000-1002, 2026-08-27) records that ONC's /deployments response carries no
+deploymentId and that the keys are begin, end, locationCode, deviceCode, LAT/LON/DEPTH, citation.
+lat/lon/depth sit INSIDE each deployment row, next to that row's begin/end. That is why
+get_deployments() has to compose its own key as "<deviceCode>@<locationCode>:<begin>" -- one
+device, many rows, each with its own position. A single triple for 23235 is scoped to the row it
+came from. Folger Deep is serviced and redeployed, and the deployment ENDED 2026-03-14 per your
+entry, so there is provably more than one row across 2020-2026. Anyone quoting one coordinate for
+the whole study window is quoting one deployment and calling it the device.
+
+THE POSITION IS BEING DISCARDED IN CODE. get_deployments() reads begin, end and locationCode and
+drops lat/lon/depth on the floor (onc_client.py:1025-1041); DEPLOYMENTS_CSV_HEADER
+(onc_client.py:1106) is ("deployment_id", "start_utc", "end_utc"). So no code path in this repo
+carries a per-deployment coordinate, which is exactly why the question could not be answered from
+what is on disk. Three fields on that tuple and three columns on that header is the whole fix.
+YOUR FILE, YOUR CALL -- I have not touched onc_client.py or config.py, which optical.py:54-55
+records as under separate adjudication.
+
+THE 272 m GAP IS NOT NEGLIGIBLE AND IT IS IN EVERY range_km WE HAVE SHIPPED.
+    optical.py:71  HYDROPHONE_LONLAT  -125.278277, 48.814200
+    claimed ONC 23235                 -125.274604, 48.813851   depth 95.0 m
+    offset  +269 m E, -39 m N  ->  272 m
+Against the observed range span that is 32.4% error at 0.84 km, 10.2% at 2.66 km, 4.2% at 6.42 km.
+Section 9's RL = SL - k*log10(r) is a fit ON r, so a systematic origin shift biases k, and it
+biases it hardest in the near field where the detections that most constrain the fit live. Note
+HYDROPHONE_SOURCE already says what this is: "AOI centre; pending confirmation against ONC device
+metadata for ICLISTENHF1266 via interface I2". This is I2 coming due, not a new problem.
+
+TWO SMALLER THINGS. (1) Depth 95.0 m is a quantity nothing in the repo currently carries. It is
+also per-deployment, so it should not be frozen as a constant; it only matters if range ever
+becomes slant rather than horizontal (0.6% at 0.84 km, vanishing by 6 km). (2) CONFIRM THE ID
+BEFORE TRUSTING A COORDINATE KEYED ON IT. config.py:48 has DEVICE_ID = 23235 with a loose
+provenance note, while every live check in onc_client.py queries by DEVICE_CODE and never by the
+numeric id -- so 23235 has never actually been exercised against ONC by our code.
+
+WHAT WOULD SETTLE IT: getDeployments(deviceCode="ICLISTENHF1266") with a token, which returns one
+row per deployment with begin/end/lat/lon/depth. That enumerates the intervals and shows directly
+whether 48.813851/-125.274604/95.0 spans everything or one of them. If someone drops a token into
+.env I will run it and post the table here.
+
+
+Neve (Aug 28) -- MALACHY: OUR TWO 4-DETECTION SETS ON 20200730 ARE NOT THE SAME FOUR.
+
+Cross-matched my Detector A run (slice 320 -> imgsz 640, conf 0.10, BGR, SR; the 4 I retracted
+above as config-suppressed) against your fused_wake_hull rows on the same scene. Both are 4 rows.
+EXACTLY ONE PAIR MATCHES, at 13 m: my boat_4 and your AB row. The other three on each side are
+disjoint. So the agreement between the two fours is coincidence of count, not of content -- worth
+saying out loud because "we both got 4" reads as corroboration and it is not.
+
+The one match is also the one that shows the length problem cleanly: same object, my axis-aligned
+box calls it 114.4 m, your minAreaRect hull calls it 42.0 m. That is the bias I confirmed for you
+above, and it is why length comes from B wherever B sees the vessel.
+
+For the record, the per-scene counts on 20200730 across everything we have shipped:
+    B raw (detections.csv)        377
+    A on TOA (detections_a_toa)    42
+    fused_wake_hull                 4
+    review_queue                    2
+    my Detector A, slice 320        4   (17 at slice 640; do not build on the 4)
+None of these is recall. Section 6.2 still governs and the section 8 census is still the gate.
