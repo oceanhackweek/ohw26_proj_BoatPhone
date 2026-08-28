@@ -8052,6 +8052,14 @@ def check_b3c_12_per_file_record_exposes_disk_basename_distinct_from_wire_filena
         return [filename], 0
 
     from datetime import date
+    # EVERY ASSERTION BELOW RUNS INSIDE THIS BLOCK. An earlier version closed the
+    # TemporaryDirectory first and then asserted `path.exists()`, which cannot
+    # pass: the directory and everything in it is deleted on exit. That failure
+    # was diagnosed in 1937b6e as the LIBRARY recording a pre-compression name,
+    # and it is not -- `path` is the .gz path, the file really is written, and
+    # the seam at onc_client.py:1774-1778 / pull_overpass_corpus.py:798 is
+    # correct. Verified against the real 26,666-row manifest, where 0 rows have
+    # a path missing on disk. The defect was in this check.
     with tempfile.TemporaryDirectory() as tmp:
         dest_dir = pathlib.Path(tmp) / "dest"
         manifest_dir = pathlib.Path(tmp) / "manifest"
@@ -8059,7 +8067,12 @@ def check_b3c_12_per_file_record_exposes_disk_basename_distinct_from_wire_filena
             dates=[date(2024, 7, 1)], dest_dir=dest_dir, manifest_dir=manifest_dir,
             listing_fn=listing_fn, transport=transport, client=None, sleep=lambda _s: None,
         )
+        _b3c_12_assert_disk_basename(manifest, filename)
 
+
+def _b3c_12_assert_disk_basename(manifest, filename):
+    """The assertions for check_b3c_12. Separate so they cannot drift back
+    outside the TemporaryDirectory they depend on."""
     files = [row for row in manifest.get("files", []) if row.get("filename") == filename]
     assert files, (
         f"no manifest 'files' row for {filename!r} -- fixture sanity check failed (expected "
