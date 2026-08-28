@@ -18,7 +18,8 @@ Time base
 
 Where the start time comes from
     THE FILENAME, parsed by :func:`boatphone.onc_client.parse_file_coverage`.
-    The `.fft.gz` payload is a bare gzipped ASCII grid of integers: 614,400
+    The payload -- gzipped or plain, see :func:`read_fft_gz` -- is a bare ASCII
+    grid of integers and nothing else: 614,400
     whitespace-separated values and nothing else -- no header, no timestamp, no
     sample rate. So the filename stamp is not merely the convenient source, it
     is the ONLY source in the file. It is trustworthy to the extent that ONC's
@@ -47,10 +48,14 @@ Frequency axis
     ``models.band_limit`` directly, so the uncertainty travels with the band.
 
 Censoring
-    ``levels_db`` runs ``[0, 86]`` in the local sample. The FLOOR (0) is
-    confirmed censoring (18.7% of cells sit exactly there). The CEILING (86)
-    is an ASSUMPTION, not a confirmed hard clip -- see
-    ``config.FFT_LEVEL_CEILING``'s comment for why. :func:`censoring_report`
+    ``levels_db`` runs ``[0, 86]`` IN THE TWO LOCAL SAMPLE FIXTURES, and that
+    range does NOT generalise. The FLOOR (0) is confirmed censoring (18.7% of
+    cells sit exactly there). The CEILING (86) is an ASSUMPTION, not a
+    confirmed hard clip -- see ``config.FFT_LEVEL_CEILING``'s comment for why
+    -- and it has since been CHECKED AND FALSIFIED for the B3 overpass-window
+    corpus, which spans 0.0 to 112.0: see
+    ``docs/decisions/0026-fft-level-ceiling-86-is-not-a-ceiling-for-this-corpus.md``.
+    Do not treat 86 as a clip point for corpus data. :func:`censoring_report`
     returns the per-window counts at each limit and every band level should be
     reported next to them regardless.
 
@@ -79,6 +84,7 @@ import numpy as np
 
 from . import models
 from .config import (
+    GZIP_MAGIC_BYTES,
     FFT_AXIS_CONVENTION,
     FFT_AXIS_OFFSET_UNCERTAINTY_HZ,
     FFT_BIN_WIDTH_HZ,
@@ -230,8 +236,21 @@ def read_fft_gz(path, *,
                 fs_hz: float = FFT_PRODUCT_FS_HZ) -> FftProduct:
     """Read one ONC `.fft.gz` into an :class:`FftProduct` with named axes.
 
-    The payload is gzipped ASCII: whitespace-separated integer levels, ROW-MAJOR
-    (frames vary slowest, bins fastest). The row-major reading is the verified
+    CONTAINER IS SNIFFED, NEVER INFERRED FROM THE NAME. The first two bytes are
+    compared against ``config.GZIP_MAGIC_BYTES`` (``1f 8b``): a match is read
+    through ``gzip.open``, anything else as plain ASCII. The extension is not
+    consulted, because it is not reliable here and the corpus is permanently
+    MIXED (decision 0024): ONC's archive serves the product as plain ASCII under
+    a ``.fft`` name (decision 0022), the bulk pull writes gzip under a ``.fft.gz``
+    name, the hand-delivered sample is gzip under ``.fft.gz``, and decision 0001
+    forbids ever normalising the 90 already-pulled plain files. Both
+    disagreements (``.fft.gz`` holding plain text, ``.fft`` holding gzip) decode
+    identically here. This is ONE reader with ONE code path -- a second,
+    format-specific reader is what invariant 6 forbids. The function name is a
+    misnomer under 0022/0024 and renaming it is deferred there, not here.
+
+    The payload either way is ASCII: whitespace-separated integer levels,
+    ROW-MAJOR (frames vary slowest, bins fastest). The row-major reading is the verified
     one -- the column-major reading scatters ~90,000 nonzero values through the
     documented all-but-zero 419-511 block, the row-major reading leaves 74.
 
@@ -255,17 +274,54 @@ def read_fft_gz(path, *,
 
     start_utc, _end_utc = parse_file_coverage(path.name)
 
-    with gzip.open(path, "rt") as handle:
-        tokens = handle.read().split()
+    with open(path, "rb") as probe:
+        first_bytes = probe.read(len(GZIP_MAGIC_BYTES))
+    is_gzip = first_bytes == GZIP_MAGIC_BYTES
+    opener = gzip.open if is_gzip else open
+    with opener(path, "rt", encoding="ascii") as handle:
+        text = handle.read()
     expected = int(n_frames) * int(n_bins)
-    if len(tokens) != expected:
+
+    # Parsed with pandas' C tokenizer rather than `np.asarray(text.split())`.
+    # The ASCII-to-number conversion, NOT the gzip decode, is this reader's whole
+    # cost: measured 120 ms against 10 ms to decompress, so a full-corpus pass
+    # spends most of its life in `float()`. pandas' tokenizer does the same job
+    # in ~59 ms and returns bit-identical values (asserted by
+    # check_b5_12_fast_reader_matches_the_reference_parse).
+    #
+    # BOTH GUARDS BELOW STILL APPLY AND ARE THE REASON THIS IS SAFE. A file whose
+    # lines carry differing token counts is padded with NaN by any table parser;
+    # here that lands as either a wrong element count (caught by the length
+    # check) or a non-finite value (caught by the finite check). Neither is
+    # silently absorbed.
+    import io as _io
+    import pandas as _pd
+    try:
+        values = _pd.read_csv(
+            _io.StringIO(text), sep=r"\s+", header=None, dtype=float,
+            engine="c", na_filter=False,
+        ).to_numpy().ravel()
+    except (ValueError, _pd.errors.ParserError) as exc:
+        # The tokenizer's own message names neither the file nor what this
+        # reader expected ("could not convert string to float: ''" for a
+        # truncated payload). Re-raised with both, and chained so the original
+        # is still reachable -- a fast parser must not cost the caller a
+        # diagnosable error (CLAUDE.md invariant 5).
         raise ValueError(
-            f"{path.name}: holds {len(tokens)} values, expected exactly {expected} "
+            f"{path.name}: payload is not parseable as {expected} whitespace-"
+            f"separated numbers ({n_frames} frames x {n_bins} bins). Underlying "
+            f"parser error: {type(exc).__name__}: {exc}. Refusing to pad or "
+            "truncate to fit: a malformed product is a data problem, and "
+            "reshaping it to fit would hide it."
+        ) from exc
+    if values.size != expected:
+        raise ValueError(
+            f"{path.name}: holds {values.size} values, expected exactly {expected} "
             f"({n_frames} frames x {n_bins} bins). Refusing to truncate or pad: a "
             "product of the wrong length is a data problem, and reshaping it to fit "
             "would hide it (CLAUDE.md invariant 5)."
         )
-    levels_db = np.asarray(tokens, dtype=float).reshape(int(n_frames), int(n_bins))
+    levels_db = values.reshape(int(n_frames), int(n_bins))
     if not np.all(np.isfinite(levels_db)):
         raise ValueError(
             f"{path.name}: contains {int((~np.isfinite(levels_db)).sum())} non-finite "

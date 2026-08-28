@@ -18,7 +18,7 @@ Conventions pinned here (decision 0002, decisions D1/D2/D4 of the A1 plan):
 Names carry their frame: `*_UTC` means tz-aware UTC, `*_SECONDS` means seconds.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 
 # Bin width for the uptime calendar. Source: A1 decision D2 -- 300 s (5 min) is
 # the ONC FFT product's natural file cadence, so a bin maps 1:1 onto a listing.
@@ -35,6 +35,21 @@ STUDY_START_UTC = datetime(2020, 2, 18, 0, 0, 0, tzinfo=timezone.utc)
 # exclusive). It is an analysis convention -- revise it here, not per notebook,
 # if the deployment record extends further.
 STUDY_END_UTC = datetime(2026, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+# Year bounds for the bulk overpass-corpus pull (scripts/pull_overpass_corpus.py).
+# ONE definition of the corpus span (invariant 6); the pull driver imports these
+# and defines nothing of its own.
+#   Start: the first full season inside the study window -- STUDY_START_UTC is
+#   2020-02-18, so 2020 is the earliest year with a complete May-Sep season under
+#   this device's calibration.
+#   End: 2025, NOT the year of STUDY_END_UTC. Source: acoustics_plan_v2.md SS5
+#   ("B3 -- Bulk acquisition"). The ICLISTEN HF1266 deployment ended 2026-03-14,
+#   so the 2026 season has no acoustic counterpart at all; pulling it would spend
+#   ONC quota on windows that cannot contain data. STUDY_END_UTC bounds the
+#   ANALYSIS window; this bounds what is worth DOWNLOADING, and they are allowed
+#   to differ as long as both say why.
+CORPUS_PULL_START_YEAR = 2020
+CORPUS_PULL_END_YEAR = 2025
 
 # Months included in the "season", evaluated on the UTC month of the bin start.
 # Source: A1 decision D4 -- May through September, the recreational-vessel
@@ -59,6 +74,19 @@ PRODUCT_EXTENSION = "fft.gz"
 # HYDROPHONE -- a listing filtered on "fft.gz" returns ZERO files for a day that
 # has 289 files under "fft".
 ARCHIVE_EXTENSION = "fft"
+
+# The gzip container, named once (invariant 6). Two independent consumers:
+# (a) boatphone.onc_client.download_archive_file appends this suffix to the
+#     archive name when it gzip-compresses a file on write (decision 0024), so
+#     "<name>.fft" lands as "<name>.fft.gz" -- the name states the container;
+# (b) boatphone.fft_io.read_fft_gz SNIFFS these magic bytes rather than trusting
+#     any extension, because the corpus is permanently MIXED: 90 already-pulled
+#     plain-ASCII ".fft" files (decision 0022, immutable per decision 0001) plus
+#     every future compressed ".fft.gz" download, and name and container can
+#     disagree in both directions.
+# Source: RFC 1952 section 2.3.1 (gzip member header ID1=0x1f, ID2=0x8b).
+GZIP_CONTAINER_SUFFIX = ".gz"
+GZIP_MAGIC_BYTES = b"\x1f\x8b"
 
 # ONC device-category code for the hydrophone, used to scope an archive listing
 # at a location. Source: ONC deployment metadata for DEVICE_CODE
@@ -565,6 +593,17 @@ FFT_B5_RELATIVE_CEILING_BIN: int = FFT_ROLLOFF_ONSET_BIN  # 408 == 102 kHz
 FFT_LEVEL_FLOOR: int = 0
 FFT_LEVEL_CEILING: int = 86  # ASSUMED ceiling from the max observed in two quiet
 # fixtures -- not confirmed as a hard clip; see the correction above.
+#
+# CHECKED AND FALSIFIED FOR THE B3 CORPUS -- read
+# docs/decisions/0026-fft-level-ceiling-86-is-not-a-ceiling-for-this-corpus.md
+# before using this number. The resolution path above was walked: levels across
+# the real overpass-window corpus span 0.0 to 112.0, so 86 is NOT a ceiling
+# there and any code treating it as a clip point on that corpus is wrong. The
+# VALUE is deliberately left at 86 because 0026 argues it should be (it remains
+# the correct description of the two local fixtures this constant documents);
+# what changed is that it is no longer merely unverified -- it has been tested
+# against real data and does not hold. Anything reading corpus levels must take
+# its ceiling from 0026, not from here.
 
 # The two axis facts must agree with the file-cadence fact above; a silent
 # disagreement here would put every frame timestamp on the wrong grid.
@@ -574,3 +613,212 @@ if FFT_N_FRAMES * FFT_FRAME_SECONDS != FFT_FILE_SECONDS:
         f"({FFT_FRAME_SECONDS}) = {FFT_N_FRAMES * FFT_FRAME_SECONDS} s, which is not "
         f"FFT_FILE_SECONDS ({FFT_FILE_SECONDS} s)"
     )
+
+
+# --- PlanetScope overpass window (B3 bulk acquisition) ----------------------
+# The ONE definition of the acoustic window matched to a Planet overpass. Do not
+# restate 09:15/11:45 or "America/Vancouver" anywhere downstream (invariant 6);
+# import these and convert per date with boatphone.acquire.overpass_window_utc.
+#
+# Source: docs/plans/acoustics_plan_v2.md SS5 "B3 -- Bulk acquisition" --
+# PlanetScope crosses Barkley Sound 09:30-11:30 LOCAL, padded 15 min each side
+# to absorb orbit/scheduling jitter, giving 09:15-11:45 local (150 min).
+#
+# These are LOCAL wall-clock times, deliberately NOT stored as UTC: the true UTC
+# offset for America/Vancouver is not a constant (it moves by an hour across the
+# DST transitions, and the 2024/2025 seasons plus their shoulder months straddle
+# both). Storing a UTC pair here would bake in one offset and silently shift the
+# window on the other side of a transition -- decision 0002. The offset is
+# derived per date from zoneinfo at use time instead.
+PLANET_OVERPASS_WINDOW_START_LOCAL = time(9, 15)
+PLANET_OVERPASS_WINDOW_END_LOCAL = time(11, 45)
+
+# IANA zone name for the local times above. Source: acoustics_plan_v2 SS5.
+PLANET_OVERPASS_TZ_NAME = "America/Vancouver"
+
+# The ONE sentence describing what the PlanetScope-matched acoustic pull can and
+# cannot support, so every downstream figure/manifest imports it verbatim rather
+# than paraphrasing it (invariant 6). Source: acoustics_plan_v2 SS5 -- the
+# overpass window is ~09:15-11:45 local (see PLANET_OVERPASS_WINDOW_*_LOCAL
+# above), a roughly 10:30-local band, so this corpus can support NO diurnal
+# claim (it only ever samples one hour-band of the day) and any seasonal claim
+# is valid ONLY within that same hour-band.
+PLANET_SAMPLING_CONDITIONALITY_STATEMENT = (
+    "This corpus samples only the ~09:15-11:45 local PlanetScope overpass "
+    "window (PLANET_OVERPASS_TZ_NAME) on each date; it supports no diurnal "
+    "claim, and any seasonal comparison is valid only within that same "
+    "local-time band."
+)
+
+
+# --- B5 analysis bands (decision 0010; enforced in boatphone/features.py) ---
+# The ONE definition of every band edge B5 scores on. Do not restate a number
+# from this block in a notebook or a script (invariant 6): a band edge restated
+# in two places is a band-matching bug that produces a plausible number rather
+# than an error.
+#
+# THE FLOOR IS PHYSICAL, NOT A CHOICE. Bin 1 is 250 Hz (FFT_BIN_WIDTH_HZ) and
+# bin 0 is DC, so 250 Hz is the lowest frequency this product carries at all.
+# There is no sub-250 Hz structure to band-limit to, at any width.
+
+# The lowest frequency the product can represent: bin 1. Every band edge below
+# is checked against this, and a band reaching under it RAISES rather than being
+# silently clipped up to it -- a caller asking for 100 Hz has a wrong model of
+# the instrument, and returning the 250 Hz band instead would hide that.
+FFT_LOWEST_REPRESENTABLE_HZ: float = FFT_BIN_WIDTH_HZ  # 250.0, i.e. bin 1
+
+# PRIMARY B5 BAND -- small recreational craft, the project's target population.
+# Source: decision 0010 SS2 -- small planing hulls and outboards radiate peak
+# energy at roughly 1-10 kHz (cavitation broadband), well inside the support and
+# ABOVE the 250 Hz->2 kHz span the ~42 dB low-frequency anomaly distorts
+# (acoustics_plan_v2 SS3). This is the band the gate leads on.
+FFT_B5_SMALL_CRAFT_BAND_HZ: tuple[float, float] = (1_000.0, 10_000.0)
+
+# SECONDARY B5 BAND -- the nearest reachable proxy for the ~100 Hz band ONC
+# recommended in references/ONC_communication.txt ("many ships generate
+# significant energy around this band").
+#
+# ONC'S ~100 Hz SUGGESTION IS NOT IMPLEMENTABLE ON THIS PRODUCT, and this
+# constant is not it. 100 Hz is below FFT_LOWEST_REPRESENTABLE_HZ -- it falls
+# inside bin 0 (DC), which is structurally near-zero (decision 0014). ONC's
+# advice was sound in general and simply predates our 250 Hz bin width. Two
+# further reasons this band is secondary, not primary:
+#   (i)  decision 0010 SS2 -- the 10-100 Hz blade-rate tonals that make ~100 Hz
+#        diagnostic for LARGE ships are entirely below our floor; what survives
+#        here is the skirt of that energy, not the tonal itself;
+#   (ii) the ~42 dB unexplained low-frequency shape difference (acoustics_plan_v2
+#        SS3) sits across exactly 250 Hz -> 2 kHz, and ONC has now confirmed the
+#        fft product has filtering applied that they cannot document. Levels in
+#        this band are therefore shape-distorted by an unknown transfer function.
+# Scored anyway, and reported next to the primary band, because the CATFISH
+# (60-300 Hz discriminative at range) vs May River (discard <800 Hz as fish
+# chorusing) disagreement noted in acoustics_plan_v2 SS4 is unadjudicated, and
+# this is the band on which it gets adjudicated on our own data.
+FFT_B5_SHIP_PROXY_BAND_HZ: tuple[float, float] = (250.0, 1_000.0)
+
+# Decidecade bands are resolved only above this centre frequency. Source:
+# decision 0010 SS3 -- a decidecade band at f is ~0.23*f wide, and spanning two
+# 250 Hz bins requires f >~ 2.2 kHz. BELOW THIS, a band level is a RAW-BIN level
+# and must be labelled as such, never as a standards-compliant band level.
+# Hybrid-millidecade compliance is not claimed at any frequency (0010 SS3).
+FFT_DECIDECADE_MIN_CENTRE_HZ: float = 2_200.0
+
+# How a band level is reduced across the bins inside the band. MEDIAN OF THE
+# PRODUCT'S OWN dB-LIKE VALUES -- stated once here so a notebook and a check
+# cannot disagree. Median rather than mean because the floor censoring at 0
+# (18.7% of cells, FFT_LEVEL_FLOOR) drags a mean toward the floor by an amount
+# that moves with ambient, i.e. is confounded with the signal being detected;
+# the median is unaffected while fewer than half the in-band cells are censored,
+# and features.band_level_series REPORTS the censored fraction so that
+# precondition is checkable rather than assumed.
+#
+# NOT energy-summed. Averaging dB is not averaging power, and the difference
+# matters -- but this product's scale is uncalibrated and its dB-to-count
+# relation is unknown (references/ONC_communication.txt), so converting to
+# "power" would invent a scale we do not have. Every level from this module is
+# therefore RELATIVE and comparable only to another level computed the same way.
+FFT_BAND_LEVEL_STATISTIC: str = "median_of_product_db"
+
+
+# --- Overpass matchup window (B5 gate, B7 matchups) ------------------------
+# Half-width of the acoustic window centred on a scene's acquisition instant.
+# Source: acoustics_plan_v2 SS5 B7 -- "join each detection to its +/-15 min
+# acoustic window". Stated once here because B5's gate and B7's matchup table
+# must use the SAME window; two definitions would make the gate's result and the
+# matchup table describe different amounts of time while looking comparable.
+#
+# NOT the same quantity as PLANET_OVERPASS_WINDOW_*_LOCAL above. That pair is
+# the DAILY ACQUISITION window -- which hours of each date to pull. This is the
+# PER-SCENE ANALYSIS window around one known acquisition instant. They are
+# independent, and the first being wrong (it is -- see below) does not affect
+# this one.
+OVERPASS_MATCH_HALF_WINDOW_S: int = 15 * 60
+
+# The gate2 scene list Malachy's Planet search produced, relative to the repo
+# root. Column `acquired` is the tz-aware UTC acquisition instant and is the
+# join key to the acoustic corpus (it matches `acq_time_utc` in the optical
+# output schema at boatphone/optical.py). Named here so the gate script and its
+# checks open the SAME file.
+PLANET_GATE2_SURVIVORS_RELPATH: str = (
+    "contributor_folders/malachymcc/planet_folger/gate2_survivors.csv"
+)
+
+# MEASURED overpass spread, from the 30 scenes in the file above. RECORDED HERE
+# AS EVIDENCE, deliberately NOT yet wired into PLANET_OVERPASS_WINDOW_*_LOCAL --
+# that correction and its decision record are a separate, tracked change.
+#
+# acoustics_plan_v2 SS9 listed "PlanetScope overpasses fall 09:30-11:30 local"
+# as an ASSUMPTION and said to verify it against the first scene list. Verified
+# 2026-08-27: the scenes fall 18:17-19:49 UTC = 11:17-12:49 America/Vancouver,
+# BIMODAL (a ~18:2x cluster and a ~19:4x cluster, tracking the PS2.SD / PSB.SD
+# constellations). The assumption is FALSIFIED, and the B3 corpus -- pulled for
+# 16:15-18:45 UTC -- covers only 13 of the 30 scenes fully, 5 partially, and 12
+# not at all. Anything reading the corpus as "the overpass window" is wrong.
+PLANET_MEASURED_OVERPASS_SPREAD_UTC: tuple[str, str] = ("18:17", "19:49")
+
+
+# --- Diagnostic bands (methods brief SS1.2; used by B5 and the population pass) ---
+
+# INSTRUMENT CONTROL BAND. Sits above the calibration ceiling and below the
+# anti-alias skirt, and measures ~5 counts in EVERY season 2020-2025 (methods
+# brief SS1.4, Figure 4) -- no small vessel puts meaningful energy here, so
+# whatever moves in it is the instrument, not the ocean.
+#
+# THE NULL IT PROVIDES, which nothing else in B5 supplies: if a level change
+# appears in an analysis band AND in this band together, it is a gain or
+# instrument change; if it appears only in the analysis band, it may be the
+# ocean. Report it beside every detection. It is the one channel that can
+# falsify "the ambient got louder" as an explanation.
+#
+# Note it sits ABOVE FFT_B5_CALIBRATED_CEILING_BIN (204) and below
+# FFT_B5_RELATIVE_CEILING_BIN (408), so it is admissible for RELATIVE work only
+# -- which is all any of this is (decision 0027).
+FFT_CONTROL_BAND_HZ: tuple[float, float] = (51_250.0, 102_000.0)
+
+# RAIN SIGNATURE BAND. Rainfall on the sea surface radiates a broad peak at
+# roughly 13-25 kHz, well above the 1-10 kHz cavitation peak of small craft.
+#
+# WHY THIS MATTERS HERE SPECIFICALLY: there are no vessel labels yet (decision
+# 0027), so the detector's false-positive class is unconstrained, and weather is
+# the largest member of it -- rain is broadband, transient on the right
+# timescale, and would satisfy the excess-over-ambient AND minimum-duration
+# rules that define an event. The ratio of energy in this band to the
+# small-craft band separates the two: a vessel peaks below it, rain peaks in it.
+# This is a DISCRIMINATOR, not a detector, and it does not need a label to be
+# useful.
+FFT_RAIN_BAND_HZ: tuple[float, float] = (13_000.0, 25_000.0)
+
+# The control band's expected AMBIENT level, in counts. Measured ~5 in every
+# season 2020-2025 (methods brief SS1.4) and confirmed at 5-6 on both windows
+# scored here so far.
+#
+# THE DISTINCTION THAT MAKES THIS USABLE, and getting it wrong flags real
+# detections as faults: it is the control band's BASELINE that is the instrument
+# reference, not its PEAK. A baseline far from this value means the instrument
+# or its gain moved. A PEAK excursion during a close vessel pass is ordinary
+# physics -- a boat at closest approach radiates broadband energy that reaches
+# well above 51 kHz -- and reading that as an instrument fault would veto the
+# strongest true detections in the corpus. The brief's "no small vessel puts
+# energy here" was measured on seasonal MEDIANS, and does not transfer to the
+# peak of a near-field pass.
+FFT_CONTROL_BAND_EXPECTED_COUNTS: float = 5.0
+
+# How far the control band's baseline may sit from the expected value before the
+# instrument is suspected. Deliberately loose: this is a "something changed"
+# alarm, not a measurement, and a tight bound on an uncalibrated integer scale
+# would fire on ordinary seasonal variation.
+FFT_CONTROL_BAND_DRIFT_TOLERANCE_COUNTS: float = 5.0
+
+# THE UNIT. The product's levels are small integers on an unknown, possibly
+# non-linear, monotone transform of power (references/ONC_communication.txt;
+# methods brief SS0a). The matched WAV<->product pair measures roughly 0.52
+# COUNTS PER dB with r^2 ~ 0.55 and visible curvature, so:
+#
+#   * a level difference in this product is NOT a difference in decibels;
+#   * "+10" is about +20 dB physical, not +10 dB, and the factor is not fixed;
+#   * every threshold, axis label and caption must say COUNTS.
+#
+# Named here so no module invents a second word for it. The earlier
+# "product dB" wording overstated a physical quantity by roughly a factor of two
+# and is corrected wherever it appeared.
+FFT_LEVEL_UNIT: str = "product counts (uncalibrated; NOT decibels)"
