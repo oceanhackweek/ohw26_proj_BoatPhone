@@ -10,6 +10,79 @@ related:
   - 0027-fft-product-is-viable-for-b5-band-level-detection.md
 ---
 
+# AMENDMENT 2026-08-28 -- a duplication bug moved every number here
+
+**A bug found after this record was first written changed all of its figures.**
+The top-up pull was re-run for all 30 scenes and re-fetched windows the bulk
+corpus already held, into a second directory. `corpus_file_index` deduplicates
+WITHIN a container, and callers concatenated two of its results -- so **17 of 29
+labelled overpasses had every file present twice**.
+
+Duplicated timestamps do not merely double-count: they HALVE the real-time span
+of any fixed-frame kernel. The 45 s smooth became 22.5 s and the 180 s minimum
+separation became 90 s, **on 17 of 29 windows and not the other 12** -- a
+silently inconsistent estimator, not a biased one. Fixed by
+`overpasses.analysis_file_index()`, which dedupes across containers; 98
+duplicates dropped.
+
+Corrected figures at +/-15 min, deduplicated:
+
+| estimator | predicted | ratio | within +/-1 | r | r_partial |
+|---|---|---|---|---|---|
+| `peak_prominence` (prom = T/2) | 48 | 1.09 | 90% | +0.611 | +0.609 |
+| **`estimate_vessel_count` (prom = T)** | **40** | **0.91** | **90%** | **+0.590** | **+0.581** |
+| band-split union (post-hoc, below) | 43 | 0.98 | 86% | +0.603 | -- |
+| merged events, 10 s | 55 | 1.25 | 66% | +0.477 | +0.463 |
+| presence only | 24 | 0.55 | 72% | +0.262 | +0.230 |
+
+The two pre-declared peak variants are now a TIE (|ratio-1| = 0.09 either way,
+both 90% within +/-1). Production stays on the stricter one rather than churning
+for a coin-flip.
+
+## The loudness worry is CLEARED
+
+This record originally warned that part of the correlation was a loudness effect,
+because the frame-shuffled count still correlated +0.38 with the manual count.
+That was the wrong diagnostic: a frame shuffle preserves each window's level
+DISTRIBUTION, so it cannot probe skill arising from BETWEEN-window level
+differences. The right test is partial correlation against window median level.
+
+**`r_partial` = +0.581 against `r` = +0.590.** Removing the linear effect of
+window loudness costs 0.009 of correlation. The estimator is not reading
+loudness. (Diagnostic suggested by a Fable methods consult, 2026-08-28.)
+
+## Concurrent vessels: diagnosed, partially fixed, NOT adopted
+
+The two remaining misses were both concurrency failures, exactly as predicted:
+two or more vessels present at once are ONE peak in a single band level, by
+construction.
+
+* `20240801_1928` -- 4 counted, 1 predicted. Measured: 1-4 kHz has **three**
+  peaks (-6.8, -1.0, +6.0 min) and 4-10 kHz has **two** (-10.2, +5.9 min), but
+  the 1-10 kHz median smears them into one.
+* `20250630_1938` -- 2 counted, 0 predicted. Same shape.
+
+A band-split union (peaks counted per sub-band, deduplicated in time at 120 s,
+bands qualifying only if their whitened range exceeds 5 counts) recovers **4 and
+2 exactly** and scores ratio 0.98, r = +0.603. It is **NOT adopted**: its four
+parameters were chosen from a post-hoc sweep of 36 configurations, which is
+precisely the fitting this record's pre-declaration exists to avoid, and it does
+not beat the pre-declared estimator on MAE or within-1. It is the strongest
+candidate for the next labelled batch to arbitrate.
+
+**A negative result worth keeping:** 2-band and 4-band splits give IDENTICAL
+numbers across every configuration tested, because the 10-25 and 25-51 kHz bands
+never pass the qualification gate -- measured whitened range 1.6 and 0.9 counts
+on the 4-vessel window. Absorption-driven spectral separation by range, the
+mechanism that would let high bands distinguish a near vessel from a far one,
+**does not operate at the ranges in this data**. Only the 1-4 / 4-10 kHz split
+carries information.
+
+Also closed by the same consult: **DEMON / envelope demodulation of blade rate is
+not merely hard here, it is impossible.** The 0.25 s frame gives a 4 Hz envelope
+sampling rate and so a 2 Hz Nyquist, against blade rates of 50-150 Hz. Do not
+spend time on it.
+
 # Context
 
 `find_events` counts runs above an excess-over-ambient threshold. A vessel's

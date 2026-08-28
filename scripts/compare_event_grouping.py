@@ -44,7 +44,7 @@ from scipy import signal as _sig
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from boatphone import config, features
+from boatphone import config, features, fft_io
 from boatphone import overpasses as ov
 from boatphone import paths
 
@@ -193,6 +193,157 @@ def m_any_elevation(t, level, fs):
     return 1 if m_elevated_periods(t, level, fs) > 0 else 0
 
 
+# --- multi-band concurrency (Fable consult, 2026-08-28) ---------------------
+#
+# Disjoint bands, log-spaced across the usable range. A vessel's spectrum
+# depends on its RANGE -- absorption above ~20 kHz is ~5-8 dB/km against
+# ~0.3 dB/km at 5 kHz -- so a near vessel lights the high bands and a far one
+# does not. Two concurrent vessels therefore rarely share both a CPA time AND a
+# band profile, which is the information a single band level throws away.
+CONCURRENCY_BANDS_HZ = ((1_000.0, 4_000.0), (4_000.0, 10_000.0),
+                        (10_000.0, 25_000.0), (25_000.0, 51_000.0))
+# Peaks in different bands within this of each other are the same passage.
+CROSS_BAND_MERGE_S = 60.0
+# Band-profile similarity above which two coincident peaks are ONE vessel.
+PROFILE_COSINE_SAME = 0.95
+
+
+def _band_series(levels, freq_hz, band_hz):
+    """Whitened band level: each bin minus its own window median, then averaged.
+
+    Whitening per bin before averaging is what makes bands comparable to each
+    other. Without it the average is dominated by whichever bins happen to sit
+    highest on the product's uncalibrated, curved count scale, and a "band
+    profile" would describe the instrument rather than the source.
+    """
+    sel = (freq_hz >= band_hz[0]) & (freq_hz < band_hz[1])
+    if not sel.any():
+        return None
+    seg = np.asarray(levels[:, sel], dtype=float)
+    return (seg - np.median(seg, axis=0, keepdims=True)).mean(axis=1)
+
+
+def concurrency_count(levels, freq_hz, t_utc_s, frame_seconds):
+    """Count vessels as peak CLUSTERS across disjoint bands.
+
+    Peaks are found independently per band, then merged into one vessel when
+    they coincide in time AND their band-prominence profiles are similar. Two
+    peaks at the same instant with DISSIMILAR profiles are two vessels at
+    different ranges -- the case a single band level cannot see at all.
+    """
+    profiles, peaks_t, peaks_p = [], [], []
+    series = []
+    for band in CONCURRENCY_BANDS_HZ:
+        x = _band_series(levels, freq_hz, band)
+        if x is None:
+            continue
+        series.append(_smooth(x, SLOPE_SMOOTH_S, frame_seconds))
+    if not series:
+        return 0
+    for bi, sm in enumerate(series):
+        # Whitened series sit near 0; prominence is in the same counts units as
+        # the raw threshold because whitening is a per-bin offset, not a scale.
+        pk, props = _sig.find_peaks(
+            sm, prominence=run_b5_gate.EVENT_EXCESS_THRESHOLD_COUNTS / 2.0,
+            distance=max(1, int(round(MIN_SEPARATION_S / frame_seconds))))
+        for i, idx in enumerate(pk):
+            peaks_t.append(t_utc_s[idx])
+            peaks_p.append(props["prominences"][i])
+            profiles.append([float(s_[idx]) for s_ in series])
+    if not peaks_t:
+        return 0
+    order = np.argsort(peaks_t)
+    clusters = []
+    for i in order:
+        prof = np.asarray(profiles[i], dtype=float)
+        placed = False
+        for c in clusters:
+            if abs(peaks_t[i] - c["t"]) <= CROSS_BAND_MERGE_S:
+                a, b = prof, c["profile"]
+                denom = (np.linalg.norm(a) * np.linalg.norm(b))
+                cos = float(a @ b / denom) if denom else 0.0
+                if cos >= PROFILE_COSINE_SAME:
+                    placed = True
+                    break
+        if not placed:
+            clusters.append({"t": peaks_t[i], "profile": prof})
+    return len(clusters)
+
+
+def concurrency_split_count(levels, freq_hz, t_utc_s, frame_seconds,
+                            band_hz=None, split_gap_s=None):
+    """The validated single-band counter, SPLIT where the bands disagree in time.
+
+    `concurrency_count` above takes the UNION of every band's peaks, which is
+    structurally >= the single-band count and overcounts by ~1.8x. This instead
+    starts from the validated 1-10 kHz peak count and adds a vessel only where
+    there is positive evidence of a SECOND concurrent source: within one
+    detected peak, the four disjoint bands do not agree on when the maximum
+    occurred.
+
+    One vessel at one range drives every band to peak at the same instant --
+    absorption changes how MUCH each band rises, not WHEN. Two vessels at
+    different ranges peak at different times in different bands, because each
+    band is dominated by whichever source is louder in it. Counting distinct
+    band-peak TIMES inside one level peak therefore counts concurrent sources,
+    and reduces to the validated counter whenever the bands agree.
+    """
+    if band_hz is None:
+        band_hz = config.FFT_B5_SMALL_CRAFT_BAND_HZ
+    if split_gap_s is None:
+        split_gap_s = CROSS_BAND_MERGE_S
+    sel = (freq_hz >= band_hz[0]) & (freq_hz <= band_hz[1])
+    base_level = np.median(np.asarray(levels[:, sel], dtype=float), axis=1)
+    base_n = run_b5_gate.estimate_vessel_count(t_utc_s, base_level,
+                                               frame_seconds=frame_seconds)
+    if base_n == 0:
+        return 0
+
+    smooth = _smooth(base_level, SLOPE_SMOOTH_S, frame_seconds)
+    baseline = features.ambient_baseline_counts(base_level)
+    peaks, _ = _sig.find_peaks(
+        smooth,
+        height=baseline + run_b5_gate.EVENT_EXCESS_THRESHOLD_COUNTS,
+        prominence=run_b5_gate.EVENT_EXCESS_THRESHOLD_COUNTS,
+        distance=max(1, int(round(MIN_SEPARATION_S / frame_seconds))))
+
+    band_series = []
+    for band in CONCURRENCY_BANDS_HZ:
+        x = _band_series(levels, freq_hz, band)
+        if x is not None:
+            band_series.append(_smooth(x, SLOPE_SMOOTH_S, frame_seconds))
+    if len(band_series) < 2:
+        return base_n
+
+    half = int(round((MIN_SEPARATION_S / 2.0) / frame_seconds))
+    total = 0
+    for pk in peaks:
+        lo, hi = max(0, pk - half), min(len(t_utc_s), pk + half + 1)
+        if hi - lo < 3:
+            total += 1
+            continue
+        # When did each band peak inside this event?
+        times = []
+        for bs in band_series:
+            seg = bs[lo:hi]
+            # Only a band that actually RISES here votes: a flat band's argmax
+            # is noise and would split events at random.
+            if float(seg.max() - np.median(seg)) < \
+                    run_b5_gate.EVENT_EXCESS_THRESHOLD_COUNTS / 2.0:
+                continue
+            times.append(float(t_utc_s[lo + int(np.argmax(seg))]))
+        if not times:
+            total += 1
+            continue
+        times.sort()
+        clusters = 1
+        for a, b in zip(times, times[1:]):
+            if (b - a) > split_gap_s:
+                clusters += 1
+        total += clusters
+    return max(base_n, total)
+
+
 METHODS = {
     "raw_events": m_raw_events,
     "merged_10s": m_merged_10s,
@@ -217,10 +368,8 @@ def main(argv=None):
 
     manual, _src = bet.load_manual_vessel_counts()
     overpass_list = ov.load_gate2_overpasses()
-    index = ov.corpus_file_index()
-    if paths.ONC_LABELLED_WINDOW_DIR.is_dir():
-        index = sorted(index + ov.corpus_file_index(paths.ONC_LABELLED_WINDOW_DIR),
-                       key=lambda r: r[0])
+    index, n_dup = ov.analysis_file_index()
+    print(f"{len(index):,} windows indexed ({n_dup} cross-container duplicates dropped)")
 
     # ONE ROW PER LABELLED INSTANT. The 20210616 label covers two adjacent
     # frames; scoring both would weight that overpass twice.
@@ -254,6 +403,58 @@ def main(argv=None):
         for name, fn in METHODS.items():
             pred = [fn(s[0], s[1], fs) if s is not None else None for s in series]
             results[(half_s, name)] = pred
+        # The concurrency method needs the full time-frequency surface, not the
+        # band-reduced series, so it is evaluated on its own pass.
+        conc, surfaces = [], []
+        for op in targets:
+            cov = ov.window_coverage(op, index, half_window_s=half_s)
+            if not cov.n_files:
+                conc.append(None)
+                surfaces.append(None)
+                continue
+            prods = [fft_io.read_fft_gz(pp) for pp in sorted(cov.paths)]
+            lv = np.vstack([pr.levels_db for pr in prods])
+            tt = np.concatenate([pr.t_utc_s for pr in prods])
+            o_ = np.argsort(tt)
+            lv, tt = lv[o_], tt[o_]
+            lo, hi = op.window_utc(half_s)
+            k = (tt >= lo.timestamp()) & (tt <= hi.timestamp())
+            surfaces.append((lv[k], prods[0].freq_hz, tt[k]))
+            conc.append(concurrency_count(lv[k], prods[0].freq_hz, tt[k], fs))
+        results[(half_s, "multiband_concurrency")] = conc
+        split = []
+        for op, srf in zip(targets, surfaces):
+            split.append(None if srf is None else
+                         concurrency_split_count(srf[0], srf[1], srf[2], fs))
+        results[(half_s, "concurrency_split")] = split
+
+    # Fable consult 2026-08-28: the frame-shuffle null preserves each window's
+    # LEVEL DISTRIBUTION, so it cannot detect skill that comes from between-window
+    # loudness differences -- which is where the residual r = +0.38 actually
+    # lives. Partial correlation against window median level is the diagnostic
+    # that can. A method that beats another on r but not on r_partial has learned
+    # nothing new about source COUNT.
+    window_level = []
+    for op in targets:
+        cov = ov.window_coverage(op, index)
+        w = run_b5_gate.concat_window(cov.paths, band_hz)
+        lo, hi = op.window_utc()
+        k = (w["t_utc_s"] >= lo.timestamp()) & (w["t_utc_s"] <= hi.timestamp())
+        window_level.append(float(np.median(w["level_counts"][k])))
+
+    def _partial_r(pred, truth_, ctrl):
+        """corr(pred, truth) with the linear effect of `ctrl` removed from both."""
+        pr, tr, cv = (np.asarray(v, dtype=float) for v in (pred, truth_, ctrl))
+        if len(set(pr)) <= 1 or len(set(tr)) <= 1:
+            return float("nan")
+        def resid(y):
+            A = np.vstack([cv, np.ones_like(cv)]).T
+            coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+            return y - A @ coef
+        rp, rt = resid(pr), resid(tr)
+        if rp.std() == 0 or rt.std() == 0:
+            return float("nan")
+        return float(np.corrcoef(rp, rt)[0, 1])
 
     def score(pred):
         pairs = [(p, m) for p, m in zip(pred, truth) if p is not None]
@@ -268,25 +469,30 @@ def main(argv=None):
         # "Within 70% of the validation numbers": the predicted TOTAL relative to
         # the counted total. 1.00 is exact; >1 overcounts, <1 undercounts.
         ratio = total_p / total_m if total_m else float("nan")
+        ctrl = [c for c, q in zip(window_level, pred) if q is not None]
+        r_part = _partial_r(p_, m_, ctrl)
         return {"total_pred": total_p, "total_manual": total_m, "ratio": ratio,
-                "mae": mae, "within_1": within1, "r": r, "n": len(p_)}
+                "mae": mae, "within_1": within1, "r": r, "r_partial": r_part,
+                "n": len(p_)}
 
     print(f"\nmanual total = {sum(truth)} vessels over {len(truth)} instants "
           f"(mean {np.mean(truth):.2f}/window)\n")
     header = (f"{'half-window':>11} {'method':<24} {'pred':>5} {'ratio':>6} "
-              f"{'MAE':>5} {'<=1':>5} {'r':>7}")
+              f"{'MAE':>5} {'<=1':>5} {'r':>7} {'r_part':>7}")
     print(header)
     print("-" * len(header))
     table = []
     for half_s in HALF_WINDOWS_S:
-        for name in METHODS:
+        for name in list(METHODS) + ["multiband_concurrency",
+                                     "concurrency_split"]:
             sc = score(results[(half_s, name)])
             if sc is None:
                 continue
             table.append(dict(half_window_s=half_s, method=name, **sc))
             print(f"{half_s // 60:>9} min {name:<24} {sc['total_pred']:>5} "
                   f"{sc['ratio']:>6.2f} {sc['mae']:>5.2f} "
-                  f"{sc['within_1']:>5.0%} {sc['r']:>+7.3f}")
+                  f"{sc['within_1']:>5.0%} {sc['r']:>+7.3f} "
+                  f"{sc['r_partial']:>+7.3f}")
 
     # The stated stopping rule: predicted total within 70% of the counted total,
     # i.e. |ratio - 1| <= 0.30. Reported for every method, not just the winner.
