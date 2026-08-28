@@ -1397,3 +1397,50 @@ EYEBALL CHECK, PARTIAL, AND SAYING SO: I inspected chips for 2 of the 26 scenes 
 Every box contained a compact bright object in open water away from shoreline. That is
 encouraging and it is NOT the section 8 census -- 17 of the 26 scenes have had no box-level human
 pass at all, and a count that matches can still be the wrong object. The census remains open.
+
+
+Malachy (Aug 28) -- THE BOX-LEVEL CENSUS, AGENT PASS: 24 OF 41 DETECTIONS ARE CLEARLY A VESSEL,
+3 ARE NOT, AND THE "41 vs 42" HEADLINE IS A CANCELLATION, NOT AN ACCURACY.
+
+TOOLING, both committed and both reproducible:
+    scripts/census_chips.py   one 5-panel row per detection (TOA 300 m | SR 300 m | NIR 300 m |
+                              TOA 75 m @20x | NIR 75 m @20x) -> data/derived/census/<scene>.png
+                              plus census_index.csv with EMPTY verdict/note columns
+    scripts/census_misses.py  the same panels for the boxes the AGREEMENT RULE discarded, read
+                              from the sweep_cache box cache so it costs no inference
+
+THE NUMBER THAT MATTERS AND WAS NOT VISIBLE BEFORE. Per scene against the human counts: 12 surplus
+detections and 13 missed vessels, which nearly cancel into "41 vs 42". Exact on 8 of 26 scenes.
+The total-count agreement is arithmetic, not accuracy, and nobody joining on it should read 97.6%
+as a precision or a recall figure.
+
+MY VERDICTS over all 41 boxes (data/derived/census/census_agent_review.csv):
+    vessel         24    compact bright core in TOA, SR and NIR, in open water
+    likely_vessel   9    same but weakened by quantised NIR, a nearby cloud, or a scene edge
+    ambiguous       5    an object is there but diffuse or offset from the box
+    not_vessel      3    det_index 3 (dark at the box, 400 m off a headland), 25 (hazy scene,
+                         no object at all), 35 (empty box 90 m from the real object, det 38)
+So 33 of 41 survive as a vessel or probably one. THIS IS AN AGENT PASS, NOT THE HUMAN CENSUS the
+plan asks for -- it narrows that job to the 8 non-"vessel" rows rather than replacing it.
+
+TWO THINGS THE CHIPS SHOW THAT THE COUNTS COULD NOT.
+(1) THE TRUTH SET LOOKS LIKE IT UNDER-COUNTS. 20230714 and 20220725 are recorded as 0 vessels and
+both carry compact bright objects at 3-7x water NIR that are plainly visible at 20x. If the
+eyeball pass was done on downscaled previews, a 2-3 px hull is not resolvable, and then the thing
+we calibrated AGAINST has the same small-vessel blind spot we are trying to measure. Worth Neve
+and Isaac re-checking those two scenes at native resolution before anyone trusts the 42.
+(2) THE HIGHEST-LEVERAGE DETECTION IS THE WEAKEST. det_index 17 is the closest box in the whole
+set (0.975 km, 20220625) and it is the weakest -- 1.4x water NIR, diffuse, ~2.5 px off the box.
+It sets r_nearest_km for that scene, so an r^-k fit is more sensitive to that one box than to any
+other. Isaac: treat it as suspect.
+
+A NEGATIVE RESULT, MEASURED, SO NOBODY CHASES IT. I thought the NIR blob sat systematically up and
+right of the TOA box and wondered about inter-band timing on a moving hull. It does not. Over all
+41 detections the visible-to-NIR peak offset is a median 0.52 px (1.6 m), and it is IDENTICAL
+band-to-band within the SR product and product-to-product TOA-to-SR (0.50 px). So there is no
+TOA/SR georeferencing shift and no usable band parallax at this GSD; what I was seeing is the box
+being loose around a 2-3 px core. nir_peak is being sampled off the right pixels.
+
+STILL OPEN. The misses half is generated but NOT reviewed: data/derived/census/misses/ holds 37
+discarded single-asset boxes over the 10 shortfall scenes (16 more not shown, --top 4). Reviewing
+those is what would say whether the agreement rule is costing real vessels or working as intended.
