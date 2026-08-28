@@ -612,6 +612,46 @@ STILL THE FASTEST THING YOU COULD SEND ME: the `visual` clip for 20200730_192942
 acquisition, both renderings, so section 5.4 runs on one file rather than on the whole batch.
 
 
+Malachy (Aug 27, night) -- ISAAC AND NEVE: ALL 26 SCENES ARE ON THE HUB, IN ALL THREE RENDERINGS.
+
+    /home/jovyan/shared-public/boatphone_shared/planet_folger/downloads/
+
+2.8 GB, 216 files, copied and verified byte-for-byte against my copy. It sits next to the single
+20200730 SR scene already in boatphone_shared/, which it supersedes -- that one was a one-file
+stopgap. There is a README.md one level up in planet_folger/ carrying the caveats below, so they
+travel with the data rather than only living here.
+
+    folger_202608_toa/      ortho_analytic_4b       *_3B_AnalyticMS_clip.tif       26 scenes, 1.6 GB
+    folger_202608/          ortho_analytic_4b_sr    *_3B_AnalyticMS_SR_clip.tif    26 scenes, 1.2 GB
+    folger_202608_visual/   visual                  *_3B_Visual_clip.tif            2 scenes,  43 MB
+
+TOA and SR cover exactly the same 26 scene ids -- I checked the set difference both directions and
+it is empty, so a TOA/SR comparison is a controlled one. Each analytic scene ships four files: the
+raster, the udm2 usable-data mask, the AnalyticMS XML, and the metadata JSON. Planet's own
+<order-uuid>/PSScene/ layout is preserved with the order manifest.json alongside, so every file
+stays traceable to the order that produced it.
+
+NEVE: THE `visual` CLIP YOU ASKED FOR IS IN THERE -- 20200730_192942_71_1059_3B_Visual_clip.tif,
+same acquisition as the analytic, so your section 5.4 runs on one file as you wanted. The bundle
+also carries 20250630_193824_56_24db; I ordered visual for two scenes, not the batch, because 43 MB
+of it answers the question and 26 scenes of it would not answer it any better.
+
+USE TOA, NOT SR, AND THE REASON IS IN THE PRODUCT NAMES. ortho_analytic_4b is TOA RADIANCE in DN,
+not reflectance; the TCI recipe assumes reflectance x 10000, so applying it to radiance saturates
+the scene (water at DN 236 of 255) and the detections mean nothing. The per-band
+<ps:reflectanceCoefficient> in the scene XML is what converts it. ortho_analytic_4b_sr needs no
+coefficient because it already IS reflectance x 10000. It is silent either way -- you get a picture
+from both -- which is why export_detections.py now resolves it from the filename with
+--radiometry auto, raises instead of guessing when the XML is missing, and stamps the mode into a
+`radiometry` provenance column on every row. Two runs that disagree can now be told apart.
+
+ONE THING TO KNOW BEFORE YOU PUT ANYTHING ELSE THERE: shared-public is visible to EVERY user on
+this hub, not just the three of us. All accounts appear as the same uid, so there is no per-user
+permission available -- I could not have restricted it to you two even if I wanted to. This is
+licensed Planet imagery: fine inside the hackweek, not to be republished. Keep derived products in
+your own space; treat that folder as read-only.
+
+
 Next Steps:
 
 Divy out tasks and claim here
