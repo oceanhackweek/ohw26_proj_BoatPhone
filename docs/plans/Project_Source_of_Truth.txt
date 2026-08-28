@@ -685,3 +685,79 @@ For the record, the per-scene counts on 20200730 across everything we have shipp
     review_queue                    2
     my Detector A, slice 320        4   (17 at slice 640; do not build on the 4)
 None of these is recall. Section 6.2 still governs and the section 8 census is still the gate.
+
+
+Neve (Aug 28) -- WHY DETECTOR B OVER-PREDICTS: THE GAUSSIAN PREMISE IS FALSE OVER WATER.
+
+Malachy asked for the mechanism behind 32,877 detections / ~1,265 per scene. It is not tuning and
+it is not a bad threshold value. robust_threshold (optical.py:629-654) sets thr = median + N*sigma
+with sigma = MAD_TO_SIGMA * MAD, and MAD_TO_SIGMA = 1.4826 is the GAUSSIAN consistency constant --
+it converts MAD to sigma only if the data are Gaussian. Ocean NIR is not, and not by a little.
+
+MEASURED on 20200730 (the only scene on the hub), 10.83 M water px through the real water mask,
+median 0.01740, MAD-sigma 0.003855:
+
+     N   threshold    px above    observed frac   Gaussian frac    ratio
+     3     0.02896     107,586       9.93e-03        1.35e-03           7x
+     4     0.03282      37,171       3.43e-03        3.17e-05         108x
+     5     0.03667      19,971       1.84e-03        2.87e-07       6,424x
+     6     0.04053      14,128       1.30e-03        9.87e-10   1,321,401x
+     8     0.04824       9,530       8.80e-04        6.22e-16        1.4e12x
+    10     0.05595       7,450       6.88e-04        7.62e-24        9.0e19x
+
+At the N=6 this batch ran, a Gaussian predicts 0.01 PIXELS IN THE WHOLE SCENE. There are 14,128.
+
+THE TAIL BARELY DECAYS, WHICH IS THE PART THAT MATTERS. 6 sigma -> 10 sigma only HALVES the count
+(14,128 -> 7,450); a Gaussian would drop it fourteen orders of magnitude. So N is very nearly a
+dead knob: the detector's only tuning parameter is close to disconnected from its output. That is
+the mechanism behind Malachy's "the mass piles up at the cut with no natural break", and it means
+the section 8 N-sweep as currently framed CANNOT converge on a clean value, because there is no
+value to find. Sweeping N harder is not the fix.
+
+MY SELF-TEST DID NOT CATCH THIS AND COULD NOT HAVE. My "N=6 removes all of them while still
+recovering every planted vessel down to 6 m" figure came from the SYNTHETIC fixture in
+scripts/optical_selftest.py. Synthetic noise is Gaussian, so the fixture satisfies exactly the
+assumption the ocean breaks. 44/44 still passes and the code is still correct against its spec;
+the spec is what is wrong. Recording this as the general lesson: a synthetic fixture validates
+the implementation, never the distributional assumption underneath it. Invariant 9's cousin.
+
+min_px = 2 IS WHAT TURNS THAT TAIL INTO "VESSELS". BLOB_MIN_PIXELS = 2 (optical.py:268). Of the
+32,877 rows: 46% are EXACTLY 2 px (15,269), 72% are <= 4 px. At 3 m GSD a 2 px blob is 6.0 m,
+which is both the minimum length in the file and its p25. Two adjacent pixels among ~14,000
+scattered over 10.8 M is a coincidence that happens constantly. A 2 px blob also has no shape, so
+its minAreaRect length and aspect are artefacts -- hence the spikes at exactly 6.0 m and aspect
+2.0. Across the 26 scenes this is measurably the driver: r = +0.86 between log10(n_detections)
+and the fraction of blobs <= 4 px.
+
+WHAT I EXPECTED AND WAS WRONG ABOUT: SUN GLINT. glint_angle vs log10(n_detections) is r = +0.12
+across the 26 scenes -- no relationship. sun_elevation is -0.25. Posting the negative result so
+nobody re-runs it. Counts swing 258x (32 to 8,257) over the same 100 km2 with every scene >= 98%
+clear, so something scene-state dependent drives it, but the acquisition-geometry columns in the
+manifest do not capture it. Consistent reading: the threshold is SCENE-RELATIVE, MAD measures the
+water's core texture, and the heavy tail does not scale with it -- so on a scene whose core is
+quiet, sigma shrinks, the threshold slides toward the median, and the tail floods through.
+Sensitivity is set by sea-surface texture, not by anything about boats. Supporting: r = -0.56 for
+median nir_snr, and r = -0.82 for the fraction of detections in multi-year cells, i.e. the runaway
+scenes are NOT rocks, they are fresh per-scene noise.
+
+THE STRUCTURAL PART, AND IT IS BIGGER THAN A TUNING PROBLEM. A 6 m boat is 2 px at PlanetScope
+3 m; a 12 m boat is ~4 px. The FAO 0-12 m class -- the class goal 2 and the no-AIS framing care
+MOST about -- sits at or below the resolution limit. So min_px cannot simply be raised to kill the
+noise without deleting the target class, and no shape test (aspect, compactness, orientation) is
+available at 2-4 px either. This deserves a decision record and a sentence in section 13: for the
+smallest FAO class, PlanetScope may support DETECTION-BY-PERSISTENCE-ABSENCE but not per-scene
+per-object detection. That is a claim about the sensor, not about our code.
+
+WHAT SURVIVES, AND WHAT I SUGGEST. The persistence filter is the one thing here that is
+principled -- it makes no distributional assumption at all, which is exactly why it is the piece
+worth building on. Two concrete suggestions, neither implemented, both Malachy's call since it is
+his script: (1) replace the sigma-multiple threshold with an EMPIRICAL-QUANTILE threshold
+calibrated to a target false-alarm count per scene, which does not care what the distribution is;
+(2) report per-scene threshold, water median, sigma and candidate_px into scenes.csv --
+detect_nir_blobs already returns all four (optical.py:750-751) and detections.csv drops them, so
+today we cannot tell a quiet-water scene from a noisy one after the fact.
+
+REPRODUCING THE TABLE, ~30 s on the hub, needs only the one scene in data/raw/:
+    w, rep = optical.water_mask(green, nir, valid, None, res_m)
+    v = nir[w]; med = np.median(v); sig = 1.4826 * np.median(np.abs(v - med))
+    for N in (3,4,5,6,8,10): print(N, int((v > med + N*sig).sum()))
