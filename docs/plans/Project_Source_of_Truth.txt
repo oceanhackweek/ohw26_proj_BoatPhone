@@ -977,6 +977,70 @@ STILL THE FASTEST THING YOU COULD SEND ME: the `visual` clip for 20200730_192942
 acquisition, both renderings, so section 5.4 runs on one file rather than on the whole batch.
 
 
+================================================================================
+2026-08-28 (Isaac) -- BRANCH IS GREEN, AND WE CAN COUNT VESSELS
+================================================================================
+
+BRANCH GREEN: 183 passed, 0 failed, 4 skipped, 0 not run. check_b3c_12 was a
+BROKEN CHECK, not a broken library -- it asserted path.exists() AFTER its
+TemporaryDirectory had closed, so it could never pass. 1937b6e's diagnosis (the
+library records a pre-compression name) is WITHDRAWN; the seam is correct and the
+real 26,666-row manifest has 0 rows whose path is missing. "Fixing" the library
+would have been a regression that also invalidated the corpus's provenance.
+
+TIMESTAMP GATE: PASSES, no re-download needed.
+  PlanetScope -- scene_id filename time == the 'acquired' column, 30/30 scenes,
+    0 mismatches beyond 1.5 s, all +00:00.
+  ONC -- frame t0 == the filename time exactly; 1200 frames x 0.25 s = 300.0 s;
+    consecutive files tile at exactly 300 s with zero gap; measured step 0.2500 s.
+  Both sides UTC and mutually consistent. The frame-rate assumption holds against
+  the filenames.
+
+VESSEL COUNTING WORKS NOW. Decision 0031. The old estimator counted THRESHOLD
+EXCURSIONS; a vessel's level fluctuates so one passage opened many. Replaced with
+PROMINENT PEAKS of the 45 s-smoothed band level: a passage rises to closest
+approach and falls once, so it gives one peak however much it wobbles.
+Prominence -- standing a full threshold above the SURROUNDINGS, not the baseline
+-- is what separates one wobbling vessel from two.
+
+  estimator                 predicted   ratio   within+/-1        r
+  estimate_vessel_count            42    0.95   27/29 (93%)   +0.613
+  merged events (10 s)             58    1.32          59%    +0.341
+  raw events                      119    2.70          48%    +0.362
+  presence only                    24    0.55          72%    +0.262
+
+  against 44 vessels over 29 labelled instants. REPLICATES on the disjoint
+  ship_proxy band: ratio 1.07, r = +0.598.
+
+Chosen from a PRE-DECLARED field of 8 estimators x 4 window widths, all 32
+reported (scripts/compare_event_grouping.py). At n=29 that is the only defence
+against picking a winner by its score, and it is a weak one. PROOF OF CONCEPT,
+NOT A VALIDATED MODEL.
+
+THE WINDOW STAYS AT +/-15 MIN. Shorter is worse, tested: at +/-5 min the best
+ratio is 0.43 and the estimator badly undercounts. Boats audible in the window
+are not all within 5 minutes of the overpass.
+
+A REAL BUG FOUND WHILE WIRING IT IN: concat_window returns whole 5-minute FILES,
+so a 1800 s window arrived as up to 2100 s and every statistic was computed over
+~17% more time than its label claimed. build_events_table now CLIPS to the window
+and prints the dropped frame count. Unclipped the estimator reads 51 not 42.
+
+WHAT IS STILL NOT ESTABLISHED, and do not let the r = +0.61 obscure it:
+  - The TIME-SHIFT NULL STILL DOES NOT COLLAPSE: 37 an hour away against 42 at
+    the overpass. We count passages well; we have NOT shown they are the
+    overpass's vessels. Decision 0030 stands.
+  - The FRAME-SHUFFLED count still correlates r = +0.38 with the manual count
+    even though shuffling collapses the count from 42 to 9. Part of +0.61 is a
+    LOUDNESS effect surviving destroyed time order, not passage structure.
+  - Two vessels within 180 s count as one, by construction.
+  - Two misses unexplained: 20240801_1928 (4 counted -> 1) and 20250630_1938
+    (2 -> 0).
+
+NEXT: more labels. 29 instants with 6 negatives cannot separate a real estimator
+from a lucky one. If the ratio moves far from 1.0 on a second labelled batch,
+this was fitted rather than measured.
+
 Next Steps:
 
 Divy out tasks and claim here

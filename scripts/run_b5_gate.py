@@ -55,6 +55,8 @@ import numpy as np
 # boatphone/ library. Same idiom as the other scripts here.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
+from scipy import signal as scipy_signal
+
 from boatphone import config, features, fft_io
 from boatphone import overpasses as ov
 
@@ -217,6 +219,67 @@ def merge_events(events, *, max_gap_s=EVENT_MERGE_GAP_S):
     for ev in out:
         ev.setdefault("n_fragments", 1)
     return out
+
+
+# --- Vessel-count estimator (decision 0031) ---------------------------------
+#
+# Smoothing applied before peak-picking, seconds. Levels are integer-quantised,
+# so an unsmoothed trace differentiated over 0.25 s steps is quantisation noise.
+# Matches build_review_set.SLOPE_SMOOTHING_SECONDS.
+VESSEL_COUNT_SMOOTH_S = 45.0
+# Two passages closer together than this are not separable on a single
+# hydrophone's level trace and count as one. Generous on purpose: the failure
+# this estimator exists to fix is OVERcounting.
+VESSEL_COUNT_MIN_SEPARATION_S = 180.0
+
+
+def estimate_vessel_count(t_utc_s, level_counts, *, frame_seconds=None):
+    """Count PASSAGES, not threshold excursions. The B5 vessel-count estimator.
+
+    `find_events` counts runs above a threshold, and a vessel's level fluctuates,
+    so one passage opens many runs -- 298 raw events against 44 vessels counted
+    by eye. This counts prominent local maxima of the smoothed band level
+    instead: a passage rises to closest point of approach and falls exactly once,
+    so it contributes exactly one peak however much it wobbles on the way.
+
+    PROMINENCE, not height, is what does the work. A bump counts only if it rises
+    a full EVENT_EXCESS_THRESHOLD_COUNTS above the surrounding trace -- not
+    merely above the window baseline. That is what separates "one vessel whose
+    level wobbles" from "two vessels", and it is why this beats simple merging.
+
+    MEASURED against 29 human-counted overpasses (decision 0031): 42 predicted
+    against 44 counted, 27/29 windows within +-1, r = +0.61 -- against r = +0.20
+    for merged event counts and r = +0.26 for presence-only. Replicates
+    independently on the ship_proxy band (ratio 1.07, r = +0.60).
+
+    CHOSEN FROM A PRE-DECLARED FIELD of 8 estimators x 4 window widths
+    (`scripts/compare_event_grouping.py`), all of them reported. At n = 29 that
+    is the only available defence against picking a winner by its score, and it
+    is not a strong one: this is a proof of concept, not a validated model.
+
+    NOT a vessel identity. Two vessels within
+    VESSEL_COUNT_MIN_SEPARATION_S of each other still count as one, and the
+    time-shift null does NOT collapse (decision 0030) -- an hour-shifted window
+    yields nearly as many. This counts passages well; it does not establish that
+    they are the overpass's vessels.
+    """
+    if frame_seconds is None:
+        frame_seconds = config.FFT_FRAME_SECONDS
+    level = np.asarray(level_counts, dtype=float)
+    n = max(1, int(round(VESSEL_COUNT_SMOOTH_S / frame_seconds)))
+    if n % 2 == 0:
+        n += 1
+    if n >= len(level):
+        return 0
+    smooth = np.convolve(level, np.ones(n) / n, mode="same")
+    baseline = features.ambient_baseline_counts(level)
+    peaks, _props = scipy_signal.find_peaks(
+        smooth,
+        height=baseline + EVENT_EXCESS_THRESHOLD_COUNTS,
+        prominence=EVENT_EXCESS_THRESHOLD_COUNTS,
+        distance=max(1, int(round(VESSEL_COUNT_MIN_SEPARATION_S / frame_seconds))),
+    )
+    return int(len(peaks))
 
 
 # --- Test C: synthetic tone ------------------------------------------------

@@ -243,6 +243,10 @@ def band_row(cov, band_name, band_hz, index, shift_hours, optical, manual):
         "is_detection_band": int(is_detection),
         "n_events": "",
         "n_events_merged": "",
+        # The vessel-COUNT estimator (decision 0031). Prominent peaks of the
+        # smoothed level: one passage contributes one peak however much it
+        # wobbles. This is the column to compare against manual_vessel_count.
+        "n_vessels_est": "",
         "peak_excess_counts_max": "",
         "total_event_duration_s": "",
         "baseline_counts": "",
@@ -286,6 +290,23 @@ def band_row(cov, band_name, band_hz, index, shift_hours, optical, manual):
         row["note"] = f"BAND NOT SCORED: {type(exc).__name__}: {exc}"
         return row
 
+    # CLIP TO THE WINDOW. concat_window returns whole 5-minute FILES, so a
+    # +/-15 min (1800 s) window arrives as up to 2100 s of samples -- the file
+    # straddling each edge overhangs it. Every statistic below would then be
+    # computed over ~17% more time than the window it is labelled with, and the
+    # vessel-count estimator in particular was calibrated on the clipped window
+    # (decision 0031): unclipped it reads 51 against 44 counted instead of 42.
+    win_lo, win_hi = scene.window_utc(config.OVERPASS_MATCH_HALF_WINDOW_S)
+    t_all = np.asarray(w["t_utc_s"], dtype=float)
+    keep = (t_all >= win_lo.timestamp()) & (t_all <= win_hi.timestamp())
+    n_dropped = int((~keep).sum())
+    if n_dropped:
+        # Printed, never silent (CLAUDE.md invariant 5).
+        row["note"] = (row["note"] + " | " if row["note"] else "") + \
+            f"clipped {n_dropped} frame(s) outside the window"
+    w = dict(w, t_utc_s=t_all[keep],
+             level_counts=np.asarray(w["level_counts"], dtype=float)[keep])
+
     found = run_b5_gate.find_events(w["t_utc_s"], w["level_counts"])
     events = found["events"]
     # Sensitivity: the merged count at every gap in the sweep, so the summary can
@@ -298,6 +319,8 @@ def band_row(cov, band_name, band_hz, index, shift_hours, optical, manual):
     # threshold chatter as much as passages, the merged one is the number of
     # distinct elevated periods, and neither is a vessel count.
     row["n_events_merged"] = len(run_b5_gate.merge_events(events))
+    row["n_vessels_est"] = run_b5_gate.estimate_vessel_count(
+        w["t_utc_s"], w["level_counts"])
     row["baseline_counts"] = round(found["baseline_counts"], 2)
     row["peak_excess_counts_max"] = (
         round(max(e["peak_excess_counts"] for e in events), 2) if events else "")
@@ -420,6 +443,9 @@ def write_summary_md(path, rows, summary, shift_hours, optical_source, run_id,
     else:
         man = [int(w["manual_vessel_count"]) for w in uniq]
         mrg = [int(w["total_detection_events_merged"] or 0) for w in uniq]
+        est = [int(w.get("n_small_craft_vessels_est") or 0) for w in uniq]
+        r_est = (float(np.corrcoef(est, man)[0, 1])
+                 if len(set(man)) > 1 and len(set(est)) > 1 else float("nan"))
         tp = sum(1 for a, b in zip(man, mrg) if a > 0 and b > 0)
         fn = sum(1 for a, b in zip(man, mrg) if a > 0 and b == 0)
         fp = sum(1 for a, b in zip(man, mrg) if a == 0 and b > 0)
@@ -434,8 +460,14 @@ def write_summary_md(path, rows, summary, shift_hours, optical_source, run_id,
             f"| **vessel(s) present** ({tp + fn}) | {tp} | {fn} |",
             f"| **no vessel** ({fp + tn}) | {fp} | {tn} |",
             "",
-            f"* Correlation between manual vessel count and merged event count: "
-            f"**r = {r:+.3f}**.",
+            f"* **`n_vessels_est` (decision 0031, the estimator to use): "
+            f"{sum(est)} predicted against {sum(man)} counted, "
+            f"r = {r_est:+.3f}**, "
+            f"{sum(1 for a, b in zip(est, man) if abs(a - b) <= 1)}/{len(est)} "
+            "windows within +/-1.",
+            f"* Merged EVENT count, for contrast: {sum(mrg)} against "
+            f"{sum(man)}, r = {r:+.3f}. Event counts are excursions, not "
+            "passages -- this is the gap decision 0031 closes.",
             f"* Fired on {tp}/{tp + fn} windows with a vessel; fired on "
             f"{fp}/{fp + tn} windows with none.",
             "",
@@ -505,10 +537,10 @@ def write_summary_md(path, rows, summary, shift_hours, optical_source, run_id,
         "different peaks and an amplitude gate would refuse to merge them. "
         "Neither count is a vessel count.",
         "",
-        "| scene | acquired (UTC) | **manual vessels** | small_craft "
-        "raw/merged | ship_proxy raw/merged | total raw | **total merged** | "
-        "rain | control | optical cand. |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| scene | acquired (UTC) | **manual vessels** | **est. vessels "
+        "(small_craft)** | small_craft raw/merged | ship_proxy raw/merged | "
+        "total merged | optical cand. |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for w in (wide or []):
         def _c(key):
@@ -519,11 +551,11 @@ def write_summary_md(path, rows, summary, shift_hours, optical_source, run_id,
             f"**{_c('manual_vessel_count')}**"
             + ("*" if str(w.get('manual_label_shared_by') or 1) != "1" else "")
             + " | "
+            f"**{_c('n_small_craft_vessels_est')}** | "
             f"{_c('n_small_craft')} / {_c('n_small_craft_merged')} | "
             f"{_c('n_ship_proxy')} / {_c('n_ship_proxy_merged')} | "
-            f"{_c('total_detection_events')} | "
-            f"**{_c('total_detection_events_merged')}** | "
-            f"{_c('n_rain')} | {_c('n_control')} | {_c('n_optical_candidates')} |")
+            f"{_c('total_detection_events_merged')} | "
+            f"{_c('n_optical_candidates')} |")
     lines += [
         "",
         "`--` means not scored (no coverage), which is NOT zero. `*` marks a "
@@ -649,6 +681,7 @@ def main(argv=None):
         })
         w[f"n_{r['band']}"] = r["n_events"]
         w[f"n_{r['band']}_merged"] = r["n_events_merged"]
+        w[f"n_{r['band']}_vessels_est"] = r["n_vessels_est"]
         w[f"n_{r['band']}_frame_shuffled"] = r["n_events_frame_shuffled"]
     for w in by_scene.values():
         det = [w.get(f"n_{b}") for b in DETECTION_BANDS]
@@ -663,7 +696,8 @@ def main(argv=None):
             w.get(f"n_{b}_frame_shuffled") or 0 for b in DETECTION_BANDS
             if w.get(f"n_{b}_frame_shuffled") != "")
     wide_fields = (["scene_id", "acquired_utc", "coverage"]
-                   + [x for b in DETECTION_BANDS for x in (f"n_{b}", f"n_{b}_merged")]
+                   + [x for b in DETECTION_BANDS
+                      for x in (f"n_{b}", f"n_{b}_merged", f"n_{b}_vessels_est")]
                    + ["total_detection_events", "total_detection_events_merged",
                       "total_detection_events_frame_shuffled"]
                    + [f"n_{b}" for b in bands if b not in DETECTION_BANDS]
