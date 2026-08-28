@@ -49,8 +49,7 @@ Satellites see every boat but only for a fraction of a second per day; the hydro
 
 1) Search for, screen, and select PlanetScope imagery scenes for the vessel detection model.
 2) Augment open-source machine learning vessel detection model to process selected PlanetScope scenes.
-3) machine learning acoustic vessel noise signature model something something something
-4) Integrate satellite / acoustic data ...
+3) Train an ML model or apply signal filtering methods to the hydrophone data to identify acoustic vessel noise signatures, by comparing the hydrophone data to the labeled satelite images
    
 * Create a model that uses hydrophone data and prior knowledge of vessels detected from optical satellite imagery to create continuous estimates of the number of boats, and potential distinguish between larger or smaller boats (those without AIS)
 
