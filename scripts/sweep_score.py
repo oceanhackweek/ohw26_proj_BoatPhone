@@ -25,7 +25,8 @@ from sweep_cache import RAW_CONF
 
 TRUTH_CSV = REPO_ROOT / "data" / "validation" / "planet_scope_validations.csv"
 
-# Persistence cell, ~50 m at this latitude. Source: scripts/detect_vessels_toa.py,
+# Persistence cell, ~50 m at this latitude. Source: detect_vessels_toa.py, retired to
+# superseded/optical/ on 2026-08-28 (see its README); the constant is unchanged,
 # which introduced the same rule -- one definition of the cell size, not two.
 DLAT, DLON = 0.00045, 0.00068
 

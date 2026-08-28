@@ -1434,3 +1434,66 @@ just as importantly, what did NOT and why: accoutics_plan.md (kept for its
 250 Hz evidence), boatphone/models.py (still imported by checks.py), the B0
 notebook (evidence for 0012), and the whole optical script set (its owner's
 call, not a tidy-up's). Checks stay green: 183 passed, 0 failed, 4 skipped.
+
+
+Malachy (Aug 28) -- TWO PUBLICATION NOTEBOOKS FOR THE OPTICAL SIDE, AND THE REPO CLEANED UP
+FOR SHARING. Both execute top to bottom in a fresh kernel; both are committed with outputs.
+
+    final_notebooks/optical_acquisition_pipeline.ipynb   33 cells
+    final_notebooks/vessel_detection_pipeline.ipynb      28 cells
+
+They follow Isaac's acoustic_pipeline.ipynb pattern deliberately -- same RUN_HEAVY switch, same
+link/show_folder/run_script helpers, same "what this does NOT establish" section up front -- so
+the three read as one document. Written in plain English for somebody who has never seen the
+repo. The acquisition notebook carries a SECOND switch, ALLOW_SPENDING, because exactly one of
+its cells draws down the imagery quota.
+
+WHAT THEY REPRODUCE LIVE, not from prose: the funnel 552 -> 48 (containment) -> 30 (UDM2) -> 26
+(drop list), both quota bases, the tile arithmetic, and -- the one that matters -- the TOA vs SR
+water brightness on 20200730 through optical.water_mask, 50.5 against 13.8. The heavy steps
+(search, UDM2 screen, sweep, detector, census) print their exact command and then read what is
+already on disk.
+
+THE ACQUISITION NOTEBOOK DOES NOT REPRODUCE GATE 3. The ipywidgets reviewer and the tile ledger
+stay in contributor_folders/malachymcc/planet_folger_search_order_download.ipynb, which is
+therefore NOT retired -- it is still the instrument, the new notebook is the record. Flagged
+in-place rather than silently omitted.
+
+TWO ERRORS IN MY OWN EARLIER NUMBERS, found by making the notebook compute them:
+- The truth file holds 44 vessels over 29 timestamps, not 42 over 29. 42 is the subset for the
+  26 scenes we hold imagery for. Both numbers are now printed side by side so the gap cannot be
+  rediscovered as a mismatch later.
+- The "water DN 50.0 / 13.0" table from the TOA session was measured over the valid mask, not
+  over water. Through the shipped water mask it is 50.5 / 13.8. The claim is unaffected -- TOA
+  lands in the S2 L1C band and SR is ~4x too dark -- but the table now says "about 50" and the
+  notebook prints the reproducible figure.
+
+SUPERSEDED/ NOW HAS AN OPTICAL WING, same convention as Isaac's: deleted from git, kept on disk,
+gitignored, with a README recording what moved AND what deliberately did not.
+    superseded/optical/  detect_vessels_nir.py (Detector B run), detect_vessels_toa.py
+                         (A on TOA alone), fuse_wake_hull.py + hull_chips.py (the abandoned
+                         wake-locate/hull-measure fusion), planet_folger_HANDOFF.md (says
+                         "nothing ordered"; 26 scenes have since been delivered),
+                         planet_download_workflow.md (absorbed into the notebook)
+NOT moved, and the README says why: detector_a_toa_test.py is a LIVE DEPENDENCY -- it looks like
+a one-off experiment but it holds reflectance_coefficients/tci_rgb, which detect_vessels_final,
+sweep_cache and census_chips all import. Also kept: the four sweep_*.py, export_detections.py,
+optical_selftest.py. sweep_score.py:28 cited detect_vessels_toa.py as the source of its
+persistence-cell constant; the citation now points at superseded/ so the provenance survives.
+
+README.md now opens with all three notebooks in reading order rather than one.
+
+THE FOUR OPTICAL HANDOFF FLAGS IN THE ACOUSTIC NOTEBOOK, ANSWERED OR RESTATED:
+  ANSWERED  "do not order 2026 imagery" -- the search never left 2020-2025 and every ordered
+            scene was cleared against hydrophone_gaps.md before the spend gate.
+  OPEN      the hydrophone coordinate. Restated in BOTH new notebooks, because every range_km
+            in detections_final.csv moves if it moves. Still needs one getDeployments call.
+  OPEN      more labels. Now urgent for a second reason: the census found two scenes counted as
+            0 that carry obvious compact objects, so RE-COUNTING the existing 26 at native
+            resolution is cheaper than acquiring more and should come first.
+  OPEN      fill planet_scene/ in the acoustic review windows. The previews exist in
+            data/derived/detections_final/previews/; nobody has wired them across.
+
+I did NOT edit acoustic_pipeline.ipynb. Its opening still says the optical companion "does not
+exist yet", which is now stale. Isaac, that is one sentence and one table row in your cell 0 --
+yours to make, not mine to conflict with.

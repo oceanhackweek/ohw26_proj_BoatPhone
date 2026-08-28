@@ -9,12 +9,23 @@
 
 ## Start here
 
-**`final_notebooks/acoustic_pipeline.ipynb`** is the reproducible record of the hydrophone
-(acoustic) pipeline, start to finish: getting an ONC token, writing the `.env` file,
-downloading the data, computing band levels, counting vessel passages, and producing every
-figure. It is written for somebody who has never seen this repository, and it states plainly
-what the pipeline does and does not establish. A companion notebook for the optical pipeline
-is in progress; the acoustic notebook flags every point where the two meet.
+Three notebooks in `final_notebooks/` are the reproducible record of the whole project. Each is
+written for somebody who has never seen this repository, each runs top to bottom, and each
+states plainly what its pipeline does **and does not** establish. Read them in this order:
+
+| Notebook | What it covers |
+|---|---|
+| **`optical_acquisition_pipeline.ipynb`** | Finding, screening and paying for the satellite photographs: one study box, three gates, 552 candidate scenes narrowed to 26 delivered ones — and how not to waste a monthly imagery budget that does not roll over. |
+| **`vessel_detection_pipeline.ipynb`** | Finding boats in those 26 pictures. Mostly a record of what *failed*: four approaches were tried and abandoned, each for a measured reason, and the shipped detector is simpler than the one that scored best. |
+| **`acoustic_pipeline.ipynb`** | The hydrophone half: getting an ONC token, downloading the recordings, computing band levels, counting vessel passages, and every figure. |
+
+Expensive steps are switched off by default in all three — they print the command they would
+have run and then read results already in the repository, so the whole pipeline is legible in a
+few minutes without a six-hour download or a satellite order. Points where the optical and
+acoustic halves meet are flagged in both directions; search any notebook for `HANDOFF`.
+
+Approaches that were tried and retired live in `superseded/`, which is kept on disk but out of
+git; its README records what each file was and the measurement that retired it.
 
 ## Project Name
 
