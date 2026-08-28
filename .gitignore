@@ -38,3 +38,6 @@ external/
 # Python bytecode
 __pycache__/
 *.py[cod]
+
+# Superseded/abandoned files, kept out of the published repo (see superseded/README.md).
+superseded/
