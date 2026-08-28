@@ -271,15 +271,40 @@ def estimate_vessel_count(t_utc_s, level_counts, *, frame_seconds=None):
         n += 1
     if n >= len(level):
         return 0
+    return len(vessel_peak_times(t_utc_s, level_counts,
+                                 frame_seconds=frame_seconds))
+
+
+def vessel_peak_times(t_utc_s, level_counts, *, frame_seconds=None):
+    """The CPA instants `estimate_vessel_count` counts, as absolute UTC seconds.
+
+    Exposed so a figure can MARK the peaks the count is made of. A labelled
+    figure that showed a number without showing which features produced it would
+    be unreviewable -- the reader could not tell a correct count from a
+    coincidence, which is the whole purpose of putting the figure next to the
+    imagery.
+    """
+    if frame_seconds is None:
+        frame_seconds = config.FFT_FRAME_SECONDS
+    level = np.asarray(level_counts, dtype=float)
+    t = np.asarray(t_utc_s, dtype=float)
+    n = max(1, int(round(VESSEL_COUNT_SMOOTH_S / frame_seconds)))
+    if n % 2 == 0:
+        n += 1
+    if n >= len(level):
+        return []
     smooth = np.convolve(level, np.ones(n) / n, mode="same")
     baseline = features.ambient_baseline_counts(level)
-    peaks, _props = scipy_signal.find_peaks(
+    peaks, props = scipy_signal.find_peaks(
         smooth,
         height=baseline + EVENT_EXCESS_THRESHOLD_COUNTS,
         prominence=EVENT_EXCESS_THRESHOLD_COUNTS,
         distance=max(1, int(round(VESSEL_COUNT_MIN_SEPARATION_S / frame_seconds))),
     )
-    return int(len(peaks))
+    return [{"t_peak_utc_s": float(t[i]),
+             "prominence_counts": float(props["prominences"][k]),
+             "level_counts": float(smooth[i])}
+            for k, i in enumerate(peaks)]
 
 
 # --- Test C: synthetic tone ------------------------------------------------

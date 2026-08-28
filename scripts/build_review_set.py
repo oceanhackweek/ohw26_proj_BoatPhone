@@ -42,6 +42,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import textwrap
 
 import numpy as np
 
@@ -409,7 +410,8 @@ BAND_OVERLAY_COLOURS = {
 
 def _plot_denoised_labeled(scene_dir, cov, levels, t_utc_s, freq_hz, band_results,
                            detection_bands, season_ambient=None, ambient_note=None,
-                           optical_candidates=None, label=None):
+                           optical_candidates=None, label=None,
+                           manual_count=None):
     """`denoised.png` with the detector's own events drawn onto it.
 
     The overlays come from `band_results`, which the caller already computed --
@@ -434,12 +436,14 @@ def _plot_denoised_labeled(scene_dir, cov, levels, t_utc_s, freq_hz, band_result
 
     silent = []
     counts_by_band = {}
+    vessels_by_band = {}
     for band_name in detection_bands:
         result = band_results.get(band_name)
         if result is None:
             continue
         events = result["events"]
         counts_by_band[band_name] = len(events)
+        vessels_by_band[band_name] = result.get("n_vessels_est", 0)
         if not events:
             silent.append(band_name)
             continue
@@ -475,6 +479,27 @@ def _plot_denoised_labeled(scene_dir, cov, levels, t_utc_s, freq_hz, band_result
                                 textcoords="offset points", ha="center",
                                 fontsize=7.5, color=colour, zorder=6)
 
+    # ESTIMATED VESSEL PASSES (decision 0031). Drawn LAST and largest, because
+    # this is the number the project reports -- the shaded event spans below it
+    # are the raw material, not the answer. A vessel's level fluctuates, so one
+    # of these markers typically sits over several event spans; that is the
+    # whole point of the estimator and the figure should make it visible.
+    for band_name in detection_bands:
+        result = band_results.get(band_name)
+        if not result:
+            continue
+        colour = BAND_OVERLAY_COLOURS.get(band_name, "#ffffff")
+        for j, vp in enumerate(result.get("vessel_peaks", [])):
+            x = (vp["t_peak_utc_s"] - t0) / 60.0
+            for ax in axes:
+                ax.axvline(x, color=colour, lw=2.2, alpha=0.9, zorder=9)
+            axes[0].annotate(
+                f"vessel {j + 1}", xy=(x, f_khz[0]), xytext=(0, 4),
+                textcoords="offset points", ha="center", fontsize=8.5,
+                color="black", zorder=10,
+                bbox=dict(facecolor=colour, alpha=0.85, edgecolor="none",
+                          boxstyle="round,pad=0.18"))
+
     for ax in axes:
         # The acquisition instant. `_draw_denoised_panels` already draws a cyan
         # line at 0; this labels it, because on the labelled figure cyan is also
@@ -498,7 +523,8 @@ def _plot_denoised_labeled(scene_dir, cov, levels, t_utc_s, freq_hz, band_result
                        framealpha=0.7)
 
     tag = "full" if cov.is_full else "partial"
-    counts_txt = "   ".join(f"{b}: {n} event(s)" for b, n in counts_by_band.items())
+    vessels_txt = "   ".join(f"{b}: {n}" for b, n in vessels_by_band.items())
+    counts_txt = "   ".join(f"{b}: {n}" for b, n in counts_by_band.items())
     optical_txt = ""
     if optical_candidates is not None:
         n_all, n_solid = optical_candidates
@@ -510,20 +536,34 @@ def _plot_denoised_labeled(scene_dir, cov, levels, t_utc_s, freq_hz, band_result
                      + (f" (n={label.n_vessels})" if label.n_vessels is not None else "")
                      + (f" over {label.area_km2:g} km2 reviewed"
                         if label.area_km2 is not None else ""))
-    fig.suptitle(
-        f"{cov.overpass.scene_id}   |   coverage {tag}   |   {counts_txt}"
-        f"{optical_txt}{label_txt}\n"
-        "Shaded spans are DETECTED EVENTS -- excess-over-ambient runs of at least "
-        f"{run_b5_gate.EVENT_MIN_DURATION_S:.0f} s above "
-        f"+{run_b5_gate.EVENT_EXCESS_THRESHOLD_COUNTS:.0f} counts. They are NOT "
-        "vessel counts: one boat can open several and two can merge into one. "
+    manual_txt = ""
+    if manual_count is not None:
+        manual_txt = f"   |   HUMAN COUNT: {manual_count} vessel(s)"
+    # Wrapped to a fixed column width. Unwrapped, these lines set the figure's
+    # width and squeeze the panels into a strip -- the caption ends up sized for
+    # the text rather than the data.
+    _title = (
+        f"{cov.overpass.scene_id}   |   coverage {tag}{manual_txt}\n"
+        f"ESTIMATED VESSELS (decision 0031) -- {vessels_txt}"
+        f"   |   raw events -- {counts_txt}{optical_txt}{label_txt}\n"
+        "SOLID VERTICAL LINES are estimated vessel passes: prominent peaks of the "
+        f"{run_b5_gate.VESSEL_COUNT_SMOOTH_S:.0f} s-smoothed band level, at least "
+        f"{run_b5_gate.VESSEL_COUNT_MIN_SEPARATION_S:.0f} s apart. SHADED SPANS are "
+        "raw threshold excursions -- one vessel usually opens several, which is "
+        "why they are not counted directly. Two vessels closer than "
+        f"{run_b5_gate.VESSEL_COUNT_MIN_SEPARATION_S:.0f} s, or concurrent at "
+        "different ranges, still count as one (decision 0031). "
         f"Band edges widened by +/-{config.FFT_AXIS_OFFSET_UNCERTAINTY_HZ:.0f} Hz "
         "(open axis convention, decision 0013).\n"
-        + meta["caption"].split("|", 1)[-1].strip(),
-        y=1.0, fontsize=8.5)
+        + meta["caption"].split("|", 1)[-1].strip())
+    _wrapped = "\n".join(
+        line for para in _title.split("\n")
+        for line in (textwrap.wrap(para, width=150) or [""]))
+    fig.suptitle(_wrapped, y=1.0, fontsize=8.5)
     fig.savefig(scene_dir / "denoised_labeled.png", dpi=115, bbox_inches="tight")
     plt.close(fig)
     return {"labeled_events_by_band": counts_by_band,
+            "labeled_vessels_by_band": vessels_by_band,
             "labeled_bands_silent": silent}
 
 
@@ -735,6 +775,9 @@ def main(argv=None):
     # validated against a label. Shared with build_events_table.py rather than
     # re-counted here, so the two deliverables cannot disagree.
     optical, _optical_source = build_events_table.load_optical_candidate_counts()
+    # The human vessel counts, so each figure states the truth it is judged
+    # against right next to the estimate.
+    manual, _manual_source = build_events_table.load_manual_vessel_counts()
 
     rows = []
     print(f"review set -> {out_dir}")
@@ -753,6 +796,19 @@ def main(argv=None):
             encoding="utf-8")
 
         levels, t_utc_s, freq_hz = _load_window_surface(cov.paths)
+        # CLIP TO THE WINDOW, exactly as build_events_table does. Whole 5-minute
+        # FILES are loaded, so a +/-15 min (1800 s) window arrives as up to
+        # 2100 s -- the files straddling each edge overhang it. Unclipped, this
+        # script's vessel estimate read 51 against the events table's 40 for the
+        # same windows, and the FIGURES would then disagree with the TABLE they
+        # are supposed to illustrate.
+        win_lo, win_hi = scene.window_utc(config.OVERPASS_MATCH_HALF_WINDOW_S)
+        in_window = ((t_utc_s >= win_lo.timestamp())
+                     & (t_utc_s <= win_hi.timestamp()))
+        n_clipped = int((~in_window).sum())
+        if n_clipped:
+            print(f"    clipped {n_clipped} frame(s) outside the window")
+        levels, t_utc_s = levels[in_window], t_utc_s[in_window]
         t0 = scene.acquired_utc.timestamp()
 
         # Per-season population ambient for THIS window's year, if available.
@@ -813,7 +869,16 @@ def main(argv=None):
                     pop_baseline = None
                     pop_failures.append(f"{band_name}: {type(exc).__name__}: {exc}")
 
+            # The VESSEL-COUNT estimator's peaks (decision 0031), so the figure
+            # can mark what the count is made of. Distinct from `events`:
+            # events are threshold excursions, these are CPA peaks, and one of
+            # the latter typically spans several of the former.
+            vessel_peaks = run_b5_gate.vessel_peak_times(
+                series.t_utc_s, series.level_counts)
+
             band_results[band_name] = {
+                "vessel_peaks": vessel_peaks,
+                "n_vessels_est": len(vessel_peaks),
                 "population_baseline_counts": pop_baseline,
                 "population_peak_excess_counts": pop_excess,
                 "baseline_shift_counts": (
@@ -872,7 +937,8 @@ def main(argv=None):
             scene_dir, cov, levels, t_utc_s, freq_hz, band_results,
             DETECTION_BANDS, season_ambient=season_ambient,
             ambient_note=ambient_note,
-            optical_candidates=optical.get(scene.scene_id), label=label))
+            optical_candidates=optical.get(scene.scene_id), label=label,
+            manual_count=(manual.get(scene.scene_id) or (None,))[0]))
         extra.update(_plot_band_detail(
             scene_dir, cov, levels, t_utc_s, freq_hz, band_results))
         extra.update(_plot_spectra(
@@ -940,6 +1006,7 @@ def main(argv=None):
                           "baseline_shift_counts": v["baseline_shift_counts"],
                           "threshold_counts": v["threshold"],
                           "n_events": len(v["events"]),
+                          "n_vessels_est": v["n_vessels_est"],
                           "n_bins_in_band": v["n_bins"],
                           "fraction_in_band_at_floor": v["fraction_at_floor"],
                           "decidecade_resolvable": v["decidecade_resolvable"],
