@@ -1436,9 +1436,114 @@ notebook (evidence for 0012), and the whole optical script set (its owner's
 call, not a tidy-up's). Checks stay green: 183 passed, 0 failed, 4 skipped.
 
 
-================================================================================
+Malachy (Aug 28) -- THE BOX-LEVEL CENSUS, AGENT PASS: 24 OF 41 DETECTIONS ARE CLEARLY A VESSEL,
+3 ARE NOT, AND THE "41 vs 42" HEADLINE IS A CANCELLATION, NOT AN ACCURACY.
+
+TOOLING, both committed and both reproducible:
+    scripts/census_chips.py   one 5-panel row per detection (TOA 300 m | SR 300 m | NIR 300 m |
+                              TOA 75 m @20x | NIR 75 m @20x) -> data/derived/census/<scene>.png
+                              plus census_index.csv with EMPTY verdict/note columns
+    scripts/census_misses.py  the same panels for the boxes the AGREEMENT RULE discarded, read
+                              from the sweep_cache box cache so it costs no inference
+
+THE NUMBER THAT MATTERS AND WAS NOT VISIBLE BEFORE. Per scene against the human counts: 12 surplus
+detections and 13 missed vessels, which nearly cancel into "41 vs 42". Exact on 8 of 26 scenes.
+The total-count agreement is arithmetic, not accuracy, and nobody joining on it should read 97.6%
+as a precision or a recall figure.
+
+MY VERDICTS over all 41 boxes (data/derived/census/census_agent_review.csv):
+    vessel         24    compact bright core in TOA, SR and NIR, in open water
+    likely_vessel   9    same but weakened by quantised NIR, a nearby cloud, or a scene edge
+    ambiguous       5    an object is there but diffuse or offset from the box
+    not_vessel      3    det_index 3 (dark at the box, 400 m off a headland), 25 (hazy scene,
+                         no object at all), 35 (empty box 90 m from the real object, det 38)
+So 33 of 41 survive as a vessel or probably one. THIS IS AN AGENT PASS, NOT THE HUMAN CENSUS the
+plan asks for -- it narrows that job to the 8 non-"vessel" rows rather than replacing it.
+
+TWO THINGS THE CHIPS SHOW THAT THE COUNTS COULD NOT.
+(1) THE TRUTH SET LOOKS LIKE IT UNDER-COUNTS. 20230714 and 20220725 are recorded as 0 vessels and
+both carry compact bright objects at 3-7x water NIR that are plainly visible at 20x. If the
+eyeball pass was done on downscaled previews, a 2-3 px hull is not resolvable, and then the thing
+we calibrated AGAINST has the same small-vessel blind spot we are trying to measure. Worth Neve
+and Isaac re-checking those two scenes at native resolution before anyone trusts the 42.
+(2) THE HIGHEST-LEVERAGE DETECTION IS THE WEAKEST. det_index 17 is the closest box in the whole
+set (0.975 km, 20220625) and it is the weakest -- 1.4x water NIR, diffuse, ~2.5 px off the box.
+It sets r_nearest_km for that scene, so an r^-k fit is more sensitive to that one box than to any
+other. Isaac: treat it as suspect.
+
+A NEGATIVE RESULT, MEASURED, SO NOBODY CHASES IT. I thought the NIR blob sat systematically up and
+right of the TOA box and wondered about inter-band timing on a moving hull. It does not. Over all
+41 detections the visible-to-NIR peak offset is a median 0.52 px (1.6 m), and it is IDENTICAL
+band-to-band within the SR product and product-to-product TOA-to-SR (0.50 px). So there is no
+TOA/SR georeferencing shift and no usable band parallax at this GSD; what I was seeing is the box
+being loose around a 2-3 px core. nir_peak is being sampled off the right pixels.
+
+STILL OPEN. The misses half is generated but NOT reviewed: data/derived/census/misses/ holds 37
+discarded single-asset boxes over the 10 shortfall scenes (16 more not shown, --top 4). Reviewing
+those is what would say whether the agreement rule is costing real vessels or working as intended.
+
+Malachy (Aug 28) -- TWO PUBLICATION NOTEBOOKS FOR THE OPTICAL SIDE, AND THE REPO CLEANED UP
+FOR SHARING. Both execute top to bottom in a fresh kernel; both are committed with outputs.
+
+    final_notebooks/optical_acquisition_pipeline.ipynb   33 cells
+    final_notebooks/vessel_detection_pipeline.ipynb      28 cells
+
+They follow Isaac's acoustic_pipeline.ipynb pattern deliberately -- same RUN_HEAVY switch, same
+link/show_folder/run_script helpers, same "what this does NOT establish" section up front -- so
+the three read as one document. Written in plain English for somebody who has never seen the
+repo. The acquisition notebook carries a SECOND switch, ALLOW_SPENDING, because exactly one of
+its cells draws down the imagery quota.
+
+WHAT THEY REPRODUCE LIVE, not from prose: the funnel 552 -> 48 (containment) -> 30 (UDM2) -> 26
+(drop list), both quota bases, the tile arithmetic, and -- the one that matters -- the TOA vs SR
+water brightness on 20200730 through optical.water_mask, 50.5 against 13.8. The heavy steps
+(search, UDM2 screen, sweep, detector, census) print their exact command and then read what is
+already on disk.
+
+THE ACQUISITION NOTEBOOK DOES NOT REPRODUCE GATE 3. The ipywidgets reviewer and the tile ledger
+stay in contributor_folders/malachymcc/planet_folger_search_order_download.ipynb, which is
+therefore NOT retired -- it is still the instrument, the new notebook is the record. Flagged
+in-place rather than silently omitted.
+
+TWO ERRORS IN MY OWN EARLIER NUMBERS, found by making the notebook compute them:
+- The truth file holds 44 vessels over 29 timestamps, not 42 over 29. 42 is the subset for the
+  26 scenes we hold imagery for. Both numbers are now printed side by side so the gap cannot be
+  rediscovered as a mismatch later.
+- The "water DN 50.0 / 13.0" table from the TOA session was measured over the valid mask, not
+  over water. Through the shipped water mask it is 50.5 / 13.8. The claim is unaffected -- TOA
+  lands in the S2 L1C band and SR is ~4x too dark -- but the table now says "about 50" and the
+  notebook prints the reproducible figure.
+
+SUPERSEDED/ NOW HAS AN OPTICAL WING, same convention as Isaac's: deleted from git, kept on disk,
+gitignored, with a README recording what moved AND what deliberately did not.
+    superseded/optical/  detect_vessels_nir.py (Detector B run), detect_vessels_toa.py
+                         (A on TOA alone), fuse_wake_hull.py + hull_chips.py (the abandoned
+                         wake-locate/hull-measure fusion), planet_folger_HANDOFF.md (says
+                         "nothing ordered"; 26 scenes have since been delivered),
+                         planet_download_workflow.md (absorbed into the notebook)
+NOT moved, and the README says why: detector_a_toa_test.py is a LIVE DEPENDENCY -- it looks like
+a one-off experiment but it holds reflectance_coefficients/tci_rgb, which detect_vessels_final,
+sweep_cache and census_chips all import. Also kept: the four sweep_*.py, export_detections.py,
+optical_selftest.py. sweep_score.py:28 cited detect_vessels_toa.py as the source of its
+persistence-cell constant; the citation now points at superseded/ so the provenance survives.
+
+README.md now opens with all three notebooks in reading order rather than one.
+
+THE FOUR OPTICAL HANDOFF FLAGS IN THE ACOUSTIC NOTEBOOK, ANSWERED OR RESTATED:
+  ANSWERED  "do not order 2026 imagery" -- the search never left 2020-2025 and every ordered
+            scene was cleared against hydrophone_gaps.md before the spend gate.
+  OPEN      the hydrophone coordinate. Restated in BOTH new notebooks, because every range_km
+            in detections_final.csv moves if it moves. Still needs one getDeployments call.
+  OPEN      more labels. Now urgent for a second reason: the census found two scenes counted as
+            0 that carry obvious compact objects, so RE-COUNTING the existing 26 at native
+            resolution is cheaper than acquiring more and should come first.
+  OPEN      fill planet_scene/ in the acoustic review windows. The previews exist in
+            data/derived/detections_final/previews/; nobody has wired them across.
+
+I did NOT edit acoustic_pipeline.ipynb. Its opening still says the optical companion "does not
+exist yet", which is now stale. Isaac, that is one sentence and one table row in your cell 0 --
+yours to make, not mine to conflict with.
 2026-08-28 (Isaac) -- THE REVIEW SLOTS ARE FILLED, AND THERE ARE NOW TWO BOARDS
-================================================================================
 
 planet_scene/ IS NO LONGER EMPTY. scripts/attach_planet_previews.py copies each
 scene's tile preview from Malachy's shared delivery
